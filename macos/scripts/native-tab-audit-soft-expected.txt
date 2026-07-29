@@ -1,0 +1,7 @@
+macos/Sources/Features/Terminal/TerminalController.swift:} else if tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue {
+macos/Sources/Features/Terminal/TerminalController.swift:} else if tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue {
+macos/Sources/Features/Terminal/TerminalController.swift:finalIndex = min(Int(tabIndex - 1), tabs.count - 1)
+macos/Sources/Features/Terminal/TerminalController.swift:guard tabIndex >= 1 else { return }
+macos/Sources/Features/Terminal/TerminalController.swift:if tabIndex <= 0 {
+macos/Sources/Features/Terminal/TerminalController.swift:if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
+macos/Sources/Features/Terminal/TerminalController.swift:let tabIndex: Int32 = tabEnum.rawValue
