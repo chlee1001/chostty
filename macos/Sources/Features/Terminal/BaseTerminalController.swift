@@ -966,6 +966,23 @@ class BaseTerminalController: NSWindowController,
     /// fresh tabs from it would duplicate tabs the user is already looking at.
     /// That is what made close-other-tabs, `Cmd+Z`, then reopen produce five
     /// tabs where there should be three.
+    /// Builds the surface configuration for a tab being recreated from
+    /// recorded metadata.
+    ///
+    /// A recorded `pwd` is only applied if it still names a directory. The
+    /// record can outlive the directory — a worktree removed, a build output
+    /// cleaned, an external volume ejected — and unlike every other tab path
+    /// this one had no such check, so it handed a dead path straight to a new
+    /// surface while `TerminalCommandRouter` was carefully falling through for
+    /// exactly the same condition.
+    static func reopenConfig(for record: ClosedTabHistory.Record) -> Ghostty.SurfaceConfiguration {
+        var config = Ghostty.SurfaceConfiguration()
+        if let pwd = record.pwd, TerminalCommandRouter.directoryExists(pwd) {
+            config.workingDirectory = pwd
+        }
+        return config
+    }
+
     func reopenClosedTab() {
         var popped: ClosedTabHistory.Entry?
         while let candidate = closedTabHistory.popNewest() {
@@ -1003,10 +1020,7 @@ class BaseTerminalController: NSWindowController,
             guard let ghosttyApp = ghostty.app else { return }
 
             for record in entry.records {
-                var config = Ghostty.SurfaceConfiguration()
-                if let pwd = record.pwd {
-                    config.workingDirectory = pwd
-                }
+                let config = Self.reopenConfig(for: record)
                 let newSurface = Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
                 let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
                 let session = TerminalSessionState(id: UUID(), surfaceTree: newTree)

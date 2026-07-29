@@ -125,7 +125,7 @@ final class TerminalCommandRouter {
     /// Whether `path` names a directory that currently exists on disk. Used
     /// to detect a stale/deleted `defaultDirectory` so it can fall through
     /// rather than failing tab/workspace creation.
-    private static func directoryExists(_ path: String) -> Bool {
+    static func directoryExists(_ path: String) -> Bool {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
         return exists && isDirectory.boolValue
