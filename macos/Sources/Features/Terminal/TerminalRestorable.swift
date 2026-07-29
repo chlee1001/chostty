@@ -31,12 +31,13 @@ extension TerminalRestorable {
     var baseConfig: Ghostty.SurfaceConfiguration? { nil }
 
     init?(coder aDecoder: NSCoder) {
-        // If the version doesn't match then we can't decode. In the future we can perform
-        // version upgrading or something but for now we only have one version so we
-        // don't bother.
+        // Only versions this build actually understands may be decoded. Older
+        // archives are rejected before `decodeObject` so no legacy payload is
+        // ever materialized, and *newer* archives are rejected too: decoding a
+        // future schema with this decoder would silently drop or misread state.
         let current = aDecoder.decodeInteger(forKey: Self.versionKey)
-        guard current >= Self.minimumVersion else {
-            AppDelegate.logger.error("error restoring terminal: version not supported: expected=\(Self.minimumVersion, privacy: .public), got=\(current, privacy: .public)")
+        guard current >= Self.minimumVersion, current <= Self.version else {
+            AppDelegate.logger.error("error restoring terminal: version not supported: supported=\(Self.minimumVersion, privacy: .public)...\(Self.version, privacy: .public), got=\(current, privacy: .public)")
             return nil
         }
 
@@ -58,8 +59,8 @@ extension TerminalRestorable {
 
 /// The state stored for terminal window restoration.
 final class TerminalRestorableState: TerminalRestorable {
-    static var version: Int { 7 }
-    static var minimumVersion: Int { 5 }
+    static var version: Int { 8 }
+    static var minimumVersion: Int { 8 }
 
     var focusedSurface: String? {
         internalState.focusedSurface
@@ -69,6 +70,18 @@ final class TerminalRestorableState: TerminalRestorable {
     }
     var effectiveFullscreenMode: FullscreenMode? {
         internalState.effectiveFullscreenMode
+    }
+    var workspaces: [WorkspaceState<Ghostty.SurfaceView>]? {
+        internalState.workspaces
+    }
+    var selectedWorkspaceID: UUID? {
+        internalState.selectedWorkspaceID
+    }
+    var selectedTabID: UUID? {
+        internalState.selectedTabID
+    }
+    var physicalID: UUID? {
+        internalState.physicalID
     }
     var tabColor: TerminalTabColor? {
         internalState.tabColor
@@ -155,9 +168,23 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
         // can be found for events from libghostty. This uses the low-level
         // createWindow so that AppKit can place the window wherever it should
         // be.
-        let c = TerminalController.init(
-            appDelegate.ghostty,
-            withSurfaceTree: state.surfaceTree)
+        // v8 stores the entire hierarchy in `workspaces`; the flat
+        // `surfaceTree` field is intentionally empty (see
+        // TerminalRestorableState+InteralState). A structurally invalid
+        // hierarchy must therefore produce a fresh normalized 1×1 graph rather
+        // than silently restoring an empty tree.
+        let c: TerminalController
+        if let workspaces = state.workspaces,
+           let graph = TerminalControllerGraphFactory.makeRestoredV8(
+               workspaces: workspaces,
+               selectedWorkspaceID: state.selectedWorkspaceID,
+               selectedTabID: state.selectedTabID) {
+            c = TerminalController(appDelegate.ghostty, graph: graph)
+        } else {
+            AppDelegate.logger.warning(
+                "restoration: v8 hierarchy missing or invalid; starting a fresh workspace")
+            c = TerminalController(appDelegate.ghostty)
+        }
         guard let window = c.window else {
             completionHandler(nil, TerminalRestoreError.windowDidNotLoad)
             return

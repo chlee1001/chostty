@@ -7,40 +7,13 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
     /// This is necessary because various macOS operations (tab switching, tab bar
     /// visibility changes) can reset the titlebar appearance.
     private var lastSurfaceConfig: Ghostty.SurfaceView.DerivedConfig?
-
-    /// KVO observation for tab group window changes.
-    private var tabGroupWindowsObservation: NSKeyValueObservation?
-    private var tabBarVisibleObservation: NSKeyValueObservation?
-
-    deinit {
-        tabGroupWindowsObservation?.invalidate()
-        tabBarVisibleObservation?.invalidate()
-    }
-
     // MARK: NSWindow
-
-    override func awakeFromNib() {
-        super.awakeFromNib()
-
-        // Setup all the KVO we will use, see the docs for the respective functions
-        // to learn why we need KVO.
-        setupKVO()
-    }
 
     override func becomeMain() {
         super.becomeMain()
 
         guard let lastSurfaceConfig else { return }
         syncAppearance(lastSurfaceConfig)
-
-        // This is a nasty edge case. If we're going from 2 to 1 tab and the tab bar
-        // automatically disappears, then we need to resync our appearance because
-        // at some point macOS replaces the tab views.
-        if tabGroup?.windows.count ?? 0 == 2 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
-                self?.syncAppearance(self?.lastSurfaceConfig ?? lastSurfaceConfig)
-            }
-        }
     }
 
     override func update() {
@@ -67,9 +40,6 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         // Save our config in case we need to reapply
         lastSurfaceConfig = surfaceConfig
 
-        // Every time we change appearance, set KVO up again in case any of our
-        // references changed (e.g. tabGroup is new).
-        setupKVO()
 
         if #available(macOS 26.0, *) {
             syncAppearanceTahoe(surfaceConfig)
@@ -89,11 +59,11 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         if let titlebarView = titlebarContainer?.firstDescendant(withClassName: "NSTitlebarView") {
             titlebarView.wantsLayer = true
 
-            // For glass background styles, use a transparent titlebar to let the glass effect show through
-            // Only apply this for transparent and tabs titlebar styles
+            // For glass background styles, use a transparent titlebar to let the glass effect show through.
+            // `tabs` is aliased to `transparent` at the config read site (IR 3), so it never
+            // reaches here as a distinct value.
             let isGlassStyle = derivedConfig.backgroundBlur.isGlassStyle
-            let isTransparentTitlebar = derivedConfig.macosTitlebarStyle == .transparent ||
-            derivedConfig.macosTitlebarStyle == .tabs
+            let isTransparentTitlebar = derivedConfig.macosTitlebarStyle == .transparent
 
             titlebarView.layer?.backgroundColor = (isGlassStyle && isTransparentTitlebar)
                 ? NSColor.clear.cgColor
@@ -126,68 +96,12 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         titlebarContainer?.firstDescendant(withClassName: "NSTitlebarBackgroundView")
     }
 
-    // MARK: Tab Group Observation
-
-    private func setupKVO() {
-        // See the docs for the respective setup functions for why.
-        setupTabGroupObservation()
-        setupTabBarVisibleObservation()
-    }
-
-    /// Monitors the tabGroup windows value for any changes and resyncs the appearance on change.
-    /// This is necessary because when the windows change, the tab bar and titlebar are recreated
-    /// which breaks our changes.
-    private func setupTabGroupObservation() {
-        // Remove existing observation if any
-        tabGroupWindowsObservation?.invalidate()
-        tabGroupWindowsObservation = nil
-
-        // Check if tabGroup is available
-        guard let tabGroup else { return }
-
-        // Set up KVO observation for the windows array. Whenever it changes
-        // we resync the appearance because it can cause macOS to redraw the
-        // tab bar.
-        tabGroupWindowsObservation = tabGroup.observe(
-            \.windows,
-             options: [.new]
-        ) { [weak self] _, _ in
-            // NOTE: At one point, I guarded this on only if we went from 0 to N
-            // or N to 0 under the assumption that the tab bar would only get
-            // replaced on those cases. This turned out to be false (Tahoe).
-            // It's cheap enough to always redraw this so we should just do it
-            // unconditionally.
-
-            guard let self else { return }
-            guard let lastSurfaceConfig else { return }
-            self.syncAppearance(lastSurfaceConfig)
-        }
-    }
-
-    /// Monitors the tab bar for visibility. This lets the "Show/Hide Tab Bar" manual menu item
-    /// to not break our appearance.
-    private func setupTabBarVisibleObservation() {
-        // Remove existing observation if any
-        tabBarVisibleObservation?.invalidate()
-        tabBarVisibleObservation = nil
-
-        // Set up KVO observation for isTabBarVisible
-        tabBarVisibleObservation = tabGroup?.observe(
-            \.isTabBarVisible,
-             options: [.new]
-        ) { [weak self] _, _ in
-            guard let self else { return }
-            guard let lastSurfaceConfig else { return }
-            self.syncAppearance(lastSurfaceConfig)
-        }
-    }
 
     // MARK: macOS 13 to 15
 
-    // We only need to set this once, but need to do it after the window has been created in order
-    // to determine if the theme is using a very dark background, in which case we don't want to
-    // remove the effect view if the default tab bar is being used since the effect created in
-    // `updateTabsForVeryDarkBackgrounds` creates a confusing visual design.
+    // We only need to set this once, but need to do it after the window has
+    // been created in order for `titlebarContainer`'s descendant view
+    // hierarchy to exist to search.
     private var effectViewIsHidden = false
 
     private func hideEffectView() {

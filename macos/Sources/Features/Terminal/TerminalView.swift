@@ -33,8 +33,33 @@ protocol TerminalViewModel: ObservableObject {
     /// The command palette state.
     var commandPaletteIsShowing: Bool { get set }
 
-    /// The update overlay should be visible.
     var updateOverlayIsVisible: Bool { get }
+
+    /// The per-controller workspace store for virtual workspaces (DR-1/Phase 1).
+    /// Nonoptional: every controller receives a fully-initialized store via the
+    /// graph factory before presentation.
+    var workspaceStore: WorkspaceSessionStore { get }
+
+    /// Select a workspace/tab. The controller drives the store's stage→commit
+    /// transaction and mounts the resulting session at the new generation.
+    func selectSession(workspaceID: UUID, tabID: UUID)
+
+    /// Close a virtual tab by UUID. The controller handles session teardown.
+    func closeWorkspaceTab(_ tabID: UUID)
+
+    /// Close every OTHER virtual tab in `tabID`'s workspace (context-menu
+    /// "Close Other Tabs", anchored at whichever tab was clicked). On
+    /// `BaseTerminalController` (not `TerminalController`-only) so this can
+    /// be a protocol requirement instead of an `as? TerminalController` cast
+    /// that would silently no-op for any other conformer.
+    func closeOtherTabs(fromTab tabID: UUID)
+
+    /// Close every virtual tab to the right of `tabID` in its workspace
+    /// (context-menu "Close Tabs to the Right"). See `closeOtherTabs(fromTab:)`.
+    func closeTabsOnTheRight(fromTab tabID: UUID)
+
+    /// Close a virtual workspace by UUID.
+    func closeWorkspace(_ workspaceID: UUID)
 }
 
 /// The main terminal view. This terminal view supports splits.
@@ -57,6 +82,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     @FocusedValue(\.ghosttySurfaceView) private var focusedSurface
     @FocusedValue(\.ghosttySurfacePwd) private var surfacePwd
     @FocusedValue(\.ghosttySurfaceCellSize) private var cellSize
+    @AppStorage("chostty.sidebarVisible") private var sidebarVisible: Bool = true
+    @AppStorage("chostty.sidebarWidth") private var sidebarWidth: Double = 220
 
     // The pwd of the focused surface as a URL
     private var pwdURL: URL? {
@@ -72,12 +99,62 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
             ErrorView()
         case .ready:
             ZStack {
-                VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    if sidebarVisible {
+                        SidebarView(
+                            workspaceSessionStore: viewModel.workspaceStore,
+                            onToggle: { sidebarVisible.toggle() },
+                            onNewWorkspace: {
+                                guard let appDelegate = NSApp.delegate as? AppDelegate,
+                                      let router = appDelegate.terminalCommands as TerminalCommandRouter?,
+                                      let surface = viewModel.surfaceTree.first else { return }
+                                _ = router.perform(.newWorkspace, source: surface)
+                            },
+                            onSelectTab: { workspaceID, tabID in
+                                viewModel.selectSession(workspaceID: workspaceID, tabID: tabID)
+                            },
+                            onCloseTab: { tabID in
+                                viewModel.closeWorkspaceTab(tabID)
+                            },
+                            onCloseWorkspace: { wsID in
+                                viewModel.closeWorkspace(wsID)
+                            },
+                            onReopenClosedTab: {
+                                guard let appDelegate = NSApp.delegate as? AppDelegate,
+                                      let router = appDelegate.terminalCommands as TerminalCommandRouter?,
+                                      let surface = viewModel.surfaceTree.first else { return }
+                                _ = router.perform(.reopenClosedTab, source: surface)
+                            }
+                        )
+                        .frame(width: sidebarWidth)
+
+                        SidebarDivider(width: $sidebarWidth)
+                    }
+
+                    VStack(spacing: 0) {
                     // If we're running in debug mode we show a warning so that users
                     // know that performance will be degraded.
                     if Ghostty.info.mode == GHOSTTY_BUILD_MODE_DEBUG || Ghostty.info.mode == GHOSTTY_BUILD_MODE_RELEASE_SAFE {
                         DebugBuildWarningView()
                     }
+
+                    // Virtual tab strip. Renders only when the selected
+                    // workspace has more than one tab.
+                    VirtualTabBar(
+                        store: viewModel.workspaceStore,
+                        onSelect: { wsID, tabID in
+                            viewModel.selectSession(workspaceID: wsID, tabID: tabID)
+                        },
+                        onClose: { tabID in
+                            viewModel.closeWorkspaceTab(tabID)
+                        },
+                        onCloseOthers: { tabID in
+                            viewModel.closeOtherTabs(fromTab: tabID)
+                        },
+                        onCloseToTheRight: { tabID in
+                            viewModel.closeTabsOnTheRight(fromTab: tabID)
+                        }
+                    )
 
                     TerminalSplitTreeView(
                         tree: viewModel.surfaceTree,
@@ -106,6 +183,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                }
 
                 if let surfaceView = lastFocusedSurface?.value {
                     TerminalCommandPaletteView(
@@ -121,6 +199,11 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 if viewModel.updateOverlayIsVisible {
                     UpdateOverlay()
                 }
+                // Cmd+B toggles the sidebar
+                Button("") { sidebarVisible.toggle() }
+                    .keyboardShortcut("b", modifiers: .command)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
             }
             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)
         }
@@ -154,11 +237,11 @@ struct DebugBuildWarningView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.yellow)
 
-            Text("You're running a debug build of Ghostty! Performance will be degraded.")
+            Text("You're running a debug build of Chostty! Performance will be degraded.")
                 .padding(.all, 8)
                 .popover(isPresented: $isPopover, arrowEdge: .bottom) {
                     Text("""
-                    Debug builds of Ghostty are very slow and you may experience
+                    Debug builds of Chostty are very slow and you may experience
                     performance problems. Debug builds are only recommended during
                     development.
                     """)
@@ -171,7 +254,7 @@ struct DebugBuildWarningView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Debug build warning")
-        .accessibilityValue("Debug builds of Ghostty are very slow and you may experience performance problems. Debug builds are only recommended during development.")
+        .accessibilityValue("Debug builds of Chostty are very slow and you may experience performance problems. Debug builds are only recommended during development.")
         .accessibilityAddTraits(.isStaticText)
         .onTapGesture {
             isPopover = true

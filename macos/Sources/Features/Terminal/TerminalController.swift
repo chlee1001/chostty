@@ -4,8 +4,228 @@ import SwiftUI
 import Combine
 import GhosttyKit
 
+// MARK: - TerminalControllerGraphFactory
+
+/// Normalized graph factory for ordinary terminal controllers.
+///
+/// Per DR-1 / Phase 1, a complete Workspace → Virtual Tab → Pane graph must
+/// exist **before** observation, registration, or view load. This factory
+/// constructs that graph as a fully initialized ``InitialGraph`` value: it
+/// creates the surface, wraps it in a session, builds the
+/// ``WorkspaceSessionStore`` with a committed initial snapshot, and returns
+/// the live references the controller needs to mount the initial presentation.
+///
+/// The controller receives the graph and never has to lazily bootstrap a
+/// store, surface, or session — `workspaceStore` is therefore nonoptional.
+enum TerminalControllerGraphFactory {
+    /// A fully initialized graph handed to a controller's designated
+    /// initializer. Carries the live store and the references the controller
+    /// must mount for its initial presentation.
+    struct InitialGraph {
+        /// Nonoptional store owning the committed initial snapshot.
+        let store: WorkspaceSessionStore
+        /// The initial (selected) session. The controller presents this first.
+        let initialSession: TerminalSessionState
+        /// The initial surface tree (the initial session's tree).
+        let initialSurfaceTree: SplitTree<Ghostty.SurfaceView>
+        /// Surface to focus on initial mount, if any.
+        let focusedSurface: Ghostty.SurfaceView?
+    }
+
+    /// Creates a 1×1 ordinary graph: one workspace, one tab, one surface built
+    /// from `baseConfig`.
+    static func makeOrdinary(
+        ghostty: Ghostty.App,
+        baseConfig: Ghostty.SurfaceConfiguration? = nil
+    ) -> InitialGraph {
+        guard let ghostty_app = ghostty.app else {
+            preconditionFailure("ghostty.app must be loaded before constructing a graph")
+        }
+        let surface = Ghostty.SurfaceView(ghostty_app, baseConfig: baseConfig)
+        let tree = SplitTree<Ghostty.SurfaceView>(view: surface)
+        return makeFromExistingTree(tree: tree, focusedSurface: surface)
+    }
+
+    /// Creates an ordinary graph that adopts an already-built surface tree
+    /// (e.g. for a dragged-split new window or a v8 restoration).
+    static func makeFromTree(
+        ghostty: Ghostty.App,
+        tree: SplitTree<Ghostty.SurfaceView>
+    ) -> InitialGraph {
+        makeFromExistingTree(tree: tree, focusedSurface: tree.first)
+    }
+
+    /// Creates an empty graph (no surface). Used by controllers that defer
+    /// surface creation until first presentation (e.g. Quick Terminal). The
+    /// store still has one session with an empty surface tree so the snapshot
+    /// is non-empty and `workspaceStore` remains nonoptional on the controller.
+    static func makeEmpty(ghostty: Ghostty.App) -> InitialGraph {
+        makeFromExistingTree(tree: SplitTree<Ghostty.SurfaceView>(), focusedSurface: nil)
+    }
+
+    /// Creates an ordinary graph from a validated v8 restored hierarchy.
+    ///
+    /// Returns `nil` when the persisted hierarchy is structurally invalid
+    /// (no workspaces, an empty workspace, or a selection that does not
+    /// reference a live tab). The caller then falls back to a fresh 1×1 graph
+    /// rather than materializing a partial hierarchy.
+    static func makeRestoredV8(
+        workspaces persisted: [TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>],
+        selectedWorkspaceID: UUID?,
+        selectedTabID: UUID?
+    ) -> InitialGraph? {
+        guard !persisted.isEmpty else { return nil }
+
+        // Reject duplicate identifiers before constructing anything.
+        //
+        // Tab and workspace UUIDs key the store's live-session map and the
+        // owner registry, so a duplicate silently collapses two tabs into one.
+        // A duplicate *surface* UUID is worse: `Ghostty.SurfaceView`'s decoder
+        // spawns a live PTY, so a repeated surface ID materializes two live
+        // views sharing one identity — exactly the state the registry and the
+        // store's surface index cannot represent.
+        var seenWorkspaceIDs = Set<UUID>()
+        var seenTabIDs = Set<UUID>()
+        var seenSurfaceIDs = Set<UUID>()
+        for ws in persisted {
+            guard seenWorkspaceIDs.insert(ws.id).inserted else { return nil }
+            for tab in ws.tabs {
+                guard seenTabIDs.insert(tab.id).inserted else { return nil }
+                for surface in tab.surfaceTree {
+                    guard seenSurfaceIDs.insert(surface.id).inserted else { return nil }
+                }
+            }
+        }
+        var sessions: [WorkspaceSession] = []
+        for ws in persisted {
+            guard !ws.tabs.isEmpty else { return nil }
+            var tabs: [TerminalSessionState] = []
+            for tab in ws.tabs {
+                let session = TerminalSessionState(id: tab.id, surfaceTree: tab.surfaceTree)
+                session.title = tab.title
+                session.pwd = tab.pwd
+                session.tabColor = tab.tabColor
+                session.titleOverride = tab.titleOverride
+                session.isRestorable = tab.isRestorable
+                if let focusedStr = tab.focusedSurfaceID {
+                    session.focusedSurfaceID = UUID(uuidString: focusedStr)
+                }
+                tabs.append(session)
+            }
+            // Drop a persisted per-workspace selection that names a tab which
+            // is not in this workspace.
+            let persistedSelected = ws.selectedTabID.flatMap { id in
+                tabs.contains(where: { $0.id == id }) ? id : nil
+            }
+            sessions.append(WorkspaceSession(
+                id: ws.id,
+                name: ws.name,
+                tabs: tabs,
+                selectedTabID: persistedSelected ?? tabs.first?.id,
+                color: ws.color ?? .none,
+                isCollapsed: ws.isCollapsed ?? false,
+                defaultDirectory: ws.defaultDirectory
+            ))
+        }
+
+        // Resolve selection, falling back to the first workspace/tab.
+        let wsID = selectedWorkspaceID.flatMap { id in
+            sessions.contains(where: { $0.id == id }) ? id : nil
+        } ?? sessions[0].id
+        guard let wsIndex = sessions.firstIndex(where: { $0.id == wsID }) else { return nil }
+        let tabID = selectedTabID.flatMap { id in
+            sessions[wsIndex].tabs.contains(where: { $0.id == id }) ? id : nil
+        } ?? sessions[wsIndex].tabs[0].id
+        guard let selectedSession = sessions[wsIndex].tabs.first(where: { $0.id == tabID }) else {
+            return nil
+        }
+
+        // The store enforces "global selection agrees with the selected
+        // workspace's selectedTabID" in `validate`, but a restored snapshot is
+        // installed directly. Reconcile here so a stale archive cannot seed a
+        // state in which every later commit silently fails validation.
+        sessions[wsIndex] = WorkspaceSession(
+            id: sessions[wsIndex].id,
+            name: sessions[wsIndex].name,
+            tabs: sessions[wsIndex].tabs,
+            selectedTabID: tabID,
+            color: sessions[wsIndex].color,
+            isCollapsed: sessions[wsIndex].isCollapsed,
+            defaultDirectory: sessions[wsIndex].defaultDirectory
+        )
+
+        let store = WorkspaceSessionStore(
+            restoredWorkspaces: sessions,
+            selection: Selection(workspaceID: wsID, tabID: tabID)
+        )
+
+        let focused = selectedSession.surfaceTree.first(where: {
+            $0.id == selectedSession.focusedSurfaceID
+        }) ?? selectedSession.surfaceTree.first
+
+        return InitialGraph(
+            store: store,
+            initialSession: selectedSession,
+            initialSurfaceTree: selectedSession.surfaceTree,
+            focusedSurface: focused
+        )
+    }
+
+    /// Rebuilds a graph from an already-live hierarchy.
+    ///
+    /// Used by window-close undo, where the sessions and their surfaces are
+    /// still alive and simply need a new controller to own them. Unlike
+    /// `makeRestoredV8` nothing is decoded and no surface is created, so no
+    /// process is spawned.
+    static func makeFromWorkspaces(
+        _ workspaces: [WorkspaceSession],
+        selection: Selection
+    ) -> InitialGraph? {
+        guard !workspaces.isEmpty else { return nil }
+
+        // Resolve the selection, falling back within the hierarchy if the
+        // recorded target is gone.
+        let ws = workspaces.first { $0.id == selection.workspaceID } ?? workspaces[0]
+        guard let session = ws.tabs.first(where: { $0.id == selection.tabID })
+            ?? ws.tabs.first(where: { $0.id == ws.selectedTabID })
+            ?? ws.tabs.first else { return nil }
+
+        let store = WorkspaceSessionStore(
+            restoredWorkspaces: workspaces,
+            selection: Selection(workspaceID: ws.id, tabID: session.id)
+        )
+
+        let focused = session.surfaceTree.first(where: {
+            $0.id == session.focusedSurfaceID
+        }) ?? session.surfaceTree.first
+
+        return InitialGraph(
+            store: store,
+            initialSession: session,
+            initialSurfaceTree: session.surfaceTree,
+            focusedSurface: focused
+        )
+    }
+    /// Shared builder that constructs the session and committed store from a
+    /// tree. Surfaces are never created here — the caller supplies the tree.
+    private static func makeFromExistingTree(
+        tree: SplitTree<Ghostty.SurfaceView>,
+        focusedSurface: Ghostty.SurfaceView?
+    ) -> InitialGraph {
+        let session = TerminalSessionState(id: UUID(), surfaceTree: tree)
+        let store = WorkspaceSessionStore(initialSession: session)
+        return InitialGraph(
+            store: store,
+            initialSession: session,
+            initialSurfaceTree: tree,
+            focusedSurface: focusedSurface
+        )
+    }
+}
+
+
 /// A classic, tabbed terminal experience.
-class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
+class TerminalController: BaseTerminalController {
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
 
@@ -21,30 +241,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let nib = switch config.macosTitlebarStyle {
         case .native: "Terminal"
         case .hidden: "TerminalHiddenTitlebar"
-        case .transparent: "TerminalTransparentTitlebar"
-        case .tabs:
-#if compiler(>=6.2)
-            if #available(macOS 26.0, *) {
-                "TerminalTabsTitlebarTahoe"
-            } else {
-                "TerminalTabsTitlebarVentura"
-            }
-#else
-            "TerminalTabsTitlebarVentura"
-#endif
+        // `tabs` is silently aliased to `transparent` at the config read site
+        // (IR 3) — this case is unreachable but kept for switch exhaustivity.
+        case .transparent, .tabs: "TerminalTransparentTitlebar"
         }
 
         return nib
     }
-
-    /// This is set to true when we care about frame changes. This is a small optimization since
-    /// this controller registers a listener for ALL frame change notifications and this lets us bail
-    /// early if we don't care.
-    private var tabListenForFrame: Bool = false
-
-    /// This is the hash value of the last tabGroup.windows array. We use this to detect order
-    /// changes in the list.
-    private var tabWindowsHash: Int = 0
 
     /// The initial window presentation is deferred by one runloop turn in a few places so
     /// AppKit can settle tab/window state first. Close actions must cancel it to avoid
@@ -61,6 +264,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
+    /// Designated initializer that adopts an already-built normalized graph.
+    /// Used by v8 restoration to mount a full multi-workspace hierarchy.
+    init(_ ghostty: Ghostty.App,
+         graph: TerminalControllerGraphFactory.InitialGraph,
+         restorable: Bool = true
+    ) {
+        self.restorable = restorable
+        self.derivedConfig = DerivedConfig(ghostty.config)
+        super.init(ghostty, graph: graph)
+        registerCommonObservers(NotificationCenter.default)
+    }
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -76,10 +291,24 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Setup our initial derived config based on the current app config
         self.derivedConfig = DerivedConfig(ghostty.config)
 
-        super.init(ghostty, baseConfig: base, surfaceTree: tree)
+        // Build the normalized initial graph via the factory so the controller
+        // receives a fully-initialized, nonoptional store/surface/session.
+        let graph: TerminalControllerGraphFactory.InitialGraph
+        if let tree {
+            graph = TerminalControllerGraphFactory.makeFromTree(ghostty: ghostty, tree: tree)
+        } else {
+            graph = TerminalControllerGraphFactory.makeOrdinary(ghostty: ghostty, baseConfig: base)
+        }
 
-        // Setup our notifications for behaviors
-        let center = NotificationCenter.default
+        super.init(ghostty, graph: graph)
+
+        registerCommonObservers(NotificationCenter.default)
+    }
+
+    /// Registers the notification observers shared by every ordinary controller
+    /// initializer. Extracted so the graph-injecting v8 restoration initializer
+    /// and the ordinary initializer register exactly the same set.
+    private func registerCommonObservers(_ center: NotificationCenter) {
         center.addObserver(
             self,
             selector: #selector(onToggleFullscreen),
@@ -122,11 +351,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             name: .ghosttyConfigDidChange,
             object: nil
         )
-        center.addObserver(
-            self,
-            selector: #selector(onFrameDidChange),
-            name: NSView.frameDidChangeNotification,
-            object: nil)
         center.addObserver(
             self,
             selector: #selector(onCloseWindow),
@@ -404,131 +628,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         return c
     }
 
-    static func newTab(
-        _ ghostty: Ghostty.App,
-        from parent: NSWindow? = nil,
-        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
-    ) -> TerminalController? {
-        // Making sure that we're dealing with a TerminalController. If not,
-        // then we just create a new window.
-        guard let parent,
-              let parentController = parent.windowController as? TerminalController else {
-            return newWindow(ghostty, withBaseConfig: baseConfig, withParent: parent)
-        }
-
-        // If our parent is in non-native fullscreen, then new tabs do not work.
-        // See: https://github.com/mitchellh/ghostty/issues/392
-        if let fullscreenStyle = parentController.fullscreenStyle,
-           fullscreenStyle.isFullscreen && !fullscreenStyle.supportsTabs {
-            let alert = NSAlert()
-            alert.messageText = "Cannot Create New Tab"
-            alert.informativeText = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again."
-            alert.addButton(withTitle: "OK")
-            alert.alertStyle = .warning
-            alert.beginSheetModal(for: parent)
-            return nil
-        }
-
-        // Create a new window and add it to the parent
-        let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
-        controller.isBackgroundOpaque = parentController.isBackgroundOpaque
-        guard let window = controller.window else { return controller }
-
-        // If the parent is miniaturized, then macOS exhibits really strange behaviors
-        // so we have to bring it back out.
-        if parent.isMiniaturized { parent.deminiaturize(self) }
-
-        // If our parent tab group already has this window, macOS added it and
-        // we need to remove it so we can set the correct order in the next line.
-        // If we don't do this, macOS gets really confused and the tabbedWindows
-        // state becomes incorrect.
-        //
-        // At the time of writing this code, the only known case this happens
-        // is when the "+" button is clicked in the tab bar.
-        if let tg = parent.tabGroup,
-           tg.windows.firstIndex(of: window) != nil {
-            tg.removeWindow(window)
-        }
-
-        // If we don't allow tabs then we create a new window instead.
-        if window.tabbingMode != .disallowed {
-            // Add the window to the tab group and show it.
-            switch ghostty.config.windowNewTabPosition {
-            case "end":
-                // If we already have a tab group and we want the new tab to open at the end,
-                // then we use the last window in the tab group as the parent.
-                if let last = parent.tabGroup?.windows.last {
-                    last.addTabbedWindowSafely(window, ordered: .above)
-                } else {
-                    fallthrough
-                }
-
-            case "current": fallthrough
-            default:
-                parent.addTabbedWindowSafely(window, ordered: .above)
-            }
-        }
-
-        // We're dispatching this async because otherwise the lastCascadePoint doesn't
-        // take effect. Our best theory is there is some next-event-loop-tick logic
-        // that Cocoa is doing that we need to be after.
-        controller.scheduleInitialPresentation {
-            // Only cascade if we aren't fullscreen and are alone in the tab group.
-            if !window.styleMask.contains(.fullScreen) &&
-                window.tabGroup?.windows.count ?? 1 == 1 {
-                let hasFixedPos = controller.derivedConfig.windowPositionX != nil && controller.derivedConfig.windowPositionY != nil
-                Self.applyCascade(to: window, hasFixedPos: hasFixedPos)
-            }
-
-            controller.showWindow(self)
-            window.makeKeyAndOrderFront(self)
-
-            // We also activate our app so that it becomes front. This may be
-            // necessary for the dock menu.
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        // It takes an event loop cycle until the macOS tabGroup state becomes
-        // consistent which causes our tab labeling to be off when the "+" button
-        // is used in the tab bar. This fixes that. If we can find a more robust
-        // solution we should do that.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            controller.relabelTabs()
-        }
-
-        // Setup our undo
-        if let undoManager = parentController.undoManager {
-            undoManager.setActionName("New Tab")
-            undoManager.registerUndo(
-                withTarget: controller,
-                expiresAfter: controller.undoExpiration
-            ) { target in
-                // Close the tab when undoing. We do this in a DispatchQueue because
-                // for some people on macOS Tahoe this caused a crash and the queue
-                // fixes it.
-                // https://github.com/ghostty-org/ghostty/pull/9512
-                DispatchQueue.main.async {
-                    undoManager.disableUndoRegistration {
-                        target.closeTab(nil)
-                    }
-                }
-
-                // Register redo action
-                undoManager.registerUndo(
-                    withTarget: ghostty,
-                    expiresAfter: target.undoExpiration
-                ) { ghostty in
-                    _ = TerminalController.newTab(
-                        ghostty,
-                        from: parent,
-                        withBaseConfig: baseConfig)
-                }
-            }
-        }
-
-        return controller
-    }
-
     // MARK: - Methods
 
     @objc private func ghosttyConfigDidChange(_ notification: Notification) {
@@ -554,60 +653,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         /// Surface-level config will be updated in
         /// ``Ghostty/Ghostty/SurfaceView/derivedConfig`` then
         /// ``TerminalController/focusedSurfaceDidChange(to:)``
-    }
-
-    /// Update the accessory view of each tab according to the keyboard
-    /// shortcut that activates it (if any). This is called when the key window
-    /// changes, when a window is closed, and when tabs are reordered
-    /// with the mouse.
-    func relabelTabs() {
-        // We only listen for frame changes if we have more than 1 window,
-        // otherwise the accessory view doesn't matter.
-        tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
-
-        if let windows = window?.tabbedWindows as? [TerminalWindow] {
-            for (tab, window) in zip(1..., windows) {
-                // We need to clear any windows beyond this because they have had
-                // a keyEquivalent set previously.
-                guard tab <= 9 else {
-                    window.keyEquivalent = ""
-                    continue
-                }
-
-                if let equiv = ghostty.config.keyboardShortcut(for: "goto_tab:\(tab)") {
-                    window.keyEquivalent = "\(equiv)"
-                } else {
-                    window.keyEquivalent = ""
-                }
-            }
-        }
-    }
-
-    private func fixTabBar() {
-        // We do this to make sure that the tab bar will always re-composite. If we don't,
-        // then the it will "drag" pieces of the background with it when a transparent
-        // window is moved around.
-        //
-        // There might be a better way to make the tab bar "un-lazy", but I can't find it.
-        if let window = window, !window.isOpaque {
-            window.isOpaque = true
-            window.isOpaque = false
-        }
-    }
-
-    @objc private func onFrameDidChange(_ notification: NSNotification) {
-        // This is a huge hack to set the proper shortcut for tab selection
-        // on tab reordering using the mouse. There is no event, delegate, etc.
-        // as far as I can tell for when a tab is manually reordered with the
-        // mouse in a macOS-native tab group, so the way we detect it is setting
-        // the accessoryView "postsFrameChangedNotification" to true, listening
-        // for the view frame to change, comparing the windows list, and
-        // relabeling the tabs.
-        guard tabListenForFrame else { return }
-        guard let v = self.window?.tabbedWindows?.hashValue else { return }
-        guard tabWindowsHash != v else { return }
-        tabWindowsHash = v
-        self.relabelTabs()
     }
 
     override func syncAppearance() {
@@ -670,137 +715,31 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        // More than 1 window means we have tabs and we're closing a tab
-        if window?.tabGroup?.windows.count ?? 0 > 1 {
-            closeTab(nil)
-            return
-        }
-
-        // 1 window, closing the window
-        closeWindow(nil)
+        // Closing the root of the presented tree means closing this VIRTUAL
+        // tab. The old guard asked the AppKit tab-group's window count, which is
+        // permanently <= 1 now that native tabbing is disallowed, so this fell
+        // through to closing the whole window — destroying every other virtual
+        // tab's process. This is the default ⌘W (`close_surface`) and shell
+        // `exit` path, so the degradation hit the most common close gesture.
+        //
+        // `closeTab` already falls back to a window close for the last tab.
+        closeTab(nil)
     }
 
     func closeTabImmediately(registerRedo: Bool = true) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup,
-                tabGroup.windows.count > 1 else {
-            closeWindowImmediately()
+        guard window != nil else { return }
+
+        // Same dead-guard fix as `closeSurface`: with native tabbing disallowed
+        // the tab group never has more than one window, so this used to always
+        // close the whole window. Close the presented virtual tab instead, and
+        // only fall back to a window close when it is the last one.
+        if let presentedID = presentedSessionID,
+           workspaceStore.allSessions.count > 1 {
+            closeWorkspaceTab(presentedID)
             return
         }
 
-        cancelPendingInitialPresentation()
-
-        // Undo
-        if let undoManager, let undoState {
-            // Register undo action to restore the tab
-            undoManager.setActionName("Close Tab")
-            undoManager.registerUndo(
-                withTarget: ghostty,
-                expiresAfter: undoExpiration
-            ) { ghostty in
-                let newController = TerminalController(ghostty, with: undoState)
-
-                if registerRedo {
-                    undoManager.registerUndo(
-                        withTarget: newController,
-                        expiresAfter: newController.undoExpiration
-                    ) { target in
-                        target.closeTabImmediately()
-                    }
-                }
-            }
-        }
-
-        window.close()
-    }
-
-    private func closeOtherTabsImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard tabGroup.windows.count > 1 else { return }
-
-        // Start an undo grouping
-        if let undoManager {
-            undoManager.beginUndoGrouping()
-        }
-        defer {
-            undoManager?.endUndoGrouping()
-        }
-
-        // Iterate through all tabs except the current one.
-        for window in tabGroup.windows where window != self.window {
-            // We ignore any non-terminal tabs. They don't currently exist and we can't
-            // properly undo them anyways so I'd rather ignore them and get a bug report
-            // later if and when we introduce non-terminal tabs.
-            if let controller = window.windowController as? TerminalController {
-                // We must not register a redo, because it messes with our own redo
-                // that we register later.
-                controller.closeTabImmediately(registerRedo: false)
-            }
-        }
-
-        if let undoManager {
-            undoManager.setActionName("Close Other Tabs")
-
-            // We need to register an undo that refocuses this window. Otherwise, the
-            // undo operation above for each tab will steal focus.
-            undoManager.registerUndo(
-                withTarget: self,
-                expiresAfter: undoExpiration
-            ) { target in
-                DispatchQueue.main.async {
-                    target.window?.makeKeyAndOrderFront(nil)
-                }
-
-                // Register redo action
-                undoManager.registerUndo(
-                    withTarget: target,
-                    expiresAfter: target.undoExpiration
-                ) { target in
-                    target.closeOtherTabsImmediately()
-                }
-            }
-        }
-    }
-
-    private func closeTabsOnTheRightImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
-
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
-        guard !tabsToClose.isEmpty else { return }
-
-        undoManager?.beginUndoGrouping()
-        defer {
-            undoManager?.endUndoGrouping()
-        }
-
-        for (_, candidate) in tabsToClose {
-            if let controller = candidate.windowController as? TerminalController {
-                controller.closeTabImmediately(registerRedo: false)
-            }
-        }
-
-        if let undoManager {
-            undoManager.setActionName("Close Tabs to the Right")
-
-            undoManager.registerUndo(
-                withTarget: self,
-                expiresAfter: undoExpiration
-            ) { target in
-                DispatchQueue.main.async {
-                    target.window?.makeKeyAndOrderFront(nil)
-                }
-
-                undoManager.registerUndo(
-                    withTarget: target,
-                    expiresAfter: target.undoExpiration
-                ) { target in
-                    target.closeTabsOnTheRightImmediately()
-                }
-            }
-        }
+        closeWindowImmediately()
     }
 
     /// Closes the current window (including any other tabs) immediately and without
@@ -812,142 +751,53 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         registerUndoForCloseWindow()
 
-        if let tabGroup = window.tabGroup, tabGroup.windows.count > 1 {
-            tabGroup.windows.forEach { window in
-                // Clear out the surfacetree to ensure there is no undo state.
-                // This prevents unnecessary undos registered since AppKit may
-                // process them on later ticks so we can't just disable undo registration.
-                if let controller = window.windowController as? TerminalController {
-                    controller.cancelPendingInitialPresentation()
-                    controller.surfaceTree = .init()
-                }
-
-                window.close()
-            }
-        } else {
-            window.close()
+        // Clear out the surfacetree to ensure there is no undo state.
+        // This prevents unnecessary undos registered since AppKit may
+        // process them on later ticks so we can't just disable undo registration.
+        if workspaceStore.allSessions.count > 1 {
+            surfaceTree = .init()
         }
+
+        window.close()
     }
 
-    /// Registers undo for closing window(s), handling both single windows and tab groups.
+    /// Registers undo for closing this window.
     private func registerUndoForCloseWindow() {
         guard let undoManager, undoManager.isUndoRegistrationEnabled else { return }
-        guard let window else { return }
+        guard let undoState else { return }
 
-        // If we don't have a tab group or we don't have multiple tabs, then
-        // do a normal single window close.
-        guard let tabGroup = window.tabGroup,
-              tabGroup.windows.count > 1 else {
-            // No tabs, just save this window's state
-            if let undoState {
-                // Register undo action to restore the window
-                undoManager.setActionName("Close Window")
-                undoManager.registerUndo(
-                    withTarget: ghostty,
-                    expiresAfter: undoExpiration) { ghostty in
-                        // Restore the undo state
-                        let newController = TerminalController(ghostty, with: undoState)
-
-                        // Register redo action
-                        undoManager.registerUndo(
-                            withTarget: newController,
-                            expiresAfter: newController.undoExpiration) { target in
-                                target.closeWindowImmediately()
-                            }
-                    }
-            }
-
-            return
-        }
-
-        // Multiple windows in tab group - collect all undo states in sorted order
-        // by tab ordering. Also track which window was key.
-        let undoStates = tabGroup.windows
-            .compactMap { tabWindow -> UndoState? in
-                guard let controller = tabWindow.windowController as? TerminalController,
-                      var undoState = controller.undoState else { return nil }
-                // Clear the tab group reference since it is unneeded. It should be
-                // garbage collected but we want to be extra sure we don't try to
-                // restore into it because we're going to recreate it.
-                undoState.tabGroup = nil
-                return undoState
-            }
-            .sorted { (lhs, rhs) in
-                switch (lhs.tabIndex, rhs.tabIndex) {
-                case let (l?, r?): return l < r
-                case (_?, nil): return true
-                case (nil, _?): return false
-                case (nil, nil): return true
-                }
-            }
-
-        // Find the index of the key window in our sorted states. This is a bit verbose
-        // but we only need this for this style of undo so we don't want to add it to
-        // UndoState.
-        let keyWindowIndex: Int?
-        if let keyWindow = tabGroup.windows.first(where: { $0.isKeyWindow }),
-            let keyController = keyWindow.windowController as? TerminalController,
-            let keyUndoState = keyController.undoState {
-            keyWindowIndex = undoStates.firstIndex {
-                $0.tabIndex == keyUndoState.tabIndex }
-        } else {
-            keyWindowIndex = nil
-        }
-
-        // Register undo action to restore all windows
-        guard !undoStates.isEmpty else { return }
-
+        // Register undo action to restore the window
         undoManager.setActionName("Close Window")
         undoManager.registerUndo(
             withTarget: ghostty,
-            expiresAfter: undoExpiration
-        ) { ghostty in
-            // Restore all windows in the tab group
-            let controllers = undoStates.map { undoState in
-                TerminalController(ghostty, with: undoState)
-            }
+            expiresAfter: undoExpiration) { ghostty in
+                // Restore the undo state
+                let newController = TerminalController(ghostty, with: undoState)
 
-            // The first controller becomes the parent window for all tabs.
-            // If we don't have a first controller (shouldn't be possible?)
-            // then we can't restore tabs.
-            guard let firstController = controllers.first else { return }
-
-            // Add all subsequent controllers as tabs to the first window
-            for controller in controllers.dropFirst() {
-                controller.showWindow(nil)
-                if let firstWindow = firstController.window,
-                   let newWindow = controller.window {
-                    firstWindow.addTabbedWindowSafely(newWindow, ordered: .above)
-                }
+                // Register redo action
+                undoManager.registerUndo(
+                    withTarget: newController,
+                    expiresAfter: newController.undoExpiration) { target in
+                        target.closeWindowImmediately()
+                    }
             }
-
-            // Make the appropriate window key. If we had a key window, restore it.
-            // Otherwise, make the last window key.
-            if let keyWindowIndex, keyWindowIndex < controllers.count {
-                controllers[keyWindowIndex].window?.makeKeyAndOrderFront(nil)
-            } else {
-                controllers.last?.window?.makeKeyAndOrderFront(nil)
-            }
-
-            // Register redo action on the first controller
-            undoManager.registerUndo(
-                withTarget: firstController,
-                expiresAfter: firstController.undoExpiration
-            ) { target in
-                target.closeWindowImmediately()
-            }
-        }
     }
 
     /// Close all windows, asking for confirmation if necessary.
     static func closeAllWindows() {
-        // The window we use for confirmations. Try to find the first window that
-        // needs quit confirmation. This lets us attach the confirmation to something
-        // that is running.
-        guard let confirmWindow = all
-            .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })?
-            .surfaceTree.first(where: { $0.needsConfirmQuit })?
-            .window
+        // The window we use for confirmations. Find the first controller that
+        // owns a surface needing confirmation, then anchor to THAT CONTROLLER's
+        // window.
+        //
+        // Anchoring to the surface's own `window` would be wrong: only the
+        // presented virtual tab is in the view hierarchy, so a background tab's
+        // SurfaceView has `window == nil`. Whenever the first confirm-needing
+        // surface lived in a background tab, the guard fell through and closed
+        // every window with no prompt at all.
+        guard let confirmController = all.first(where: {
+                  $0.allWorkspaceSurfaces.contains(where: { $0.needsConfirmQuit })
+              }),
+              let confirmWindow = confirmController.window
         else {
             closeAllWindowsImmediately()
             return
@@ -984,13 +834,29 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let frame: NSRect
         let surfaceTree: SplitTree<Ghostty.SurfaceView>
         let focusedSurface: UUID?
-        let tabIndex: Int?
-        weak var tabGroup: NSWindowTabGroup?
         let tabColor: TerminalTabColor
+
+        /// The full virtual hierarchy this window owned.
+        ///
+        /// `surfaceTree` alone only describes the *presented* tab, so restoring
+        /// from it would silently discard every other virtual tab and its live
+        /// process. Undoing a window close has to bring the whole window back,
+        /// not just the tab that happened to be in front.
+        let workspaces: [WorkspaceSession]
+        let selection: Selection
     }
 
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
-        self.init(ghostty, withSurfaceTree: undoState.surfaceTree)
+        // Rebuild the entire virtual hierarchy, not just the presented tab, so
+        // undoing a window close returns every tab and keeps its process.
+        if !undoState.workspaces.isEmpty,
+           let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
+               undoState.workspaces,
+               selection: undoState.selection) {
+            self.init(ghostty, graph: graph)
+        } else {
+            self.init(ghostty, withSurfaceTree: undoState.surfaceTree)
+        }
 
         // Show the window and restore its frame
         showWindow(nil)
@@ -999,22 +865,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             if let terminalWindow = window as? TerminalWindow {
                 terminalWindow.tabColor = undoState.tabColor
             }
-
-            // If we have a tab group and index, restore the tab to its original position
-            if let tabGroup = undoState.tabGroup,
-               let tabIndex = undoState.tabIndex {
-                if tabIndex < tabGroup.windows.count {
-                    // Find the window that is currently at that index
-                    let currentWindow = tabGroup.windows[tabIndex]
-                    currentWindow.addTabbedWindowSafely(window, ordered: .below)
-                } else {
-                    tabGroup.windows.last?.addTabbedWindowSafely(window, ordered: .above)
-                }
-
-                // Make it the key window
-                window.makeKeyAndOrderFront(nil)
-            }
-
             // Restore focus to the previously focused surface
             if let focusedUUID = undoState.focusedSurface,
                let focusTarget = surfaceTree.first(where: { $0.id == focusedUUID }) {
@@ -1040,9 +890,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             frame: window.frame,
             surfaceTree: surfaceTree,
             focusedSurface: focusedSurface?.id,
-            tabIndex: window.tabGroup?.windows.firstIndex(of: window),
-            tabGroup: window.tabGroup,
-            tabColor: (window as? TerminalWindow)?.tabColor ?? .none)
+            tabColor: (window as? TerminalWindow)?.tabColor ?? .none,
+            workspaces: workspaceStore.snapshot.workspaces,
+            selection: workspaceStore.snapshot.selection)
     }
 
     // MARK: - NSWindowController
@@ -1102,25 +952,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             }
         }
 
-        // In various situations, macOS automatically tabs new windows. Ghostty handles
-        // its own tabbing so we DONT want this behavior. This detects this scenario and undoes
-        // it.
-        //
-        // Example scenarios where this happens:
-        //   - When the system user tabbing preference is "always"
-        //   - When the "+" button in the tab bar is clicked
-        //
-        // We don't run this logic in fullscreen because in fullscreen this will end up
-        // removing the window and putting it into its own dedicated fullscreen, which is not
-        // the expected or desired behavior of anyone I've found.
-        if !window.styleMask.contains(.fullScreen) {
-            // If we have more than 1 window in our tab group we know we're a new window.
-            // Since Ghostty manages tabbing manually this will never be more than one
-            // at this point in the AppKit lifecycle (we add to the group after this).
-            if let tabGroup = window.tabGroup, tabGroup.windows.count > 1 {
-                window.tabGroup?.removeWindow(window)
-            }
-        }
 
         // Apply any additional appearance-related properties to the new window. We
         // apply this based on the root config but change it later based on surface
@@ -1133,9 +964,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard let terminalWindow = window as? TerminalWindow else { return }
 
         // Set the initial window position. This must happen after the window
-        // is fully set up (content view, toolbar, default size) so that
-        // decorations added by subclass awakeFromNib (e.g. toolbar for tabs
-        // style) don't change the frame after the position is restored.
+        // is fully set up (content view, default size, style mask) so that
+        // frame-affecting changes from subclass awakeFromNib (e.g.
+        // HiddenTitlebarTerminalWindow's style mask change) don't move the
+        // frame after the position is restored.
         let originChanged = terminalWindow.setInitialWindowPosition(
             x: derivedConfig.windowPositionX,
             y: derivedConfig.windowPositionY,
@@ -1156,28 +988,22 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.showWindow(sender)
     }
 
-    // Shows the "+" button in the tab bar, responds to that click.
+    // AppKit calls this when a native tab bar's "+" button is clicked. Native
+    // tabbing is disallowed, so AppKit never synthesizes that button — this
+    // override exists only in case some other code path (e.g. AppleScript)
+    // reaches it directly, and routes to virtual tab creation instead.
     override func newWindowForTab(_ sender: Any?) {
-        // Trigger the ghostty core event logic for a new tab.
-        guard let surface = self.focusedSurface?.surface else { return }
-        ghostty.newTab(surface: surface)
+        newTab(sender)
     }
 
     // MARK: NSWindowDelegate
 
-    // TabGroupCloseCoordinator.Controller
-    lazy private(set) var tabGroupCloseCoordinator = TabGroupCloseCoordinator()
-
     override func windowShouldClose(_ sender: NSWindow) -> Bool {
-        tabGroupCloseCoordinator.windowShouldClose(sender) { [weak self] scope in
-            guard let self else { return }
-            switch scope {
-            case .tab: closeTab(nil)
-            case .window:
-                guard self.window?.isFirstWindowInTabGroup ?? false else { return }
-                closeWindow(nil)
-            }
-        }
+        // One NSWindow per controller: a red-X close always closes the
+        // whole virtual hierarchy, after the existing multi-surface
+        // confirmation in `closeWindow`. No tab/window ambiguity to
+        // debounce anymore.
+        closeWindow(nil)
 
         // We will always explicitly close the window using the above
         return false
@@ -1186,14 +1012,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
-        self.relabelTabs()
 
         // If we remove a window, we reset the cascade point to the key window so that
         // the next window cascade's from that one.
         if let focusedWindow = NSApplication.shared.keyWindow {
-            // If we are NOT the focused window, then we are a tabbed window. If we
-            // are closing a tabbed window, we want to set the cascade point to be
-            // the next cascade point from this window.
+            // With native tabbing disallowed, every window is its own
+            // hierarchy — if we are not the focused window, we are simply
+            // another physical window being closed, and we want to set the
+            // cascade point to be the next cascade point from this window.
             if focusedWindow != window {
                 // The cascadeTopLeft call below should NOT move the window. Starting with
                 // macOS 15, we found that specifically when used with the new window snapping
@@ -1220,8 +1046,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func windowDidBecomeKey(_ notification: Notification) {
         super.windowDidBecomeKey(notification)
-        self.relabelTabs()
-        self.fixTabBar()
         terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: true)
     }
 
@@ -1232,7 +1056,6 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func windowDidMove(_ notification: Notification) {
         super.windowDidMove(notification)
-        self.fixTabBar()
 
         // Whenever we move save our last position for the next start.
         LastWindowPosition.shared.save(window)
@@ -1270,89 +1093,69 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func newTab(_ sender: Any?) {
-        guard let surface = focusedSurface?.surface else { return }
-        ghostty.newTab(surface: surface)
+        // Route through the router's single implementation point rather than
+        // building the tab here. Doing it inline bypassed
+        // `resolvedConfig(workspace:source:context:baseConfig:)`, so the menu
+        // item ignored the workspace's default directory while ⌘T honored it —
+        // the same command producing two different working directories.
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
+        _ = appDelegate.terminalCommands.createVirtualTab(source: focusedSurface)
     }
 
     @IBAction func closeTab(_ sender: Any?) {
-        guard let window = window else { return }
-        guard window.tabGroup?.windows.count ?? 0 > 1 else {
+        // "Close Tab" closes the presented VIRTUAL tab. The old guard asked the
+        // AppKit tab-group's window count, which is always ≤ 1 now that native
+        // tabbing is disallowed, so this action degraded into closing the whole
+        // window — taking every other virtual tab's process with it.
+        guard let presentedID = presentedSessionID else {
+            closeWindow(sender)
+            return
+        }
+
+        // The last remaining tab in the window is a window close, not a tab close.
+        guard workspaceStore.allSessions.count > 1 else {
             closeWindow(sender)
             return
         }
 
         guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
-            closeTabImmediately()
+            closeWorkspaceTab(presentedID)
             return
         }
 
         confirmClose(
             messageText: "Close Tab?",
             informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
-        ) {
-            self.closeTabImmediately()
+        ) { [weak self] in
+            self?.closeWorkspaceTab(presentedID)
         }
+    }
+
+    /// Whether "Close Other Tabs" should be enabled for the given workspace's
+    /// tabs. Extracted as a pure, window-free function so `validateMenuItem`
+    /// and the VirtualTabBar's item context menu can share one definition
+    /// instead of drifting — PM-9 requires the same predicate at every
+    /// affordance, and this is directly testable without a live controller.
+    static func canCloseOtherTabs(tabs: [TerminalSessionState]) -> Bool {
+        tabs.count > 1
+    }
+
+    /// Whether "Close Tabs to the Right" should be enabled: `selectedTabID`
+    /// must resolve to a tab with at least one tab after it in `tabs`.
+    static func canCloseTabsOnTheRight(tabs: [TerminalSessionState], selectedTabID: UUID?) -> Bool {
+        guard let selectedTabID,
+              let currentIndex = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return false }
+        return tabs.indices.contains { $0 > currentIndex }
     }
 
     @IBAction func closeOtherTabs(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-
-        // If we only have one window then we have no other tabs to close
-        guard tabGroup.windows.count > 1 else { return }
-
-        // Check if we have to confirm close.
-        guard tabGroup.windows.contains(where: { window in
-            // Ignore ourself
-            if window == self.window { return false }
-
-            // Ignore non-terminals
-            guard let controller = window.windowController as? TerminalController else {
-                return false
-            }
-
-            // Check if any surfaces require confirmation
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
-        }) else {
-            self.closeOtherTabsImmediately()
-            return
-        }
-
-        confirmClose(
-            messageText: "Close Other Tabs?",
-            informativeText: "At least one other tab still has a running process. If you close the tab the process will be killed."
-        ) {
-            self.closeOtherTabsImmediately()
-        }
+        guard let presentedID = presentedSessionID else { return }
+        closeOtherTabs(fromTab: presentedID)
     }
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
-
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
-        guard !tabsToClose.isEmpty else { return }
-
-        let needsConfirm = tabsToClose.contains { (_, candidate) in
-            guard let controller = candidate.windowController as? TerminalController else {
-                return false
-            }
-
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
-        }
-
-        if !needsConfirm {
-            self.closeTabsOnTheRightImmediately()
-            return
-        }
-
-        confirmClose(
-            messageText: "Close Tabs on the Right?",
-            informativeText: "At least one tab to the right still has a running process. If you close the tab the process will be killed."
-        ) {
-            self.closeTabsOnTheRightImmediately()
-        }
+        guard let presentedID = presentedSessionID else { return }
+        closeTabsOnTheRight(fromTab: presentedID)
     }
 
     @IBAction func returnToDefaultSize(_ sender: Any?) {
@@ -1363,13 +1166,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @IBAction override func closeWindow(_ sender: Any?) {
         guard let window = window else { return }
 
-        // We need to check all the windows in our tab group for confirmation
-        // if we're closing the window. If we don't have a tabgroup for any
-        // reason we check ourselves.
-        let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
-        guard let confirmController = windows
-            .compactMap({ $0.windowController as? TerminalController })
-            .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })
+        // One NSWindow per controller, so this window's own controller is the
+        // only candidate; `allWorkspaceSurfaces` already counts every virtual
+        // tab this window owns across all its workspaces.
+        guard let confirmController = window.windowController as? TerminalController,
+              confirmController.allWorkspaceSurfaces.contains(where: { $0.needsConfirmQuit })
         else {
             closeWindowImmediately()
             return
@@ -1434,102 +1235,65 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @objc private func onMoveTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the move action
         guard let action = notification.userInfo?[Notification.Name.GhosttyMoveTabKey] as? Ghostty.Action.MoveTab else { return }
         guard action.amount != 0 else { return }
 
-        // Determine our current selected index
-        guard let windowController = window.windowController else { return }
-        guard let tabGroup = windowController.window?.tabGroup else { return }
-        guard let selectedWindow = tabGroup.selectedWindow else { return }
-        let tabbedWindows = tabGroup.windows
-        guard tabbedWindows.count > 0 else { return }
-        guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
+        // Determine our current selected index within the presented workspace
+        guard let tabID = presentedSessionID,
+              let workspace = workspaceStore.workspace(forTabID: tabID),
+              let selectedIndex = workspace.tabs.firstIndex(where: { $0.id == tabID }) else { return }
 
         // Determine the final index we want to insert our tab
         let finalIndex: Int
         if action.amount < 0 {
             finalIndex = selectedIndex - min(selectedIndex, -action.amount)
         } else {
-            let remaining: Int = tabbedWindows.count - 1 - selectedIndex
+            let remaining: Int = workspace.tabs.count - 1 - selectedIndex
             finalIndex = selectedIndex + min(remaining, action.amount)
         }
 
         // If our index is the same we do nothing
         guard finalIndex != selectedIndex else { return }
 
-        // Get our target window
-        let targetWindow = tabbedWindows[finalIndex]
-
-        // Moving tabs on macOS 26 RC causes very nasty visual glitches in the titlebar tabs.
-        // I believe this is due to messed up constraints for our hacky tab bar. I'd like to
-        // find a better workaround. For now, this improves things dramatically.
-        //
-        // Reproduction: titlebar tabs, create two tabs, "move tab left"
-        if #available(macOS 26, *) {
-            if window is TitlebarTabsTahoeTerminalWindow {
-                tabGroup.removeWindow(selectedWindow)
-                targetWindow.addTabbedWindowSafely(selectedWindow, ordered: action.amount < 0 ? .below : .above)
-                DispatchQueue.main.async {
-                    selectedWindow.makeKey()
-                }
-
-                return
-            }
-        }
-
-        // Begin a group of window operations to minimize visual updates
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-
-        // Remove and re-add the window in the correct position
-        tabGroup.removeWindow(selectedWindow)
-        targetWindow.addTabbedWindowSafely(selectedWindow, ordered: action.amount < 0 ? .below : .above)
-
-        // Ensure our window remains selected
-        selectedWindow.makeKey()
-
-        NSAnimationContext.endGrouping()
+        workspaceStore.moveTab(tabID, toWorkspace: workspace.id, at: finalIndex)
     }
 
     @objc private func onGotoTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the tab index from the notification
         guard let tabEnumAny = notification.userInfo?[Ghostty.Notification.GotoTabKey] else { return }
         guard let tabEnum = tabEnumAny as? ghostty_action_goto_tab_e else { return }
         let tabIndex: Int32 = tabEnum.rawValue
 
-        guard let windowController = window.windowController else { return }
-        guard let tabGroup = windowController.window?.tabGroup else { return }
-        let tabbedWindows = tabGroup.windows
+        guard let currentTabID = presentedSessionID,
+              let workspace = workspaceStore.workspace(forTabID: currentTabID) else { return }
+        let tabs = workspace.tabs
 
         // This will be the index we want to actual go to
         let finalIndex: Int
 
         // An index that is invalid is used to signal some special values.
         if tabIndex <= 0 {
-            guard let selectedWindow = tabGroup.selectedWindow else { return }
-            guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
+            guard let selectedIndex = tabs.firstIndex(where: { $0.id == currentTabID }) else { return }
 
             if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
                 if selectedIndex == 0 {
-                    finalIndex = tabbedWindows.count - 1
+                    finalIndex = tabs.count - 1
                 } else {
                     finalIndex = selectedIndex - 1
                 }
             } else if tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue {
-                if selectedIndex == tabbedWindows.count - 1 {
+                if selectedIndex == tabs.count - 1 {
                     finalIndex = 0
                 } else {
                     finalIndex = selectedIndex + 1
                 }
             } else if tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue {
-                finalIndex = tabbedWindows.count - 1
+                finalIndex = tabs.count - 1
             } else {
                 return
             }
@@ -1538,12 +1302,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             guard tabIndex >= 1 else { return }
 
             // If our index is outside our boundary then we use the max
-            finalIndex = min(Int(tabIndex - 1), tabbedWindows.count - 1)
+            finalIndex = min(Int(tabIndex - 1), tabs.count - 1)
         }
 
         guard finalIndex >= 0 else { return }
-        let targetWindow = tabbedWindows[finalIndex]
-        targetWindow.makeKeyAndOrderFront(nil)
+        workspaceStore.selectTab(tabs[finalIndex].id)
     }
 
     @objc private func onCloseTab(notification: SwiftUI.Notification) {
@@ -1626,10 +1389,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(closeTabsOnTheRight):
-            guard let window, let tabGroup = window.tabGroup else { return false }
-            guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
-            return tabGroup.windows.indices.contains { $0 > currentIndex }
+        case #selector(closeOtherTabs(_:)):
+            guard let presentedID = presentedSessionID,
+                  let ws = workspaceStore.workspace(forTabID: presentedID) else { return false }
+            return Self.canCloseOtherTabs(tabs: ws.tabs)
+
+        case #selector(closeTabsOnTheRight(_:)):
+            guard let presentedID = presentedSessionID,
+                  let ws = workspaceStore.workspace(forTabID: presentedID) else { return false }
+            return Self.canCloseTabsOnTheRight(tabs: ws.tabs, selectedTabID: presentedID)
 
         case #selector(returnToDefaultSize):
             guard let window else { return false }
