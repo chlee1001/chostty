@@ -64,7 +64,17 @@ fi
 # Inside out. --deep is deprecated and skips some nested code, so walk the
 # known nested bundles explicitly and let a new one show up as a verify
 # failure rather than shipping unsigned.
-sign() { [ -e "$1" ] && codesign --force --timestamp=none --sign - "$1" >/dev/null 2>&1 || true; }
+# Absent nested bundles are fine; a codesign that runs and fails is not. The
+# earlier form sent both down the same `|| true` and hid the error output, so a
+# nested bundle that could not be signed only surfaced later as a confusing
+# --verify failure.
+sign() {
+	[ -e "$1" ] || return 0
+	codesign --force --timestamp=none --sign - "$1" || {
+		echo "failed to sign nested bundle: $1" >&2
+		exit 1
+	}
+}
 
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 if [ -d "$SPARKLE" ]; then

@@ -43,6 +43,13 @@ jobs:
 
       # UI tests need accessibility permissions no CI runner grants, so the
       # test plan skips them here exactly as macos/build.nu does locally.
+      #
+      # Parallel testing is off because the runner cannot afford it. Every
+      # suite that builds a real TerminalController stands up a Ghostty.App
+      # with windows and a Metal surface; run concurrently on a hosted VM the
+      # test host exits mid-run and xcodebuild reports every unfinished test as
+      # a failure, which looks like a broad regression rather than one dead
+      # process. Serial execution is slower and reports honestly.
       - name: Test
         run: |
           xcodebuild \
@@ -50,6 +57,7 @@ jobs:
             -scheme Ghostty \
             -configuration Debug \
             -skip-testing GhosttyUITests \
+            -parallel-testing-enabled NO \
             SYMROOT="$PWD/macos/build" \
             test
 
