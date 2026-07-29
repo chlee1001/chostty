@@ -1,8 +1,9 @@
 # Chostty
 
-A private fork of [Ghostty](https://github.com/ghostty-org/ghostty) that replaces
-macOS native window tabs with an in-window Workspace → Tab → Pane hierarchy,
-driven from a left sidebar.
+A macOS fork of [Ghostty](https://github.com/ghostty-org/ghostty) that replaces
+native window tabs with an in-window Workspace → Tab → Pane hierarchy, driven
+from a left sidebar. `README.md` is the front door; this file records what
+changed and why.
 
 ## Licence
 
@@ -11,8 +12,8 @@ commercial redistribution, with one obligation: the original copyright notice
 and permission notice must be retained in all copies. `LICENSE` keeps the
 upstream notice verbatim and adds this fork's line beneath it.
 
-Nothing here needs to be published, and there is no copyleft obligation. If this
-fork is ever distributed, ship `LICENSE` with it.
+There is no copyleft obligation. Releases are published from this repository,
+so `LICENSE` ships inside the bundle and in the source tree.
 
 ## What differs from upstream
 
@@ -72,6 +73,23 @@ xattr -cr macos/build/Debug/Chostty.app
 `xattr -cr` before the test step is required: launching the app re-adds extended
 attributes that fail the test host's codesign step.
 
+## Releasing
+
+Tagging `v<semver>` runs `.github/workflows/release.yml`: Zig builds
+GhosttyKit, Xcode builds the app, and `macos/scripts/package-release.sh` stamps,
+signs and packages it. The script refuses to publish a bundle that carries
+`SUPublicEDKey` or that is not a universal binary — a runner that quietly
+produced a single-architecture build would otherwise package and ship fine.
+
+Signing is ad-hoc because this fork has no Developer ID. That is a distribution
+consequence, not a build shortcut: every download is quarantined until the user
+runs `xattr -cr`, and the release notes say so rather than letting it look like
+a corrupt artifact.
+
+`.github/workflows/ci.yml` runs the audit, shellcheck, the build and the test
+suite on pull requests. UI tests are skipped there for the same reason
+`macos/build.nu` skips them: no CI runner grants accessibility permission.
+
 ## Verification
 
 The suite and `macos/scripts/native-tab-audit.sh` run on every change. Hosting
@@ -110,11 +128,15 @@ hard-coded.
 ## Working on this
 
 The build directories hold `Chostty.app` copies carrying the same bundle
-identifier as the installed one. Once LaunchServices has seen them,
+identifier as the installed one, and Xcode registers each one with
+LaunchServices as the last step of every build (`RegisterWithLaunchServices` →
+`lsregister -f -R -trusted`). Once that has happened,
 `tell application "Chostty"` and `tell application id "com.chostty.app"` can
 resolve to a copy that is not running and block in `AESendMessage` forever,
 which looks exactly like the app hanging — it is not; its main thread is idle.
-Unregister them before any scripting work:
+
+Unregistering fixes it until the next build re-registers, so do it immediately
+before scripting work rather than once:
 
     lsregister -u "$PWD/macos/build/Release/Chostty.app"
 

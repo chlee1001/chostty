@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      # The native-tab audit is pure text analysis, so run it before the long
+      # build. It is the gate that keeps AppKit's window tabbing from creeping
+      # back in, and it fails in seconds when it fails.
+      - name: Native tab audit
+        run: ./macos/scripts/native-tab-audit.sh
+
+      - name: Shell scripts
+        run: shellcheck macos/scripts/*.sh scripts/*.sh
+
+      - name: Build GhosttyKit
+        run: zig build -Demit-macos-app=false
+
+      # UI tests need accessibility permissions no CI runner grants, so the
+      # test plan skips them here exactly as macos/build.nu does locally.
+      - name: Test
+        run: |
+          xcodebuild \
+            -project macos/Ghostty.xcodeproj \
+            -scheme Ghostty \
+            -configuration Debug \
+            -skip-testing GhosttyUITests \
+            SYMROOT="$PWD/macos/build" \
+            test
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ~/Library/Developer/Xcode/DerivedData/**/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7

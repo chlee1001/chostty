@@ -19,8 +19,7 @@
 #                                      is currently failing, so seeding never
 #                                      launders a red tree. A SOFT-only
 #                                      failure (attribution drift with no
-#                                      HARD hit, i.e. `soft_fail=1` and
-#                                      `hard_fail=0`) does NOT block seeding
+#                                      HARD hit) does NOT block seeding
 #                                      — that IS the reseed workflow after a
 #                                      reviewed, intentional edit near a
 #                                      soft-token line. No file deletion is
@@ -83,7 +82,6 @@ ALLOWLIST=(
 )
 
 hard_fail=0
-soft_fail=0
 fail=0
 report() {
   if [ "$WARN" = "1" ]; then
@@ -156,7 +154,6 @@ soft_actual=$(
 
 if [ -f "$EXPECTED_SOFT" ]; then
   if ! diff_out=$(diff <(echo "$soft_actual") <(sort "$EXPECTED_SOFT")); then
-    soft_fail=1
     report "soft-token attribution drifted from $EXPECTED_SOFT:"$'\n'"$diff_out"
   fi
 else
