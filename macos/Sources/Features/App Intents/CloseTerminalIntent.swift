@@ -27,10 +27,18 @@ struct CloseTerminalIntent: AppIntent {
             throw GhosttyIntentError.surfaceNotFound
         }
 
-        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else {
-            return .result()
+        // Resolve the owning tab FIRST, mirroring
+        // `BaseTerminalController.ghosttyDidPresentTerminal`: a `TerminalEntity`
+        // built from `allWorkspaceSurfaces` may address a surface whose tab is
+        // not currently presented, so `surfaceView.window` can be nil even
+        // though the surface is perfectly live. `closeSurface` is scoped to
+        // the presented tree, so the owning tab must be selected first.
+        guard let controller = NSApp.owningController(forSurfaceID: surfaceView.id),
+              let address = controller.workspaceStore.address(forSurfaceID: surfaceView.id) else {
+            throw GhosttyIntentError.surfaceNotFound
         }
 
+        controller.selectSession(workspaceID: address.workspaceID, tabID: address.tabID)
         controller.closeSurface(surfaceView, withConfirmation: false)
         return .result()
     }

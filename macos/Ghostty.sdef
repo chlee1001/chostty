@@ -72,6 +72,7 @@
       <property name="focused terminal" code="GTfT" type="terminal" access="r" description="The currently focused terminal surface in this tab.">
         <cocoa key="focusedTerminal"/>
       </property>
+      <property name="workspace name" code="GTwN" type="text" access="r" description="Name of the workspace this tab belongs to."/>
       <responds-to command="select tab">
         <cocoa method="handleSelectTabCommand:"/>
       </responds-to>

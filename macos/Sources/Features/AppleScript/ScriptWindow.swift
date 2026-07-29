@@ -2,26 +2,29 @@ import AppKit
 
 /// AppleScript-facing wrapper around a logical Ghostty window.
 ///
-/// In AppKit, each tab is often its own `NSWindow`. AppleScript users, however,
-/// expect a single window object containing a list of tabs.
+/// `ScriptWindow` presents one object per physical terminal window
+/// controller. Its `tabs` collection is the Phase 5 flattened view: every
+/// virtual tab across every workspace the controller owns, not just the
+/// (at most one) AppKit tab-group member native tabbing used to expose. See
+/// `ScriptTab`'s doc for the resulting identity/enumeration contract.
 ///
-/// `ScriptWindow` is that compatibility layer:
-/// - It presents one object per tab group.
-/// - It translates tab-group state into `tabs` and `selected tab`.
 /// - It exposes stable IDs that Cocoa scripting can resolve later.
 @MainActor
 @objc(GhosttyScriptWindow)
 final class ScriptWindow: NSObject {
     /// Stable identifier used by AppleScript `window id "..."` references.
     ///
-    /// We precompute this once so the object keeps a consistent ID for its whole
-    /// lifetime, even if AppKit window bookkeeping changes after creation.
+    /// Derived from the controller's `physicalUUID`, not `NSWindow` object
+    /// identity. `physicalUUID` is stable for the controller's whole
+    /// lifetime, including before its `NSWindow` exists — but it is freshly
+    /// minted on every launch (`physicalUUID = UUID()` in
+    /// `BaseTerminalController.init`) and is never rehydrated from the `v8`
+    /// restorable state's persisted `physicalID`, so a window's scripting
+    /// `id` does NOT agree with its own value from a prior run after
+    /// relaunch. Only same-run lifetime stability is guaranteed.
     let stableID: String
 
-    /// Canonical representative for this scripting window's tab group.
-    ///
-    /// We intentionally keep only one controller reference; full tab membership
-    /// is derived lazily from current AppKit state whenever needed.
+    /// The physical terminal window controller this scripting window wraps.
     private weak var primaryController: BaseTerminalController?
 
     /// `scriptWindows` in `AppDelegate+AppleScript` constructs these objects.
@@ -54,23 +57,34 @@ final class ScriptWindow: NSObject {
 
     /// Exposed as the AppleScript `tabs` element.
     ///
-    /// Cocoa asks for this collection when a script evaluates `tabs of window ...`
-    /// or any tab-filter expression. We build wrappers from live controller state
-    /// so tab additions/removals are reflected immediately.
+    /// Flattened across every virtual workspace this controller owns, in
+    /// EXACTLY `WorkspaceSessionStore.allSessions` order — workspace, then
+    /// tab within it — so scripting order and persistence order can never
+    /// diverge. This is a deliberate behavior change from the pre-flattening
+    /// wrapper (which returned one entry per AppKit tab-group member, at most
+    /// one since native tabbing was already gone): a window with 2
+    /// workspaces of 2 tabs each now reports 4 tabs instead of 1.
     @objc(tabs)
     var tabs: [ScriptTab] {
         guard NSApp.isAppleScriptEnabled else { return [] }
-        return controllers.map { ScriptTab(window: self, controller: $0) }
+        guard let primaryController else { return [] }
+        return primaryController.workspaceStore.allSessions.map {
+            ScriptTab(window: self, controller: primaryController, session: $0)
+        }
     }
 
     /// Exposed as the AppleScript `selected tab` property.
     ///
-    /// This powers expressions like `selected tab of window 1`.
+    /// This powers expressions like `selected tab of window 1`. Compares
+    /// against the store's desired `selection.tabID`, not merely what is
+    /// currently mounted, so this stays correct mid-transaction.
     @objc(selectedTab)
     var selectedTab: ScriptTab? {
         guard NSApp.isAppleScriptEnabled else { return nil }
-        guard let selectedController else { return nil }
-        return ScriptTab(window: self, controller: selectedController)
+        guard let primaryController else { return nil }
+        let selectedID = primaryController.workspaceStore.snapshot.selection.tabID
+        guard let session = primaryController.workspaceStore.session(forTabID: selectedID) else { return nil }
+        return ScriptTab(window: self, controller: primaryController, session: session)
     }
 
     /// Enables unique-ID lookup for `tabs` references.
@@ -82,42 +96,33 @@ final class ScriptWindow: NSObject {
     @objc(valueInTabsWithUniqueID:)
     func valueInTabs(uniqueID: String) -> ScriptTab? {
         guard NSApp.isAppleScriptEnabled else { return nil }
-        guard let controller = controller(tabID: uniqueID) else { return nil }
-        return ScriptTab(window: self, controller: controller)
+        guard let primaryController else { return nil }
+        guard let session = primaryController.workspaceStore.allSessions.first(where: {
+            ScriptTab.stableID(session: $0) == uniqueID
+        }) else { return nil }
+        return ScriptTab(window: self, controller: primaryController, session: session)
     }
 
     /// Exposed as the AppleScript `terminals` element on a window.
     ///
-    /// Returns all terminal surfaces across every tab in this window.
+    /// Backed by `allWorkspaceSurfaces` so every virtual tab's surfaces are
+    /// reachable, not just the presented tab's `surfaceTree` — mirrors the
+    /// `tab` flattening.
     @objc(terminals)
     var terminals: [ScriptTerminal] {
         guard NSApp.isAppleScriptEnabled else { return [] }
-        return controllers
-            .flatMap { $0.surfaceTree.root?.leaves() ?? [] }
-            .map(ScriptTerminal.init)
+        guard let primaryController else { return [] }
+        return primaryController.allWorkspaceSurfaces.map(ScriptTerminal.init)
     }
 
     /// Enables unique-ID lookup for `terminals` references on a window.
     @objc(valueInTerminalsWithUniqueID:)
     func valueInTerminals(uniqueID: String) -> ScriptTerminal? {
         guard NSApp.isAppleScriptEnabled else { return nil }
-        return controllers
-            .flatMap { $0.surfaceTree.root?.leaves() ?? [] }
+        guard let primaryController else { return nil }
+        return primaryController.allWorkspaceSurfaces
             .first(where: { $0.id.uuidString == uniqueID })
             .map(ScriptTerminal.init)
-    }
-
-    /// AppleScript tab indexes are 1-based, so we add one to Swift's 0-based
-    /// array index.
-    func tabIndex(for controller: BaseTerminalController) -> Int? {
-        guard NSApp.isAppleScriptEnabled else { return nil }
-        return controllers.firstIndex(where: { $0 === controller }).map { $0 + 1 }
-    }
-
-    /// Reports whether a given controller maps to this window's selected tab.
-    func tabIsSelected(_ controller: BaseTerminalController) -> Bool {
-        guard NSApp.isAppleScriptEnabled else { return false }
-        return selectedController === controller
     }
 
     /// Best-effort native window to use as a tab parent for AppleScript commands.
@@ -132,46 +137,20 @@ final class ScriptWindow: NSObject {
         return selectedController ?? controllers.first
     }
 
-    /// Resolves a previously generated tab ID back to a live controller.
-    private func controller(tabID: String) -> BaseTerminalController? {
-        controllers.first(where: { ScriptTab.stableID(controller: $0) == tabID })
-    }
-
     /// Live controller list for this scripting window.
     ///
-    /// We recalculate on every access so AppleScript immediately sees tab-group
-    /// changes (new tabs, closed tabs, tab moves) without rebuilding all objects.
+    /// Native tabbing no longer exists, so a scripting window backs exactly
+    /// one physical controller. This stays a list (rather than an Optional)
+    /// so `terminals` can keep mapping over it uniformly.
     private var controllers: [BaseTerminalController] {
         guard NSApp.isAppleScriptEnabled else { return [] }
         guard let primaryController else { return [] }
-        guard let window = primaryController.window else { return [primaryController] }
-
-        if let tabGroup = window.tabGroup {
-            let groupControllers = tabGroup.windows.compactMap {
-                $0.windowController as? BaseTerminalController
-            }
-            if !groupControllers.isEmpty {
-                return groupControllers
-            }
-        }
-
         return [primaryController]
     }
 
     /// Live selected controller for this scripting window.
-    ///
-    /// AppKit tracks selected tab on `NSWindowTabGroup.selectedWindow`; for
-    /// non-tabbed windows we fall back to the primary controller.
     private var selectedController: BaseTerminalController? {
-        guard let primaryController else { return nil }
-        guard let window = primaryController.window else { return primaryController }
-
-        if let tabGroup = window.tabGroup,
-           let selectedController = tabGroup.selectedWindow?.windowController as? BaseTerminalController {
-            return selectedController
-        }
-
-        return controllers.first
+        primaryController
     }
 
     /// Handler for `activate window <window>`.
@@ -231,30 +210,14 @@ final class ScriptWindow: NSObject {
 }
 
 extension ScriptWindow {
-    /// Produces the window-level stable ID from the primary controller.
-    ///
-    /// - Tabbed windows are keyed by tab-group identity.
-    /// - Standalone windows are keyed by window identity.
-    /// - Detached controllers fall back to controller identity.
+    /// Produces the window-level stable ID from the primary controller's
+    /// `physicalUUID`. Stable for the controller's whole in-process lifetime,
+    /// including before its `NSWindow` exists — unlike the pre-Phase-5
+    /// scheme, which keyed off `NSWindow`/controller `ObjectIdentifier`. Does
+    /// NOT agree with the `physicalID` persisted from a prior run:
+    /// `physicalUUID` is freshly minted on every launch and never rehydrated
+    /// from restorable state.
     static func stableID(primaryController: BaseTerminalController) -> String {
-        guard let window = primaryController.window else {
-            return "controller-\(ObjectIdentifier(primaryController).hexString)"
-        }
-
-        if let tabGroup = window.tabGroup {
-            return stableID(tabGroup: tabGroup)
-        }
-
-        return stableID(window: window)
-    }
-
-    /// Stable ID for a standalone native window.
-    static func stableID(window: NSWindow) -> String {
-        "window-\(ObjectIdentifier(window).hexString)"
-    }
-
-    /// Stable ID for a native AppKit tab group.
-    static func stableID(tabGroup: NSWindowTabGroup) -> String {
-        "tab-group-\(ObjectIdentifier(tabGroup).hexString)"
+        "window-\(primaryController.physicalUUID.uuidString)"
     }
 }

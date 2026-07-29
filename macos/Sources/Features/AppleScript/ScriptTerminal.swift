@@ -112,11 +112,17 @@ final class ScriptTerminal: NSObject {
             baseConfig = nil
         }
 
-        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else {
+        guard let controller = NSApp.owningController(forSurfaceID: surfaceView.id),
+              let address = controller.workspaceStore.address(forSurfaceID: surfaceView.id) else {
             command.scriptErrorNumber = errAEEventFailed
             command.scriptErrorString = "Terminal is not in a splittable window."
             return nil
         }
+
+        // Present THIS terminal's owning tab first — `newSplit` is scoped to
+        // the controller's presented `surfaceTree`, so a non-presented tab's
+        // terminal must be mounted before it can be split.
+        controller.selectSession(workspaceID: address.workspaceID, tabID: address.tabID)
 
         guard let newView = controller.newSplit(
             at: surfaceView,
@@ -142,11 +148,16 @@ final class ScriptTerminal: NSObject {
             return nil
         }
 
-        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else {
+        guard let controller = NSApp.owningController(forSurfaceID: surfaceView.id),
+              let address = controller.workspaceStore.address(forSurfaceID: surfaceView.id) else {
             command.scriptErrorNumber = errAEEventFailed
             command.scriptErrorString = "Terminal is not in a window."
             return nil
         }
+
+        // Present THIS terminal's owning tab first — `focusSurface` is scoped
+        // to the controller's presented `surfaceTree`.
+        controller.selectSession(workspaceID: address.workspaceID, tabID: address.tabID)
 
         controller.focusSurface(surfaceView)
         return nil
@@ -163,11 +174,16 @@ final class ScriptTerminal: NSObject {
             return nil
         }
 
-        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else {
+        guard let controller = NSApp.owningController(forSurfaceID: surfaceView.id),
+              let address = controller.workspaceStore.address(forSurfaceID: surfaceView.id) else {
             command.scriptErrorNumber = errAEEventFailed
             command.scriptErrorString = "Terminal is not in a window."
             return nil
         }
+
+        // Present THIS terminal's owning tab first — `closeSurface` is scoped
+        // to the controller's presented `surfaceTree`.
+        controller.selectSession(workspaceID: address.workspaceID, tabID: address.tabID)
 
         controller.closeSurface(surfaceView, withConfirmation: false)
         return nil

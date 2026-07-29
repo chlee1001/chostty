@@ -20,8 +20,8 @@ import AppKit
 extension NSApplication {
     /// Backing collection for `application.windows`.
     ///
-    /// We expose one scripting window per native tab group so scripts see the
-    /// expected window/tab hierarchy instead of one AppKit window per tab.
+    /// We expose one scripting window per physical terminal window controller;
+    /// its virtual workspaces/tabs are flattened by `ScriptWindow` itself.
     ///
     /// Required selector name from the `sdef` element key: `scriptWindows`.
     ///
@@ -31,23 +31,20 @@ extension NSApplication {
     var scriptWindows: [ScriptWindow] {
         guard isAppleScriptEnabled else { return [] }
 
-        // AppKit exposes one NSWindow per tab. AppleScript users expect one
-        // top-level window object containing multiple tabs, so we dedupe tab
-        // siblings into a single ScriptWindow.
+        // One physical controller can only ever back one scripting window now,
+        // but we still dedupe defensively in case of a future duplicate entry.
         var seen: Set<ObjectIdentifier> = []
         var result: [ScriptWindow] = []
 
         for controller in orderedTerminalControllers {
-            // Collapse each controller to one canonical representative for the
-            // whole tab group. Standalone windows map to themselves.
             guard let primary = primaryTerminalController(for: controller) else {
                 continue
             }
 
             let primaryControllerID = ObjectIdentifier(primary)
             guard seen.insert(primaryControllerID).inserted else {
-                // Another tab from this group already created the scripting
-                // window object.
+                // A duplicate scripting window object already exists for
+                // this controller.
                 continue
             }
 
@@ -174,7 +171,7 @@ extension NSApplication {
 
         guard let appDelegate = delegate as? AppDelegate else {
             command.scriptErrorNumber = errAEEventFailed
-            command.scriptErrorString = "Ghostty app delegate is unavailable."
+            command.scriptErrorString = "Chostty app delegate is unavailable."
             return nil
         }
 
@@ -232,7 +229,7 @@ extension NSApplication {
 
         guard let appDelegate = delegate as? AppDelegate else {
             command.scriptErrorNumber = errAEEventFailed
-            command.scriptErrorString = "Ghostty app delegate is unavailable."
+            command.scriptErrorString = "Chostty app delegate is unavailable."
             return nil
         }
 
@@ -263,33 +260,47 @@ extension NSApplication {
             parentWindow = TerminalController.preferredParent?.window
         }
 
-        guard let createdController = TerminalController.newTab(
-            appDelegate.ghostty,
-            from: parentWindow,
-            withBaseConfig: baseConfig
+        // Per Phase 3: `make new tab` creates a virtual tab in the resolved
+        // ordinary controller rather than another physical window.
+        let sourceSurface = (parentWindow?.windowController as? TerminalController)?.focusedSurface
+        guard let createdController = appDelegate.terminalCommands.createVirtualTab(
+            source: sourceSurface,
+            baseConfig: baseConfig
         ) else {
             command.scriptErrorNumber = errAEEventFailed
             command.scriptErrorString = "Failed to create tab."
             return nil
         }
 
-        let createdTabID = ScriptTab.stableID(controller: createdController)
+        // `createVirtualTab` selects/mounts the new session before returning,
+        // so its `presentedSessionID` IS the created tab's virtual tab UUID.
+        guard let createdTabID = createdController.presentedSessionID else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Failed to create tab."
+            return nil
+        }
+        let createdTabStableID = ScriptTab.stableID(tabID: createdTabID)
 
         if let targetWindow,
-           let scriptTab = targetWindow.valueInTabs(uniqueID: createdTabID) {
+           let scriptTab = targetWindow.valueInTabs(uniqueID: createdTabStableID) {
             return scriptTab
         }
 
         for scriptWindow in scriptWindows {
-            if let scriptTab = scriptWindow.valueInTabs(uniqueID: createdTabID) {
+            if let scriptTab = scriptWindow.valueInTabs(uniqueID: createdTabStableID) {
                 return scriptTab
             }
         }
 
-        // Fall back to wrapping the created controller if AppKit tab-group
-        // bookkeeping has not fully refreshed in the current run loop.
+        // Fall back to wrapping the created controller/session if AppKit
+        // window ordering has not fully refreshed in the current run loop.
         let fallbackWindow = ScriptWindow(primaryController: createdController)
-        return ScriptTab(window: fallbackWindow, controller: createdController)
+        guard let createdSession = createdController.workspaceStore.session(forTabID: createdTabID) else {
+            command.scriptErrorNumber = errAEEventFailed
+            command.scriptErrorString = "Failed to create tab."
+            return nil
+        }
+        return ScriptTab(window: fallbackWindow, controller: createdController, session: createdSession)
     }
 }
 
@@ -317,14 +328,27 @@ extension NSApplication {
 
     /// Discovers all currently alive terminal surfaces across normal and quick
     /// terminal windows. This powers both terminal enumeration and ID lookup.
+    ///
+    /// Backed by `allWorkspaceSurfaces` (every virtual tab's surfaces across
+    /// every workspace a controller owns), not merely the presented tab's
+    /// `surfaceTree` — so `application.terminals` includes surfaces on
+    /// non-presented tabs too, mirroring the `tab` flattening.
     fileprivate var allSurfaceViews: [Ghostty.SurfaceView] {
         allTerminalControllers
-            .flatMap { $0.surfaceTree.root?.leaves() ?? [] }
+            .flatMap { $0.allWorkspaceSurfaces }
     }
 
     /// All terminal controllers in undefined order.
-    fileprivate var allTerminalControllers: [BaseTerminalController] {
+    var allTerminalControllers: [BaseTerminalController] {
         NSApp.windows.compactMap { $0.windowController as? BaseTerminalController }
+    }
+
+    /// Resolves the controller that owns `surfaceID`'s workspace store,
+    /// regardless of whether that surface's tab is currently presented.
+    /// Used by AppleScript command handlers that must operate on a
+    /// non-presented tab's terminal instead of silently failing/no-oping.
+    func owningController(forSurfaceID surfaceID: UUID) -> BaseTerminalController? {
+        allTerminalControllers.first { $0.workspaceStore.address(forSurfaceID: surfaceID) != nil }
     }
 
     /// All terminal controllers in front-to-back order.
@@ -332,20 +356,13 @@ extension NSApplication {
         NSApp.orderedWindows.compactMap { $0.windowController as? BaseTerminalController }
     }
 
-    /// Identifies the primary tab controller for a window's tab group.
+    /// Identifies the physical window controller backing a scripting window.
     ///
-    /// This gives us one stable representative for all tabs in the same native
-    /// AppKit tab group.
-    ///
-    /// For standalone windows this returns the window's controller directly.
-    /// For tabbed windows, "primary" is currently the first controller in the
-    /// tab group's ordered windows list.
+    /// Chostty exposes exactly one scripting window per physical window
+    /// controller: the virtual workspace/tab hierarchy lives inside a single
+    /// NSWindow, so there is no group of sibling windows to collapse anymore.
     fileprivate func primaryTerminalController(for controller: BaseTerminalController) -> BaseTerminalController? {
-        guard let window = controller.window else { return nil }
-        guard let tabGroup = window.tabGroup else { return controller }
-
-        return tabGroup.windows
-            .compactMap { $0.windowController as? BaseTerminalController }
-            .first
+        guard controller.window != nil else { return nil }
+        return controller
     }
 }

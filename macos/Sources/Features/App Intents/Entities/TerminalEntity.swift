@@ -24,6 +24,12 @@ struct TerminalEntity: AppEntity {
     @Property(title: "TTY")
     var tty: String?
 
+    /// Name of the virtual workspace this terminal's tab belongs to, if any.
+    /// `nil` for a surface whose owning controller can no longer be found
+    /// (e.g. it just closed).
+    @Property(title: "Workspace")
+    var workspace: String?
+
     @Property(title: "Kind")
     var kind: Kind
 
@@ -64,6 +70,7 @@ struct TerminalEntity: AppEntity {
         self.workingDirectory = view.pwd
         self.pid = view.surfaceModel?.foregroundPID
         self.tty = view.surfaceModel?.ttyName
+        self.workspace = Self.owningWorkspaceName(for: view)
         if let nsImage = ImageRenderer(content: view.screenshot()).nsImage {
             self.screenshot = nsImage
         }
@@ -74,6 +81,34 @@ struct TerminalEntity: AppEntity {
         } else {
             self.kind = .normal
         }
+    }
+
+    /// Resolves the workspace name owning `view` by walking every live
+    /// terminal controller's store. `view.window` is nil for a surface whose
+    /// tab is not currently presented (e.g. one reached only through
+    /// `allWorkspaceSurfaces`), so this cannot go through `view.window`.
+    @MainActor
+    private static func owningWorkspaceName(for view: Ghostty.SurfaceView) -> String? {
+        owningWorkspaceName(
+            for: view,
+            controllers: NSApp.windows.compactMap { $0.windowController as? BaseTerminalController }
+        )
+    }
+
+    /// Controller-taking seam for `owningWorkspaceName(for:)`, extracted so
+    /// tests can exercise the multi-workspace resolution logic without
+    /// depending on `NSApp.windows` (which requires real on-screen windows).
+    @MainActor
+    static func owningWorkspaceName(
+        for view: Ghostty.SurfaceView,
+        controllers: [BaseTerminalController]
+    ) -> String? {
+        for controller in controllers {
+            if let workspace = controller.workspaceStore.workspace(forSurfaceID: view.id) {
+                return workspace.name
+            }
+        }
+        return nil
     }
 
     /// Wait for the surface to be updated then create an entity
@@ -91,6 +126,7 @@ struct TerminalEntity: AppEntity {
     init(view: Ghostty.SurfaceView) async {
         self.id = view.id
         self.tty = view.surfaceModel?.ttyName
+        self.workspace = Self.owningWorkspaceName(for: view)
 
         let waitTimeout = DispatchQueue.SchedulerTimeType.Stride.seconds(1)
         let titleValues = view.$title.dropFirst()
@@ -186,9 +222,11 @@ struct TerminalQuery: EntityStringQuery, EnumerableEntityQuery {
             $0.windowController as? BaseTerminalController
         }
 
-        // Get all our surfaces
+        // Every virtual tab's surfaces across every workspace, not just the
+        // presented tab's `surfaceTree` — so App Intents can resolve a
+        // terminal that is not currently mounted.
         return controllers.flatMap {
-            $0.surfaceTree.root?.leaves() ?? []
+            $0.allWorkspaceSurfaces
         }
     }
 }

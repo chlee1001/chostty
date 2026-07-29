@@ -116,10 +116,14 @@ struct NewTerminalIntent: AppIntent {
             }
 
         case .tab:
-            let newController = TerminalController.newTab(
-                ghostty,
-                from: parent?.window,
-                withBaseConfig: config)
+            // Per Phase 3: `.tab` creates a virtual tab, not a physical window.
+            guard let appDelegate = NSApp.delegate as? AppDelegate else {
+                throw GhosttyIntentError.appUnavailable
+            }
+            let newController = appDelegate.terminalCommands.createVirtualTab(
+                source: parent,
+                baseConfig: config)
+            // The newly created tab is the controller's presented session.
             if let view = newController?.surfaceTree.root?.leftmostLeaf() {
                 return .result(value: await TerminalEntity(view: view))
             }

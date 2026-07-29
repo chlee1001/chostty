@@ -101,6 +101,12 @@ class AppDelegate: NSObject,
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
 
+    /// Per DR-1, AppDelegate owns the weak surface-owner registry and command router.
+    /// These are the single app-level integration points for workspace routing.
+    private(set) var surfaceOwners: SurfaceOwnerRegistry!
+    private(set) var terminalCommands: TerminalCommandRouter!
+    private(set) var surfaceDispatcher: SurfaceEventDispatcher!
+
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
 
@@ -203,6 +209,14 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // System settings overrides
+        // Initialize workspace infrastructure (must be on main actor).
+        surfaceOwners = SurfaceOwnerRegistry()
+        surfaceDispatcher = SurfaceEventDispatcher()
+        surfaceDispatcher.registry = surfaceOwners
+        terminalCommands = TerminalCommandRouter()
+        terminalCommands.dispatcher = surfaceDispatcher
+
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.
@@ -494,7 +508,7 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
+            alert.messageText = "Allow Chostty to execute \"\(filename)\"?"
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
@@ -509,11 +523,7 @@ class AppDelegate: NSObject,
 
         switch ghostty.config.macosDockDropBehavior {
         case .new_tab:
-            _ = TerminalController.newTab(
-                ghostty,
-                from: TerminalController.preferredParent?.window,
-                withBaseConfig: config
-            )
+            _ = terminalCommands.createVirtualTab(baseConfig: config)
         case .new_window: _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
         }
 
@@ -563,15 +573,30 @@ class AppDelegate: NSObject,
     }
 
     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
-        // If the tab overview is visible and escape is pressed, close it.
-        // This can't POSSIBLY be right and is probably a FirstResponder problem
-        // that we should handle elsewhere in our program. But this works and it
-        // is guarded by the tab overview currently showing.
-        if event.keyCode == 0x35, // Escape key
-           let window = NSApp.keyWindow,
-           let tabGroup = window.tabGroup,
-           tabGroup.isOverviewVisible {
-            window.toggleTabOverview(nil)
+
+        // Per DR-7: intercept reserved shortcuts (Cmd+N/T/Shift+N) BEFORE
+        // any configured Ghostty binding dispatch or main-window guard.
+        if MainActor.assumeIsolated({
+            terminalCommands.performReservedShortcut(event, source: currentSurfaceView())
+        }) {
+            return nil
+        }
+
+
+        // Per F1: intercept reserved workspace/tab-switch shortcuts
+        // (Cmd+1-9, Cmd+Shift+[/], Ctrl+Tab/Ctrl+Shift+Tab) BEFORE any
+        // configured Ghostty binding dispatch or main-window guard, same as
+        // the Cmd+N/T/Shift+N interception above. Resolution is strictly to
+        // the key window's own controller — never `preferredParent` — so a
+        // shortcut always acts on the window the user is looking at.
+        if MainActor.assumeIsolated({
+            ReservedShortcutDispatcher.performReservedShortcut(
+                event,
+                keyWindowKind: reservedShortcutKeyWindowKind(),
+                firstResponderIsTextField: keyWindowFirstResponderIsTextField(),
+                controller: reservedShortcutKeyWindowController()
+            )
+        }) {
             return nil
         }
 
@@ -621,6 +646,82 @@ class AppDelegate: NSObject,
 
         return event
     }
+
+    /// Resolves the currently focused Ghostty.SurfaceView from the responder chain.
+    private func currentSurfaceView() -> Ghostty.SurfaceView? {
+        guard let window = NSApp.keyWindow else { return nil }
+        var responder: NSResponder? = window.firstResponder
+        while let r = responder {
+            if let surface = r as? Ghostty.SurfaceView { return surface }
+            responder = r.nextResponder
+        }
+        return nil
+    }
+    /// Classifies the current key window for `ReservedShortcutDispatcher`.
+    /// Anything other than an ordinary `TerminalWindow` (Settings, the quick
+    /// terminal, or no key window) must never have a reserved
+    /// workspace/tab-switch shortcut applied to it.
+    private func reservedShortcutKeyWindowKind() -> ReservedShortcutDispatcher.KeyWindowKind {
+        NSApp.keyWindow is TerminalWindow ? .terminal : .other
+    }
+
+    /// Whether the key window's first responder is a text-editing view. Used
+    /// to guard `ReservedShortcutDispatcher` so it never steals keystrokes
+    /// from the sidebar's inline workspace/tab rename field or the F6 filter
+    /// field.
+    private func keyWindowFirstResponderIsTextField() -> Bool {
+        NSApp.keyWindow?.firstResponder is NSText
+    }
+
+    /// Resolves the key window's own `TerminalController`, if any. Reserved
+    /// workspace/tab-switch shortcuts always resolve to the key window's
+    /// controller — never `TerminalController.preferredParent` — so a
+    /// shortcut always acts on the window the user is looking at.
+    private func reservedShortcutKeyWindowController() -> TerminalController? {
+        NSApp.keyWindow?.windowController as? TerminalController
+    }
+    /// Detects reserved product chords (F1's `ReservedShortcutDispatcher` and
+    /// the app-level `TerminalCommandRouter`) that collide with a user
+    /// keybind in `config`, returning the human-readable label of each
+    /// colliding chord.
+    ///
+    /// `localEventKeyDown` intercepts every reserved chord BEFORE
+    /// `ghostty_config_key_is_binding` ever runs, so a user keybind on one of
+    /// these chords is silently swallowed — the reserved shortcut always
+    /// wins and the user never learns why their keybind does nothing. This
+    /// walk cannot un-swallow the chord (PM-3 accepted that reserved always
+    /// wins); it only surfaces the collision so it can be logged.
+    @MainActor
+    func reservedChordCollisions(config: Ghostty.Config) -> [String] {
+        guard let cConfig = config.config else { return [] }
+
+        var collisions: [String] = []
+        for chord in ReservedShortcutDispatcher.reservedChords + TerminalCommandRouter.reservedChords {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: chord.modifierFlags,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "",
+                charactersIgnoringModifiers: "",
+                isARepeat: false,
+                keyCode: chord.keyCode
+            ) else { continue }
+
+            var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
+            let isBinding = "".withCString { ptr in
+                ghosttyEvent.text = ptr
+                return ghostty_config_key_is_binding(cConfig, ghosttyEvent)
+            }
+            if isBinding {
+                collisions.append(chord.label)
+            }
+        }
+        return collisions
+    }
+
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         syncFloatOnTopMenu(notification.object as? NSWindow)
@@ -721,18 +822,23 @@ class AppDelegate: NSObject,
         _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
     }
 
+    @MainActor
     @objc private func ghosttyNewTab(_ notification: Notification) {
         guard let surfaceView = notification.object as? Ghostty.SurfaceView else { return }
-        guard let window = surfaceView.window else { return }
 
-        // We only want to listen to new tabs if the focused parent is
-        // a regular terminal controller.
-        guard window.windowController is TerminalController else { return }
-
-        let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
-        let config = configAny as? Ghostty.SurfaceConfiguration
-
-        _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+        // Per Phase 3: create a virtual tab, not a native AppKit tab.
+        //
+        // libghostty already computed a config for this action, but its
+        // `workingDirectory` is populated purely because
+        // `window-inherit-working-directory` is on — it is NOT an explicit
+        // request. Tag it `.inherited` so it lands on rung 3 instead of
+        // short-circuiting rung 1 and beating the workspace's default.
+        let config = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
+            as? Ghostty.SurfaceConfiguration
+        _ = terminalCommands.createVirtualTab(
+            source: surfaceView,
+            baseConfig: config,
+            origin: .inherited)
     }
 
     private func setDockBadge() {
@@ -785,7 +891,18 @@ class AppDelegate: NSObject,
         DispatchQueue.main.async {
             self.syncMenuShortcuts(config)
         }
-        TerminalController.all.forEach { $0.relabelTabs() }
+
+        // PM-3: warn (once per collision) when a user keybind lands on a
+        // chord that F1/the app-level router treat as reserved product
+        // behavior. See `reservedChordCollisions`'s doc for why this can
+        // never do more than warn.
+        let collisions = MainActor.assumeIsolated {
+            reservedChordCollisions(config: config)
+        }
+        for collision in collisions {
+            Self.logger.warning(
+                "keybind on \(collision, privacy: .public) collides with a reserved product shortcut; the reserved shortcut always wins and this keybind will never fire")
+        }
 
         // Update our badge since config can change what we show.
         syncDockBadge()
@@ -946,15 +1063,250 @@ class AppDelegate: NSObject,
         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
     }
 
+    /// Pins the reserved product shortcuts onto their menu items and installs
+    /// the "New Workspace" item.
+    ///
+    /// Cmd+N / Cmd+T / Cmd+Shift+N are intercepted by the app-level key monitor
+    /// before Ghostty's configurable bindings, so they must never be painted
+    /// from config: doing so shows a shortcut next to a menu item whose click
+    /// behavior differs from the chord. Pinning also makes mouse-driven menu
+    /// use and keyboard use converge on the same command router.
+    @MainActor
+    private func pinReservedMenuShortcuts() {
+        // New Window is the physical-window command: Cmd+Shift+N.
+        menuNewWindow?.keyEquivalent = "n"
+        menuNewWindow?.keyEquivalentModifierMask = [.command, .shift]
+
+        // New Tab is the virtual-tab command: Cmd+T.
+        menuNewTab?.keyEquivalent = "t"
+        menuNewTab?.keyEquivalentModifierMask = [.command]
+
+        // Per F8/IR 2: Cmd+Shift+T is reassigned from `undo` to "Reopen Closed
+        // Tab"; `undo` stays on `Cmd+Z`. This pin only paints the Reopen item —
+        // `menuUndo` is corrected separately, right after its own
+        // `syncMenuShortcut` call, because the sync runs later and would
+        // otherwise overwrite anything pinned here.
+        pinReopenClosedTabMenuItem()
+
+        // Per F1: the Workspace submenu's shortcuts are reserved product
+        // behavior too, so they are painted directly here and never through
+        // `syncMenuShortcut`.
+        installReservedMenuItems()
+
+        // New Workspace (Cmd+N) has no xib item; install it once directly above
+        // New Window so the File menu advertises all three reserved commands.
+        guard let newWindowItem = menuNewWindow,
+              let fileMenu = newWindowItem.menu else { return }
+        let existing = fileMenu.items.first { $0.action == #selector(newWorkspace(_:)) }
+        let item = existing ?? NSMenuItem(
+            title: "New Workspace",
+            action: #selector(newWorkspace(_:)),
+            keyEquivalent: "n")
+        item.target = self
+        item.keyEquivalent = "n"
+        item.keyEquivalentModifierMask = [.command]
+        item.setImageIfDesired(systemSymbolName: "rectangle.stack.badge.plus")
+        if existing == nil {
+            fileMenu.insertItem(item, at: fileMenu.index(of: newWindowItem))
+        }
+    }
+
+    /// The Workspace submenu's reserved shortcut items, built programmatically
+    /// (no xib item exists for them). Internal so `ReservedShortcutRecognitionTests`
+    /// can assert their key equivalents and modifier masks directly; the
+    /// `@IBOutlet`s above stay `private` because those DO come from the xib.
+    struct ReservedMenuItems {
+        let selectWorkspace: [NSMenuItem]
+        let previousTab: NSMenuItem
+        let nextTab: NSMenuItem
+        let previousWorkspace: NSMenuItem
+        let nextWorkspace: NSMenuItem
+    }
+
+    private var _reservedMenuItems: ReservedMenuItems?
+    /// "Reopen Closed Tab" (F8/Cmd+Shift+T) has no xib item — built and
+    /// pinned once, same pattern as "New Workspace" below. Unlike Undo/Redo
+    /// (whose title is rewritten per validateMenuItem to show the pending
+    /// action), this stays permanently titled "Reopen Closed Tab" — never
+    /// "restore" wording — and is left unvalidated so it stays ENABLED even
+    /// after the undo window has expired.
+    private var _menuReopenClosedTab: NSMenuItem?
+
+    /// Pins `item` to Cmd+Z — `undo`'s only displayed shortcut. Extracted as
+    /// a pure static function (no nib/IBOutlet dependency) so its exact
+    /// chord is directly unit-testable. See the `syncMenuShortcuts` call
+    /// site's doc for why this must run unconditionally, AFTER
+    /// `syncMenuShortcut`.
+    @MainActor
+    static func pinUndoShortcut(on item: NSMenuItem?) {
+        item?.keyEquivalent = "z"
+        item?.keyEquivalentModifierMask = [.command]
+    }
+
+    /// Pins `item` to Cmd+Shift+T — "Reopen Closed Tab" (F8)'s only displayed
+    /// shortcut, distinct from Undo's Cmd+Z. Extracted as a pure static
+    /// function so its exact chord is directly unit-testable.
+    @MainActor
+    static func pinReopenShortcut(on item: NSMenuItem?) {
+        item?.keyEquivalent = "t"
+        item?.keyEquivalentModifierMask = [.command, .shift]
+    }
+
+    /// Builds (once) and pins the "Reopen Closed Tab" item into the File
+    /// menu, directly below "New Tab".
+    @MainActor
+    private func pinReopenClosedTabMenuItem() {
+        guard let newTabItem = menuNewTab, let fileMenu = newTabItem.menu else { return }
+        let existing = _menuReopenClosedTab
+            ?? fileMenu.items.first { $0.action == #selector(reopenClosedTab(_:)) }
+        let item = existing ?? NSMenuItem(
+            title: "Reopen Closed Tab",
+            action: #selector(reopenClosedTab(_:)),
+            keyEquivalent: "t")
+        item.target = self
+        AppDelegate.pinReopenShortcut(on: item)
+        item.setImageIfDesired(systemSymbolName: "arrow.uturn.backward")
+        if existing == nil {
+            fileMenu.insertItem(item, at: fileMenu.index(of: newTabItem) + 1)
+        }
+        _menuReopenClosedTab = item
+    }
+
+    /// The Workspace submenu's reserved shortcut items. Internal so
+    /// `ReservedShortcutRecognitionTests` can assert key equivalents and
+    /// modifier masks directly without a nib/main-menu round trip. Building
+    /// is idempotent and lazy: the first access installs the items (and the
+    /// menu, if a main menu is available); later accesses return the same
+    /// items.
+    @MainActor
+    var reservedMenuItems: ReservedMenuItems { installReservedMenuItems() }
+
+    /// Builds (once) and installs the "Workspace" menu, wiring each item to
+    /// the same `ReservedShortcutDispatcher` actions the key-equivalent
+    /// chords perform. Idempotent: a second call returns the already-built
+    /// items without inserting a duplicate menu.
+    @MainActor
+    @discardableResult
+    private func installReservedMenuItems() -> ReservedMenuItems {
+        if let existing = _reservedMenuItems { return existing }
+
+        let workspaceMenu = NSMenu(title: "Workspace")
+
+        let selectWorkspace: [NSMenuItem] = (1...9).map { index in
+            let item = NSMenuItem(
+                title: "Select Workspace \(index)",
+                action: #selector(selectWorkspaceByIndex(_:)),
+                keyEquivalent: "\(index)")
+            item.target = self
+            item.tag = index
+            item.keyEquivalentModifierMask = [.command]
+            workspaceMenu.addItem(item)
+            return item
+        }
+
+        workspaceMenu.addItem(.separator())
+
+        let previousTab = NSMenuItem(
+            title: "Previous Tab",
+            action: #selector(cycleToPreviousTab(_:)),
+            keyEquivalent: "[")
+        previousTab.target = self
+        previousTab.keyEquivalentModifierMask = [.command, .shift]
+        workspaceMenu.addItem(previousTab)
+
+        let nextTab = NSMenuItem(
+            title: "Next Tab",
+            action: #selector(cycleToNextTab(_:)),
+            keyEquivalent: "]")
+        nextTab.target = self
+        nextTab.keyEquivalentModifierMask = [.command, .shift]
+        workspaceMenu.addItem(nextTab)
+
+        workspaceMenu.addItem(.separator())
+
+        let previousWorkspace = NSMenuItem(
+            title: "Previous Workspace",
+            action: #selector(selectPreviousWorkspace(_:)),
+            keyEquivalent: "\t")
+        previousWorkspace.target = self
+        previousWorkspace.keyEquivalentModifierMask = [.control, .shift]
+        workspaceMenu.addItem(previousWorkspace)
+
+        let nextWorkspace = NSMenuItem(
+            title: "Next Workspace",
+            action: #selector(selectNextWorkspace(_:)),
+            keyEquivalent: "\t")
+        nextWorkspace.target = self
+        nextWorkspace.keyEquivalentModifierMask = [.control]
+        workspaceMenu.addItem(nextWorkspace)
+
+        let workspaceMenuItem = NSMenuItem(title: "Workspace", action: nil, keyEquivalent: "")
+        workspaceMenuItem.submenu = workspaceMenu
+
+        if let mainMenu = NSApp.mainMenu,
+           let fileMenu = menuNewWindow?.menu,
+           let fileMenuIndex = mainMenu.items.firstIndex(where: { $0.submenu === fileMenu }) {
+            mainMenu.insertItem(workspaceMenuItem, at: fileMenuIndex + 1)
+        }
+
+        let items = ReservedMenuItems(
+            selectWorkspace: selectWorkspace,
+            previousTab: previousTab,
+            nextTab: nextTab,
+            previousWorkspace: previousWorkspace,
+            nextWorkspace: nextWorkspace
+        )
+        _reservedMenuItems = items
+        return items
+    }
+
+    @IBAction func selectWorkspaceByIndex(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        guard let controller = reservedShortcutKeyWindowController() else { return }
+        ReservedShortcutDispatcher.perform(.selectWorkspace(index: item.tag), on: controller)
+    }
+
+    @IBAction func cycleToPreviousTab(_ sender: Any?) {
+        guard let controller = reservedShortcutKeyWindowController() else { return }
+        ReservedShortcutDispatcher.perform(.previousTab, on: controller)
+    }
+
+    @IBAction func cycleToNextTab(_ sender: Any?) {
+        guard let controller = reservedShortcutKeyWindowController() else { return }
+        ReservedShortcutDispatcher.perform(.nextTab, on: controller)
+    }
+
+    @IBAction func selectPreviousWorkspace(_ sender: Any?) {
+        guard let controller = reservedShortcutKeyWindowController() else { return }
+        ReservedShortcutDispatcher.perform(.previousWorkspace, on: controller)
+    }
+
+    @IBAction func selectNextWorkspace(_ sender: Any?) {
+        guard let controller = reservedShortcutKeyWindowController() else { return }
+        ReservedShortcutDispatcher.perform(.nextWorkspace, on: controller)
+    }
+
+    @IBAction func newWorkspace(_ sender: Any?) {
+        // Same authority as Cmd+N and the sidebar "+".
+        _ = terminalCommands.perform(.newWorkspace, source: currentSurfaceView())
+    }
+
+    @IBAction func reopenClosedTab(_ sender: Any?) {
+        // Cmd+Shift+T: reopen the resolved controller's most recently closed
+        // tab, per `ClosedTabHistory` — never `undoManager.undo()`.
+        _ = terminalCommands.perform(.reopenClosedTab, source: currentSurfaceView())
+    }
+
     @IBAction func newWindow(_ sender: Any?) {
         _ = TerminalController.newWindow(ghostty)
     }
 
     @IBAction func newTab(_ sender: Any?) {
-        _ = TerminalController.newTab(
-            ghostty,
-            from: TerminalController.preferredParent?.window
-        )
+        // Per Phase 3: "New Tab" is a virtual tab, never a native AppKit tab.
+        // This action is reachable from the Dock menu (which has no explicit
+        // target), so it must route through the same command router as Cmd+T
+        // rather than the legacy native-tab window path.
+        _ = terminalCommands.perform(.newTab, source: currentSurfaceView())
     }
 
     @IBAction func closeAllWindows(_ sender: Any?) {
@@ -1058,9 +1410,7 @@ class AppDelegate: NSObject,
                 $0.isVisible &&
                 !$0.styleMask.contains(.fullScreen)
             }.forEach { window in
-                // We only keep track of selectedWindow if it's in a tabGroup,
-                // so we can keep its selection state when restoring
-                let windowToHide = window.tabGroup?.selectedWindow ?? window
+                let windowToHide = window
                 if !visibleWindows.contains(where: { $0.value === windowToHide }) {
                     visibleWindows.append(Weak(windowToHide))
                 }
@@ -1147,8 +1497,12 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "reload_config", menuItem: self.menuReloadConfig)
         syncMenuShortcut(config, action: "quit", menuItem: self.menuQuit)
 
-        syncMenuShortcut(config, action: "new_window", menuItem: self.menuNewWindow)
-        syncMenuShortcut(config, action: "new_tab", menuItem: self.menuNewTab)
+        // Reserved product shortcuts are NOT configurable and are not painted
+        // from the config. The app-level monitor owns Cmd+N / Cmd+T /
+        // Cmd+Shift+N, so letting `new_window`/`new_tab` bindings paint these
+        // items would display a shortcut that differs from what the chord
+        // actually does. Pin them to the real product behavior instead.
+        pinReservedMenuShortcuts()
         syncMenuShortcut(config, action: "close_surface", menuItem: self.menuClose)
         syncMenuShortcut(config, action: "close_tab", menuItem: self.menuCloseTab)
         syncMenuShortcut(config, action: "close_window", menuItem: self.menuCloseWindow)
@@ -1159,6 +1513,15 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "new_split:up", menuItem: self.menuSplitUp)
 
         syncMenuShortcut(config, action: "undo", menuItem: self.menuUndo)
+        // `undo`'s config binding is `performable` (see `src/config/Config.zig`),
+        // and performable triggers are excluded from the reverse lookup
+        // (`src/input/Binding.zig`, `src/config/CApi.zig`), so
+        // `keyboardShortcut(for: "undo")` is always nil and the
+        // `syncMenuShortcut` call above always CLEARS `menuUndo`'s shortcut
+        // rather than painting it from config. Pin unconditionally to Cmd+Z
+        // here, right after the sync, so Edit▸Undo always advertises a
+        // shortcut.
+        AppDelegate.pinUndoShortcut(on: self.menuUndo)
         syncMenuShortcut(config, action: "redo", menuItem: self.menuRedo)
         syncMenuShortcut(config, action: "copy_to_clipboard", menuItem: self.menuCopy)
         syncMenuShortcut(config, action: "paste_from_clipboard", menuItem: self.menuPaste)
@@ -1253,7 +1616,7 @@ extension AppDelegate {
                 let alert = NSAlert()
                 alert.messageText = "Failed to Set Default Terminal"
                 alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
+                Chostty could not be set as the default terminal application.
 
                 Error: \(error.localizedDescription)
                 """
@@ -1315,7 +1678,7 @@ extension AppDelegate {
         if controllersNeedConfirmation.count == 1 {
             Task {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Chostty?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )
@@ -1353,7 +1716,7 @@ extension AppDelegate {
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Chostty?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )

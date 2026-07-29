@@ -64,7 +64,7 @@ struct TerminalCommandPaletteView: View {
         // Sort the rest. We replace ":" with a character that sorts before space
         // so that "Foo:" sorts before "Foo Bar:". Use sortKey as a tie-breaker
         // for stable ordering when titles are equal.
-        options.append(contentsOf: (jumpOptions + terminalOptions).sorted { a, b in
+        options.append(contentsOf: (jumpOptions + terminalOptions + workspaceOptions).sorted { a, b in
             let aNormalized = a.title.replacingOccurrences(of: ":", with: "\t")
             let bNormalized = b.title.replacingOccurrences(of: ":", with: "\t")
             let comparison = aNormalized.localizedCaseInsensitiveCompare(bNormalized)
@@ -92,7 +92,7 @@ struct TerminalCommandPaletteView: View {
         // convey it'll go all the way through.
         let title: String
         if case .updateAvailable = updateViewModel.state {
-            title = "Update Ghostty and Restart"
+            title = "Update Chostty and Restart"
         } else {
             title = updateViewModel.text
         }
@@ -142,7 +142,11 @@ struct TerminalCommandPaletteView: View {
             let color = (window as? TerminalWindow)?.tabColor
             let displayColor = color != TerminalTabColor.none ? color : nil
 
-            return controller.surfaceTree.map { surface in
+            // Non-presented tabs' surfaces live on their session's own tree,
+            // not `controller.surfaceTree` (the controller's live/presented
+            // tree only). `allWorkspaceSurfaces` already makes this split so
+            // Focus entries reach every tab, presented or not.
+            return controller.allWorkspaceSurfaces.map { surface in
                 let terminalTitle = surface.title.isEmpty ? window.title : surface.title
                 let displayTitle: String
                 if let override = controller.titleOverride, !override.isEmpty {
@@ -174,6 +178,113 @@ struct TerminalCommandPaletteView: View {
             }
         }
     }
+
+    /// Commands for switching workspaces and workspace-scoped actions (new
+    /// workspace, rename, duplicate tab, reopen closed tab). The enumeration
+    /// itself lives in ``workspaceCommandOptions(store:perform:)`` so it is
+    /// unit-testable headlessly, without a live window.
+    private var workspaceOptions: [CommandOption] {
+        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else {
+            return []
+        }
+        return Self.workspaceCommandOptions(store: controller.workspaceStore) { action in
+            Self.perform(action, on: controller)
+        }
+    }
+
+    /// Real command paths a workspace command-palette entry can invoke.
+    enum WorkspaceCommandAction {
+        case switchTo(workspaceID: UUID, tabID: UUID)
+        case newWorkspace
+        case renameWorkspace(UUID)
+        case duplicateTab(UUID)
+        case reopenClosedTab
+    }
+
+    /// Builds one switch entry per workspace in `store`, in snapshot
+    /// (workspace-then-tab) order, plus New Workspace / Rename Workspace /
+    /// Duplicate Tab / Reopen Closed Tab. Store-driven (rather than reading
+    /// `TerminalController.all`) so it is testable through
+    /// `TerminalControllerTestHarness` without a real window.
+    static func workspaceCommandOptions(
+        store: WorkspaceSessionStore,
+        perform: @escaping (WorkspaceCommandAction) -> Void
+    ) -> [CommandOption] {
+        var options: [CommandOption] = []
+
+        for (index, workspace) in store.snapshot.workspaces.enumerated() {
+            guard let tabID = workspace.selectedTabID ?? workspace.tabs.first?.id else { continue }
+            let tabCount = workspace.tabs.count
+            let selectedTitle = workspace.selectedTab.map { $0.titleOverride ?? $0.title } ?? ""
+            var subtitle = "\(tabCount) tab\(tabCount == 1 ? "" : "s")"
+            if !selectedTitle.isEmpty {
+                subtitle += " · \(selectedTitle)"
+            }
+
+            options.append(CommandOption(
+                title: "Switch to: \(workspace.name)",
+                subtitle: subtitle,
+                leadingIcon: "square.grid.2x2",
+                leadingColor: workspace.color.displayColor.map { Color($0) },
+                sortKey: AnySortKey(index)
+            ) {
+                perform(.switchTo(workspaceID: workspace.id, tabID: tabID))
+            })
+        }
+
+        options.append(CommandOption(
+            title: "New Workspace",
+            leadingIcon: "plus.square.on.square"
+        ) {
+            perform(.newWorkspace)
+        })
+
+        if let selectedWorkspace = store.selectedWorkspace {
+            options.append(CommandOption(
+                title: "Rename Workspace",
+                leadingIcon: "pencil"
+            ) {
+                perform(.renameWorkspace(selectedWorkspace.id))
+            })
+        }
+
+        let selectedTabID = store.snapshot.selection.tabID
+        options.append(CommandOption(
+            title: "Duplicate Tab",
+            leadingIcon: "plus.rectangle.on.rectangle"
+        ) {
+            perform(.duplicateTab(selectedTabID))
+        })
+
+        options.append(CommandOption(
+            title: "Reopen Closed Tab",
+            leadingIcon: "arrow.uturn.backward"
+        ) {
+            perform(.reopenClosedTab)
+        })
+
+        return options
+    }
+
+    /// Executes a workspace command-palette action through the SAME
+    /// production entry points every other surface (menu, reserved
+    /// shortcuts, AppleScript) uses — never a bespoke path.
+    static func perform(_ action: WorkspaceCommandAction, on controller: BaseTerminalController) {
+        switch action {
+        case .switchTo(let workspaceID, let tabID):
+            controller.selectSession(workspaceID: workspaceID, tabID: tabID)
+        case .newWorkspace:
+            _ = (NSApp.delegate as? AppDelegate)?.terminalCommands.perform(
+                .newWorkspace, source: controller.focusedSurface)
+        case .renameWorkspace(let workspaceID):
+            controller.workspaceStore.promptRenameWorkspace(workspaceID)
+        case .duplicateTab(let tabID):
+            controller.duplicateTab(tabID)
+        case .reopenClosedTab:
+            controller.reopenClosedTab()
+        }
+    }
+
 
 }
 
