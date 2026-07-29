@@ -90,6 +90,16 @@ a corrupt artifact.
 suite on pull requests. UI tests are skipped there for the same reason
 `macos/build.nu` skips them: no CI runner grants accessibility permission.
 
+Two further CI-only concessions, both about the hosted runner rather than the
+code. Tests run serially: twenty of the forty-two suites stand up a real
+`TerminalController` with windows and a Metal surface, and run concurrently the
+test host exits partway through, which xcodebuild reports as every unfinished
+test failing. And `reopenAfterForcedFinalizeCreatesFreshTabWithRecordedMetadata`
+is skipped by name — the only case that finalizes a lease and then builds a
+fresh live surface, which takes the host process down on a runner. It passes
+locally and the full suite remains the local gate, so treat a green CI as
+necessary rather than sufficient.
+
 ## Verification
 
 The suite and `macos/scripts/native-tab-audit.sh` run on every change. Hosting
