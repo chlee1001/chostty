@@ -6,8 +6,9 @@ import AppKit
 struct TerminalRestorableTests {
     @Test
     func areYouForgettingToAddMigrationTests() {
-        #expect(TerminalRestorableState.version == 7)
-        #expect(TerminalRestorableState.minimumVersion == 5)
+        // v8: Chostty nested workspace hierarchy. Legacy v5-v7 state is rejected.
+        #expect(TerminalRestorableState.version == 8)
+        #expect(TerminalRestorableState.minimumVersion == 8)
 
         #expect(QuickTerminalRestorableState.version == 1)
         #expect(QuickTerminalRestorableState.minimumVersion == 1)
@@ -37,77 +38,284 @@ struct TerminalRestorableTests {
         #expect(state.surfaceTree.contains(where: { $0.id.uuidString == "994C673F-B4C5-49EE-B044-65006652636D" }))
     }
 
-    // To generate old data: created a dummy class, archive, and copy the printed result
-    @MainActor
-    @Test func restoreTerminal57() throws {
+    // MARK: - v8 nested hierarchy
+    //
+    // v8 is the Chostty Workspace → Virtual Tab → Pane format. `workspaces` is
+    // the single source of truth; the legacy flat `surfaceTree` field must stay
+    // EMPTY on encode.
+    //
+    // That last point is load-bearing rather than cosmetic: a persisted
+    // `SplitTree<Ghostty.SurfaceView>` does not decode passively — each
+    // `SurfaceView` decoder constructs a live surface and spawns a PTY, reusing
+    // the persisted UUID. Encoding the presented tree both flat and inside
+    // `workspaces` would therefore restore every presented surface twice:
+    // duplicate processes plus two live views sharing one UUID, which is the
+    // key the owner registry and the store's surface index are built on.
 
-//        let tree = try SplitTreeTests.makeHorizontalSplit()
-//        let state = DummyTerminalRestorableState(
-//            focusedSurface: "v5",
-//            surfaceTree: tree.0,
-//        )
-//        let data = try archive(CodableBridge(state), className: "CodableBridge<Terminal>")
-//        print(data.base64EncodedString())
-//        print()
-//        print(tree.1.id)
-//        print(tree.2.id)
+    @Test func v8EncodesHierarchyAndLeavesFlatTreeEmpty() throws {
+        let tabID = UUID()
+        let wsID = UUID()
+        let surfaceID = UUID()
 
-        let v5 = try unarchive(v5Data, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
-            .value.internalState
-        #expect(v5.focusedSurface == "v5")
-        #expect(v5.effectiveFullscreenMode == nil)
-        #expect(v5.tabColor == nil)
-        #expect(v5.titleOverride == nil)
-        #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "926F3F2A-824C-40C9-87CA-2CDCA4E11049" }))
-        #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "AC5E829B-85FD-4C69-B196-2EE469C72A90" }))
+        let tab = TerminalRestorableState.TabState<MockView>(
+            id: tabID,
+            surfaceTree: .init(view: MockView(id: surfaceID)),
+            focusedSurfaceID: surfaceID.uuidString,
+            title: "build",
+            pwd: "/tmp/work",
+            tabColor: nil,
+            titleOverride: nil,
+            isRestorable: true
+        )
+        let ws = TerminalRestorableState.WorkspaceState<MockView>(
+            id: wsID,
+            name: "Workspace 1",
+            tabs: [tab],
+            selectedTabID: tabID
+        )
+        let state = TerminalRestorableState.InternalState<MockView>(
+            focusedSurface: surfaceID.uuidString,
+            surfaceTree: .init(),
+            effectiveFullscreenMode: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            physicalID: UUID(),
+            workspaces: [ws],
+            selectedWorkspaceID: wsID,
+            selectedTabID: tabID
+        )
 
-//        let tree = try SplitTreeTests.makeHorizontalSplit()
-//        let state = DummyTerminalRestorableState(
-//            focusedSurface: "v7",
-//            surfaceTree: tree.0,
-//            effectiveFullscreenMode: .native,
-//            tabColor: .green,
-//            titleOverride: "1.3.0"
-//        )
-//        let data = try archive(CodableBridge(state), className: "CodableBridge<Terminal>")
-//        print(data.base64EncodedString())
-//        print()
-//        print(tree.1.id)
-//        print(tree.2.id)
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            TerminalRestorableState.InternalState<MockView>.self, from: data)
 
-        let v7 = try unarchive(v7Data, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
-            .value.internalState
-        #expect(v7.focusedSurface == "v7")
-        #expect(v7.effectiveFullscreenMode == .native)
-        #expect(v7.tabColor == .green)
-        #expect(v7.titleOverride == "1.3.0")
-        #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "5D580A7A-81EA-47C6-BB9A-AD4B1783E478" }))
-        #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "96EA1189-7482-41BC-A6CD-26E5190E4BFA" }))
+        // The hierarchy round-trips.
+        #expect(decoded.workspaces?.count == 1)
+        #expect(decoded.workspaces?[0].id == wsID)
+        #expect(decoded.workspaces?[0].tabs.count == 1)
+        #expect(decoded.workspaces?[0].tabs[0].id == tabID)
+        #expect(decoded.workspaces?[0].tabs[0].title == "build")
+        #expect(decoded.workspaces?[0].tabs[0].pwd == "/tmp/work")
+        #expect(decoded.selectedWorkspaceID == wsID)
+        #expect(decoded.selectedTabID == tabID)
 
-//        let tree = try SplitTreeTests.makeHorizontalSplit()
-//        let state = DummyTerminalRestorableState(
-//            .init(
-//                focusedSurface: "v7 generic",
-//                surfaceTree: tree.0,
-//                effectiveFullscreenMode: .native,
-//                tabColor: .green,
-//                titleOverride: "tip"
-//            )
-//        )
-//        let data = try archive(CodableBridge(state), className: "CodableBridge<Terminal>")
-//        print(data.base64EncodedString())
-//        print()
-//        print(tree.1.id)
-//        print(tree.2.id)
+        // The flat tree carries no surfaces, so nothing is materialized twice.
+        #expect(decoded.surfaceTree.isEmpty)
+    }
 
-        let v7Generic = try unarchive(v7GenericData, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
-            .value.internalState
-        #expect(v7Generic.focusedSurface == "v7 generic")
-        #expect(v7Generic.effectiveFullscreenMode == .native)
-        #expect(v7Generic.tabColor == .green)
-        #expect(v7Generic.titleOverride == "tip")
-        #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "953CE952-D91D-4D36-AC72-9D0F1F6BCE73" }))
-        #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "D3223569-2E01-4BC5-9DB2-DBFC3AFF46D1" }))
+    @Test func v8RoundTripsMultipleWorkspacesAndTabsInOrder() throws {
+        func makeTab(_ title: String) -> (UUID, TerminalRestorableState.TabState<MockView>) {
+            let id = UUID()
+            return (id, .init(
+                id: id,
+                surfaceTree: .init(view: MockView(id: UUID())),
+                focusedSurfaceID: nil,
+                title: title,
+                pwd: nil,
+                tabColor: nil,
+                titleOverride: nil,
+                isRestorable: true
+            ))
+        }
+
+        let (a1, t1) = makeTab("a1")
+        let (a2, t2) = makeTab("a2")
+        let (b1, t3) = makeTab("b1")
+        let wsA = UUID(), wsB = UUID()
+
+        let state = TerminalRestorableState.InternalState<MockView>(
+            focusedSurface: nil,
+            surfaceTree: .init(),
+            effectiveFullscreenMode: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            physicalID: UUID(),
+            workspaces: [
+                .init(id: wsA, name: "A", tabs: [t1, t2], selectedTabID: a2),
+                .init(id: wsB, name: "B", tabs: [t3], selectedTabID: b1),
+            ],
+            selectedWorkspaceID: wsB,
+            selectedTabID: b1
+        )
+
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            TerminalRestorableState.InternalState<MockView>.self, from: data)
+
+        #expect(decoded.workspaces?.count == 2)
+        #expect(decoded.workspaces?.map(\.name) == ["A", "B"])
+        // Tab order within a workspace is preserved.
+        #expect(decoded.workspaces?[0].tabs.map(\.id) == [a1, a2])
+        #expect(decoded.workspaces?[0].selectedTabID == a2)
+        #expect(decoded.workspaces?[1].tabs.map(\.id) == [b1])
+        // Cross-workspace selection is preserved.
+        #expect(decoded.selectedWorkspaceID == wsB)
+        #expect(decoded.selectedTabID == b1)
+        #expect(decoded.surfaceTree.isEmpty)
+    }
+    @Test func v8RoundTripsDefaultDirectory() throws {
+        let tabID = UUID()
+        let wsID = UUID()
+
+        let tab = TerminalRestorableState.TabState<MockView>(
+            id: tabID,
+            surfaceTree: .init(),
+            focusedSurfaceID: nil,
+            title: "t",
+            pwd: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            isRestorable: true
+        )
+        let ws = TerminalRestorableState.WorkspaceState<MockView>(
+            id: wsID,
+            name: "Workspace 1",
+            tabs: [tab],
+            selectedTabID: tabID,
+            color: .teal,
+            isCollapsed: true,
+            defaultDirectory: "/tmp/x"
+        )
+        let state = TerminalRestorableState.InternalState<MockView>(
+            focusedSurface: nil,
+            surfaceTree: .init(),
+            effectiveFullscreenMode: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            physicalID: UUID(),
+            workspaces: [ws],
+            selectedWorkspaceID: wsID,
+            selectedTabID: tabID
+        )
+
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            TerminalRestorableState.InternalState<MockView>.self, from: data)
+
+        #expect(decoded.workspaces?[0].defaultDirectory == "/tmp/x")
+        #expect(decoded.workspaces?[0].color == .teal)
+        #expect(decoded.workspaces?[0].isCollapsed == true)
+    }
+
+    @Test func v8DecodesWhenDefaultDirectoryIsAbsentFromThePayload() throws {
+        // A payload written before `defaultDirectory` existed (or one that
+        // simply omits the key) must still decode, yielding nil rather than
+        // failing — the same contract `color`/`isCollapsed` already have.
+        struct LegacyWorkspaceState: Encodable {
+            let id: UUID
+            let name: String
+            let tabs: [TerminalRestorableState.TabState<MockView>]
+            let selectedTabID: UUID?
+        }
+
+        let tabID = UUID()
+        let wsID = UUID()
+        let legacyWorkspace = LegacyWorkspaceState(
+            id: wsID,
+            name: "Workspace 1",
+            tabs: [
+                TerminalRestorableState.TabState<MockView>(
+                    id: tabID,
+                    surfaceTree: .init(),
+                    focusedSurfaceID: nil,
+                    title: "t",
+                    pwd: nil,
+                    tabColor: nil,
+                    titleOverride: nil,
+                    isRestorable: true
+                )
+            ],
+            selectedTabID: tabID
+        )
+
+        let data = try JSONEncoder().encode(legacyWorkspace)
+        let decoded = try JSONDecoder().decode(
+            TerminalRestorableState.WorkspaceState<MockView>.self, from: data)
+
+        #expect(decoded.defaultDirectory == nil)
+        #expect(decoded.color == nil)
+        #expect(decoded.isCollapsed == nil)
+    }
+
+    // MARK: - v8 hierarchy validation
+    //
+    // `makeRestoredV8` must reject a structurally invalid hierarchy rather than
+    // materialize a partial one. Duplicate surface IDs are the dangerous case:
+    // `Ghostty.SurfaceView`'s decoder spawns a live PTY, so a repeated surface
+    // UUID would produce two live views sharing one identity — which is the key
+    // both the owner registry and the store's surface index are built on.
+
+    @Test func v8RejectsDuplicateWorkspaceIDs() {
+        let dupID = UUID()
+        let ws1 = TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>(
+            id: dupID, name: "A", tabs: [makeEmptyTab()], selectedTabID: nil)
+        let ws2 = TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>(
+            id: dupID, name: "B", tabs: [makeEmptyTab()], selectedTabID: nil)
+
+        let graph = TerminalControllerGraphFactory.makeRestoredV8(
+            workspaces: [ws1, ws2], selectedWorkspaceID: nil, selectedTabID: nil)
+        #expect(graph == nil)
+    }
+
+    @Test func v8RejectsDuplicateTabIDs() {
+        let dupTab = UUID()
+        let t1 = makeEmptyTab(id: dupTab)
+        let t2 = makeEmptyTab(id: dupTab)
+        let ws = TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>(
+            id: UUID(), name: "A", tabs: [t1, t2], selectedTabID: nil)
+
+        let graph = TerminalControllerGraphFactory.makeRestoredV8(
+            workspaces: [ws], selectedWorkspaceID: nil, selectedTabID: nil)
+        #expect(graph == nil)
+    }
+
+    @Test func v8RejectsEmptyWorkspaceList() {
+        let graph = TerminalControllerGraphFactory.makeRestoredV8(
+            workspaces: [], selectedWorkspaceID: nil, selectedTabID: nil)
+        #expect(graph == nil)
+    }
+
+    @Test func v8RejectsWorkspaceWithNoTabs() {
+        let ws = TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>(
+            id: UUID(), name: "A", tabs: [], selectedTabID: nil)
+        let graph = TerminalControllerGraphFactory.makeRestoredV8(
+            workspaces: [ws], selectedWorkspaceID: nil, selectedTabID: nil)
+        #expect(graph == nil)
+    }
+
+    private func makeEmptyTab(
+        id: UUID = UUID()
+    ) -> TerminalRestorableState.TabState<Ghostty.SurfaceView> {
+        .init(
+            id: id,
+            surfaceTree: .init(),
+            focusedSurfaceID: nil,
+            title: "t",
+            pwd: nil,
+            tabColor: nil,
+            titleOverride: nil,
+            isRestorable: true
+        )
+    }
+
+    @Test func v8DecodesWhenHierarchyIsAbsent() throws {
+        // A payload without `workspaces` must still decode; the restore path
+        // treats a nil/invalid hierarchy as "start fresh" rather than crashing.
+        let state = TerminalRestorableState.InternalState<MockView>(
+            focusedSurface: nil,
+            surfaceTree: .init(),
+            effectiveFullscreenMode: nil,
+            tabColor: nil,
+            titleOverride: nil
+        )
+
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(
+            TerminalRestorableState.InternalState<MockView>.self, from: data)
+
+        #expect(decoded.workspaces == nil)
+        #expect(decoded.selectedWorkspaceID == nil)
+        #expect(decoded.physicalID == nil)
     }
 }
 
@@ -135,35 +343,6 @@ private extension TerminalRestorableTests {
 }
 
 // MARK: - Dummy States
-
-@MainActor
-private final class DummyTerminalRestorableState: TerminalRestorable {
-    static var version: Int {
-        TerminalRestorableState.version
-    }
-
-    static var minimumVersion: Int {
-        TerminalRestorableState.minimumVersion
-    }
-
-    required init(copy other: DummyTerminalRestorableState) {
-        internalState = other.internalState
-    }
-
-    let internalState: TerminalRestorableState.InternalState<MockView>
-
-    init(_ internalState: TerminalRestorableState.InternalState<MockView>) {
-        self.internalState = internalState
-    }
-
-    required init(from decoder: any Decoder) throws {
-        self.internalState = try TerminalRestorableState.InternalState<MockView>(from: decoder)
-    }
-
-    func encode(to encoder: any Encoder) throws {
-        try internalState.encode(to: encoder)
-    }
-}
 
 @MainActor
 struct DummyQuickTerminalRestorableState: TerminalRestorable {
@@ -196,20 +375,3 @@ private let v1QTData = Data(base64Encoded: """
     YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA6hicGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvECALDBkaGxwfJicvMDEyODlFRkdISU9QVldYXF1jaWpwcVUkbnVsbNMNDg8QFBhXTlMua2V5c1pOUy5vYmplY3RzViRjbGFzc6MREhOAAoADgASjFRYXgAWAB4AIgBhfEBJzY3JlZW5TdGF0ZUVudHJpZXNeZm9jdXNlZFN1cmZhY2Vbc3VyZmFjZVRyZWXSDg8dHqCABtIgISIjWiRjbGFzc25hbWVYJGNsYXNzZXNeTlNNdXRhYmxlQXJyYXmjIiQlV05TQXJyYXlYTlNPYmplY3RTMTIz0w0ODygrGKIpKoAJgAqiLC2AC4AMgBhXdmVyc2lvblRyb290EAHTDQ4PMzUYoTSADaE2gA6AGFVzcGxpdNMNDg86PxikOzw9PoAPgBCAEYASpEBBQkOAE4AZgBqAHYAYVXJpZ2h0VXJhdGlvVGxlZnRZZGlyZWN0aW9u0w0OD0pMGKFLgBShTYAVgBhUdmlld9MNDg9RUxihUoAWoVSAF4AYUmlkXxAkOTk0QzY3M0YtQjRDNS00OUVFLUIwNDQtNjUwMDY2NTI2MzZE0iAhWVpfEBNOU011dGFibGVEaWN0aW9uYXJ5o1lbJVxOU0RpY3Rpb25hcnkjP+AAAAAAAADTDQ4PXmAYoUuAFKFhgBuAGNMNDg9kZhihUoAWoWeAHIAYXxAkMkYyRjJEOTMtOTQ0Qy00NzRBLTgzQkEtNERDMTg2OEMzRUI50w0OD2ttGKFsgB6hboAfgBhaaG9yaXpvbnRhbNMNDg9ycxigoIAYAAgAEQAaACQAKQAyADcASQBMAFIAVAB3AH0AhACMAJcAngCiAKQApgCoAKwArgCwALIAtADJANgA5ADpAOoA7ADxAPwBBQEUARgBIAEpAS0BNAE3ATkBOwE+AUABQgFEAUwBUQFTAVoBXAFeAWABYgFkAWoBcQF2AXgBegF8AX4BgwGFAYcBiQGLAY0BkwGZAZ4BqAGvAbEBswG1AbcBuQG+AcUBxwHJAcsBzQHPAdIB+QH+AhQCGAIlAi4CNQI3AjkCOwI9Aj8CRgJIAkoCTAJOAlACdwJ+AoACggKEAoYCiAKTApoCmwKcAAAAAAAAAgEAAAAAAAAAdQAAAAAAAAAAAAAAAAAAAp7RExRaJGNsYXNzbmFtZV8QHENvZGFibGVCcmlkZ2U8UXVpY2tUZXJtaW5hbD4ACAARABoAJAApADIANwBJAEwAUQBTAFgAXgBjAGgAbwBxAHMEHwQiBC0AAAAAAAACAQAAAAAAAAAVAAAAAAAAAAAAAAAAAAAETA==
     """)!
 
-// MARK: - Terminal V5 (1.2.3)
-
-private let v5Data = Data(base64Encoded: """
-    YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA01icGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvEB0LDBcYGRoiIyQlKyw4OTo7PEJDSUpLUlNZX2BmZ1UkbnVsbNMNDg8QExZXTlMua2V5c1pOUy5vYmplY3RzViRjbGFzc6IREoACgAOiFBWABIAFgBVeZm9jdXNlZFN1cmZhY2Vbc3VyZmFjZVRyZWVSdjXTDQ4PGx4WohwdgAaAB6IfIIAIgAmAFVd2ZXJzaW9uVHJvb3QQAdMNDg8mKBahJ4AKoSmAC4AVVXNwbGl00w0ODy0yFqQuLzAxgAyADYAOgA+kMzQ1NoAQgBaAF4AagBVVcmlnaHRVcmF0aW9UbGVmdFlkaXJlY3Rpb27TDQ4PPT8WoT6AEaFAgBKAFVR2aWV30w0OD0RGFqFFgBOhR4AUgBVSaWRfECRBQzVFODI5Qi04NUZELTRDNjktQjE5Ni0yRUU0NjlDNzJBOTDSTE1OT1okY2xhc3NuYW1lWCRjbGFzc2VzXxATTlNNdXRhYmxlRGljdGlvbmFyeaNOUFFcTlNEaWN0aW9uYXJ5WE5TT2JqZWN0Iz/gAAAAAAAA0w0OD1RWFqE+gBGhV4AYgBXTDQ4PWlwWoUWAE6FdgBmAFV8QJDkyNkYzRjJBLTgyNEMtNDBDOS04N0NBLTJDRENBNEUxMTA0OdMNDg9hYxahYoAboWSAHIAVWmhvcml6b250YWzTDQ4PaGkWoKCAFQAIABEAGgAkACkAMgA3AEkATABSAFQAdAB6AIEAiQCUAJsAngCgAKIApQCnAKkAqwC6AMYAyQDQANMA1QDXANoA3ADeAOAA6ADtAO8A9gD4APoA/AD+AQABBgENARIBFAEWARgBGgEfASEBIwElAScBKQEvATUBOgFEAUsBTQFPAVEBUwFVAVoBYQFjAWUBZwFpAWsBbgGVAZoBpQGuAcQByAHVAd4B5wHuAfAB8gH0AfYB+AH/AgECAwIFAgcCCQIwAjcCOQI7Aj0CPwJBAkwCUwJUAlUAAAAAAAACAQAAAAAAAABrAAAAAAAAAAAAAAAAAAACV9ETFFokY2xhc3NuYW1lXxAXQ29kYWJsZUJyaWRnZTxUZXJtaW5hbD4ACAARABoAJAApADIANwBJAEwAUQBTAFgAXgBjAGgAbwBxAHMDxAPHA9IAAAAAAAACAQAAAAAAAAAVAAAAAAAAAAAAAAAAAAAD7A==
-    """)!
-
-// MARK: - Terminal V7 (1.3.0)
-
-private let v7Data = Data(base64Encoded: """
-    YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA71icGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvECMLDB0eHyAhIiMkLC0uLzU2QkNERUZMTVNUVVxdY2lqcHF1dlUkbnVsbNMNDg8QFhxXTlMua2V5c1pOUy5vYmplY3RzViRjbGFzc6UREhMUFYACgAOABIAFgAalFxgZGhuAB4AIgAmAIYAigBlfEBdlZmZlY3RpdmVGdWxsc2NyZWVuTW9kZV5mb2N1c2VkU3VyZmFjZVtzdXJmYWNlVHJlZVh0YWJDb2xvcl10aXRsZU92ZXJyaWRlVm5hdGl2ZVJ2N9MNDg8lKByiJieACoALoikqgAyADYAZV3ZlcnNpb25Ucm9vdBAB0w0ODzAyHKExgA6hM4APgBlVc3BsaXTTDQ4PNzwcpDg5OjuAEIARgBKAE6Q9Pj9AgBSAGoAbgB6AGVVyaWdodFVyYXRpb1RsZWZ0WWRpcmVjdGlvbtMNDg9HSRyhSIAVoUqAFoAZVHZpZXfTDQ4PTlAcoU+AF6FRgBiAGVJpZF8QJDk2RUExMTg5LTc0ODItNDFCQy1BNkNELTI2RTUxOTBFNEJGQdJWV1hZWiRjbGFzc25hbWVYJGNsYXNzZXNfEBNOU011dGFibGVEaWN0aW9uYXJ5o1haW1xOU0RpY3Rpb25hcnlYTlNPYmplY3QjP+AAAAAAAADTDQ4PXmAcoUiAFaFhgByAGdMNDg9kZhyhT4AXoWeAHYAZXxAkNUQ1ODBBN0EtODFFQS00N0M2LUJCOUEtQUQ0QjE3ODNFNDc40w0OD2ttHKFsgB+hboAggBlaaG9yaXpvbnRhbNMNDg9ycxygoIAZEAdVMS4zLjAACAARABoAJAApADIANwBJAEwAUgBUAHoAgACHAI8AmgChAKcAqQCrAK0ArwCxALcAuQC7AL0AvwDBAMMA3QDsAPgBAQEPARYBGQEgASMBJQEnASoBLAEuATABOAE9AT8BRgFIAUoBTAFOAVABVgFdAWIBZAFmAWgBagFvAXEBcwF1AXcBeQF/AYUBigGUAZsBnQGfAaEBowGlAaoBsQGzAbUBtwG5AbsBvgHlAeoB9QH+AhQCGAIlAi4CNwI+AkACQgJEAkYCSAJPAlECUwJVAlcCWQKAAocCiQKLAo0CjwKRApwCowKkAqUCpwKpAAAAAAAAAgEAAAAAAAAAdwAAAAAAAAAAAAAAAAAAAq/RExRaJGNsYXNzbmFtZV8QF0NvZGFibGVCcmlkZ2U8VGVybWluYWw+AAgAEQAaACQAKQAyADcASQBMAFEAUwBYAF4AYwBoAG8AcQBzBDQENwRCAAAAAAAAAgEAAAAAAAAAFQAAAAAAAAAAAAAAAAAABFw=
-    """)!
-
-// MARK: - Terminal V7 Generic (tip)
-
-private let v7GenericData = Data(base64Encoded: """
-    YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA8NicGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvECMLDB0eHyAhIiMkLC0uLzU2QkNERUZMTVNUVVxdY2lqcHF1dlUkbnVsbNMNDg8QFhxXTlMua2V5c1pOUy5vYmplY3RzViRjbGFzc6UREhMUFYACgAOABIAFgAalFxgZGhuAB4AIgAmAIYAigBlfEBdlZmZlY3RpdmVGdWxsc2NyZWVuTW9kZV5mb2N1c2VkU3VyZmFjZVtzdXJmYWNlVHJlZVh0YWJDb2xvcl10aXRsZU92ZXJyaWRlVm5hdGl2ZVp2NyBnZW5lcmlj0w0ODyUoHKImJ4AKgAuiKSqADIANgBlXdmVyc2lvblRyb290EAHTDQ4PMDIcoTGADqEzgA+AGVVzcGxpdNMNDg83PBykODk6O4AQgBGAEoATpD0+P0CAFIAagBuAHoAZVXJpZ2h0VXJhdGlvVGxlZnRZZGlyZWN0aW9u0w0OD0dJHKFIgBWhSoAWgBlUdmlld9MNDg9OUByhT4AXoVGAGIAZUmlkXxAkRDMyMjM1NjktMkUwMS00QkM1LTlEQjItREJGQzNBRkY0NkQx0lZXWFlaJGNsYXNzbmFtZVgkY2xhc3Nlc18QE05TTXV0YWJsZURpY3Rpb25hcnmjWFpbXE5TRGljdGlvbmFyeVhOU09iamVjdCM/4AAAAAAAANMNDg9eYByhSIAVoWGAHIAZ0w0OD2RmHKFPgBehZ4AdgBlfECQ5NTNDRTk1Mi1EOTFELTREMzYtQUM3Mi05RDBGMUY2QkNFNzPTDQ4Pa20coWyAH6FugCCAGVpob3Jpem9udGFs0w0OD3JzHKCggBkQB1N0aXAACAARABoAJAApADIANwBJAEwAUgBUAHoAgACHAI8AmgChAKcAqQCrAK0ArwCxALcAuQC7AL0AvwDBAMMA3QDsAPgBAQEPARYBIQEoASsBLQEvATIBNAE2ATgBQAFFAUcBTgFQAVIBVAFWAVgBXgFlAWoBbAFuAXABcgF3AXkBewF9AX8BgQGHAY0BkgGcAaMBpQGnAakBqwGtAbIBuQG7Ab0BvwHBAcMBxgHtAfIB/QIGAhwCIAItAjYCPwJGAkgCSgJMAk4CUAJXAlkCWwJdAl8CYQKIAo8CkQKTApUClwKZAqQCqwKsAq0CrwKxAAAAAAAAAgEAAAAAAAAAdwAAAAAAAAAAAAAAAAAAArXRExRaJGNsYXNzbmFtZV8QF0NvZGFibGVCcmlkZ2U8VGVybWluYWw+AAgAEQAaACQAKQAyADcASQBMAFEAUwBYAF4AYwBoAG8AcQBzBDoEPQRIAAAAAAAAAgEAAAAAAAAAFQAAAAAAAAAAAAAAAAAABGI=
-    """)!

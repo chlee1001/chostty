@@ -47,4 +47,27 @@ struct MenuShortcutManagerTests {
         #expect(goToLeftItem.keyEquivalent == "h")
         #expect(goToLeftItem.keyEquivalentModifierMask == .command)
     }
+
+    // MARK: - P2: Undo/Reopen menu pin (`AppDelegate.pinUndoShortcut`/`pinReopenShortcut`)
+
+    /// `undo`'s config binding is `performable`, so it is never painted from
+    /// the reverse lookup (`syncMenuShortcut` always clears it). Pinning
+    /// must land Edit▸Undo on Cmd+Z and Reopen Closed Tab on the DISTINCT
+    /// Cmd+Shift+T unconditionally, regardless of what the config's reverse
+    /// lookup would otherwise have painted.
+    @MainActor
+    @Test func undoAndReopenPinDistinctChords() {
+        let undoItem = NSMenuItem(title: "Undo", action: nil, keyEquivalent: "")
+        // Simulate `syncMenuShortcut` having just cleared it, per the bug.
+        undoItem.keyEquivalent = ""
+        undoItem.keyEquivalentModifierMask = []
+        AppDelegate.pinUndoShortcut(on: undoItem)
+        #expect(undoItem.keyEquivalent == "z")
+        #expect(undoItem.keyEquivalentModifierMask == .command)
+
+        let reopenItem = NSMenuItem(title: "Reopen Closed Tab", action: nil, keyEquivalent: "")
+        AppDelegate.pinReopenShortcut(on: reopenItem)
+        #expect(reopenItem.keyEquivalent == "t")
+        #expect(reopenItem.keyEquivalentModifierMask == [.command, .shift])
+    }
 }
