@@ -268,11 +268,12 @@ class TerminalController: BaseTerminalController {
     /// Used by v8 restoration to mount a full multi-workspace hierarchy.
     init(_ ghostty: Ghostty.App,
          graph: TerminalControllerGraphFactory.InitialGraph,
-         restorable: Bool = true
+         restorable: Bool = true,
+         restoredPhysicalUUID: UUID? = nil
     ) {
         self.restorable = restorable
         self.derivedConfig = DerivedConfig(ghostty.config)
-        super.init(ghostty, graph: graph)
+        super.init(ghostty, graph: graph, restoredPhysicalUUID: restoredPhysicalUUID)
         registerCommonObservers(NotificationCenter.default)
     }
 

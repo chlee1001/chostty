@@ -177,11 +177,17 @@ class BaseTerminalController: NSWindowController,
     /// Subclasses must build the graph via ``TerminalControllerGraphFactory``
     /// before delegating. No surface, session, or store is created here; only
     /// observation/telemetry setup happens after `super.init`.
+    /// `restoredPhysicalUUID` rehydrates the identity persisted by a prior
+    /// run. AppleScript derives a window's `id` from this, so minting a fresh
+    /// one on restore silently invalidates every saved reference: a script
+    /// that stored an id before quit would address nothing after relaunch.
+    /// Pass nil for a genuinely new window.
     init(_ ghostty: Ghostty.App,
-         graph: TerminalControllerGraphFactory.InitialGraph
+         graph: TerminalControllerGraphFactory.InitialGraph,
+         restoredPhysicalUUID: UUID? = nil
     ) {
         self.ghostty = ghostty
-        self.physicalUUID = UUID()
+        self.physicalUUID = restoredPhysicalUUID ?? UUID()
         self.derivedConfig = DerivedConfig(ghostty.config)
         self.workspaceStore = graph.store
 

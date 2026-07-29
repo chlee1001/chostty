@@ -213,10 +213,13 @@ extension ScriptWindow {
     /// Produces the window-level stable ID from the primary controller's
     /// `physicalUUID`. Stable for the controller's whole in-process lifetime,
     /// including before its `NSWindow` exists — unlike the pre-Phase-5
-    /// scheme, which keyed off `NSWindow`/controller `ObjectIdentifier`. Does
-    /// NOT agree with the `physicalID` persisted from a prior run:
-    /// `physicalUUID` is freshly minted on every launch and never rehydrated
-    /// from restorable state.
+    /// scheme, which keyed off `NSWindow`/controller `ObjectIdentifier`.
+    ///
+    /// Also stable ACROSS relaunch for a restored window: `physicalUUID` is
+    /// persisted as `physicalID` and rehydrated by `restoreWindow`, so an id
+    /// a script saved before quit still addresses the same window afterwards.
+    /// A window that was not restored (restoration disabled, a decode
+    /// failure, or a genuinely new window) mints a fresh one.
     static func stableID(primaryController: BaseTerminalController) -> String {
         "window-\(primaryController.physicalUUID.uuidString)"
     }

@@ -48,16 +48,23 @@ enum TerminalControllerTestHarness {
     /// Returns `nil` under the same conditions `makeFromWorkspaces` does: an
     /// empty `workspaces` array, or a selection that cannot be resolved to
     /// any tab in any workspace.
+    /// `restoredPhysicalUUID` mirrors what `TerminalWindowRestoration`
+    /// passes when rehydrating a saved window; nil builds a genuinely new
+    /// one.
     @MainActor
     static func make(
         workspaces: [WorkspaceSession],
-        selection: Selection
+        selection: Selection,
+        restoredPhysicalUUID: UUID? = nil
     ) -> TerminalController? {
         guard let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
             workspaces,
             selection: selection
         ) else { return nil }
 
-        return TerminalController(sharedApp, graph: graph)
+        return TerminalController(
+            sharedApp,
+            graph: graph,
+            restoredPhysicalUUID: restoredPhysicalUUID)
     }
 }

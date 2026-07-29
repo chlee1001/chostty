@@ -72,17 +72,30 @@ xattr -cr macos/build/Debug/Chostty.app
 `xattr -cr` before the test step is required: launching the app re-adds extended
 attributes that fail the test host's codesign step.
 
+## Verification
+
+The suite and `macos/scripts/native-tab-audit.sh` run on every change. Hosting
+SwiftUI in this test target hangs the XCTest runner, so a few paths are checked
+by hand instead; all of the following were exercised on macOS 26 / Apple
+silicon and pass:
+
+- Fullscreen enter and exit, native and non-native, with one tab and with four.
+- Twenty tabs render and scroll; `Cmd+Shift+]` brings the last one into view.
+- Right-clicking blank sidebar space opens the workspace menu.
+
+Where hosting is impossible, some assertions pin the shipped source text rather
+than observed layout. Those normalize away comments and whitespace first, and
+each was checked to fail on the real defect and to survive a cosmetic reformat —
+an earlier version was satisfied by a doc comment while the real frame was
+hard-coded.
+
 ## Known gaps
 
-- Fullscreen enter/exit, tab-strip scrolling with many tabs, the sidebar
-  empty-area context menu hit area, and AppleScript end-to-end behaviour are
-  verified manually. Hosting SwiftUI in this test target hangs the XCTest
-  runner, so those paths have no automated coverage.
 - `new tab` without an explicit `in window …` target is unreliable under
   osascript automation; `new tab in window 1` works.
-- An AppleScript `window id` is stable for the window's lifetime but changes
-  across relaunch — the persisted `physicalID` is written but never read back.
 - Collapse All, Expand All and the single-workspace policy toggle are reachable
   from menus, not the command palette; the palette is driven by Ghostty config
   and has no app-local command source.
+- Source-pinned assertions catch a modifier being removed or moved, but not one
+  being added alongside.
 - The app icon is still Ghostty's.

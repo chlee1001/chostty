@@ -179,7 +179,14 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
                workspaces: workspaces,
                selectedWorkspaceID: state.selectedWorkspaceID,
                selectedTabID: state.selectedTabID) {
-            c = TerminalController(appDelegate.ghostty, graph: graph)
+            // Carry the persisted identity forward so an AppleScript `window
+            // id` saved before quit still addresses this window. Only on the
+            // hierarchy-restore path: the fallback below is a fresh window,
+            // not the restored one, and must not inherit its id.
+            c = TerminalController(
+                appDelegate.ghostty,
+                graph: graph,
+                restoredPhysicalUUID: state.physicalID)
         } else {
             AppDelegate.logger.warning(
                 "restoration: v8 hierarchy missing or invalid; starting a fresh workspace")
