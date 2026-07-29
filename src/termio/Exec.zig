@@ -684,6 +684,15 @@ const Subprocess = struct {
             // running in Ghostty.
             try env.put("GHOSTTY_BIN_DIR", exe_dir);
 
+            // Export the actual executable basename too. The shell integration
+            // scripts are shared across every platform, but the macOS product
+            // ships as `chostty` while Linux/GTK still ships `ghostty`, so a
+            // hardcoded name in the scripts would break one of them. Deriving
+            // it from the running binary keeps a single set of scripts correct
+            // on both without probing the filesystem for candidate names.
+            const exe_name = std.fs.path.basename(exe_bin_path);
+            try env.put("GHOSTTY_EXECUTABLE_NAME", exe_name);
+
             // Append if we have a path. We want to append so that ghostty is
             // the last priority in the path. If we don't have a path set
             // then we just set it to the directory of the binary.

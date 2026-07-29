@@ -54,7 +54,7 @@ pub fn run(alloc: Allocator) !u8 {
         \\`ghostty -e top` will run the `top` command inside the terminal.
         \\
         \\On macOS, launching the terminal emulator from the CLI is not
-        \\supported and only actions are supported. Use `open -na Ghostty.app`
+        \\supported and only actions are supported. Use `open -na Chostty.app`
         \\instead, or `open -na ghostty.app --args --foo=bar --baz=quz` to pass
         \\arguments.
         \\

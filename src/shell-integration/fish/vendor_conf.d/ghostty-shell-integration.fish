@@ -130,7 +130,11 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
             set -l flags
             contains ssh-env $features; or set -a flags --forward-env=false
             contains ssh-terminfo $features; or set -a flags --terminfo=false
-            "$GHOSTTY_BIN_DIR/ghostty" +ssh $flags -- $argv
+            # The macOS product ships as `chostty`; Linux/GTK ships `ghostty`.
+            # The running binary tells us which, so one script serves both.
+            set -l exe $GHOSTTY_EXECUTABLE_NAME
+            test -n "$exe"; or set exe ghostty
+            "$GHOSTTY_BIN_DIR/$exe" +ssh $flags -- $argv
         end
     end
 
