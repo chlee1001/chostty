@@ -11,6 +11,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # shellcheck is preinstalled on the Ubuntu image and absent from the macOS
+  # one. Linting shell here costs seconds instead of a brew install inside the
+  # long macOS job.
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck macos/scripts/*.sh scripts/*.sh
+
   macos:
     runs-on: macos-26
     timeout-minutes: 90
@@ -27,9 +37,6 @@ jobs:
       # back in, and it fails in seconds when it fails.
       - name: Native tab audit
         run: ./macos/scripts/native-tab-audit.sh
-
-      - name: Shell scripts
-        run: shellcheck macos/scripts/*.sh scripts/*.sh
 
       - name: Build GhosttyKit
         run: zig build -Demit-macos-app=false
