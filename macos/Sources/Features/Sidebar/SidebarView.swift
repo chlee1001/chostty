@@ -322,57 +322,64 @@ struct WorkspaceSessionList: View {
     }
 
     var body: some View {
-        // An always-visible host for the same items the background menu
-        // carries. The background menu is occludable by construction: a
-        // ScrollView cannot be scrolled past its content, so once the tab list
-        // fills the viewport there is no blank space left to right-click and
-        // every hit resolves to a row's own menu. Under the default `flatten`
-        // policy no workspace header row exists either, which would leave
-        // Rename / Color / Default Directory and the policy toggle with NO
-        // route at all on a workspace with enough tabs.
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 4) {
-                ForEach(visibleWorkspaces) { workspace in
-                    WorkspaceSessionRow(
-                        workspace: workspace,
-                        store: store,
-                        dropTarget: $dropTarget,
-                        onSelectTab: onSelectTab,
-                        onCloseTab: onCloseTab,
-                        onCloseWorkspace: onCloseWorkspace,
-                        onDrop: handleDrop,
-                        filterQuery: filterQuery,
-                        isFlattened: isFlattened,
-                        singleWorkspacePolicy: singleWorkspacePolicy,
-                        onTogglePolicy: toggleSingleWorkspacePolicy
-                    )
+        // F11: right-clicking blank space below the last row opens the
+        // workspace menu.
+        //
+        // Blank space in a ScrollView belongs to no view, so there is nothing
+        // to hit-test and a right-click there is simply dropped. Attaching the
+        // menu to a `.background(...)` behind the ScrollView does not help
+        // either: that layer sits behind the AppKit scroll view, which hit-
+        // tests first and swallows the click. Both spellings look correctly
+        // wired and are dead in the running app.
+        //
+        // So the content is stretched to at least the viewport height and the
+        // menu is attached to the content. The blank region is then a real,
+        // hit-testable part of the stack rather than a hole. `contentShape`
+        // is required because a stack's hit area is otherwise only its
+        // children, which is the same hole in a different place.
+        //
+        // Right-clicking a row still opens that row's menu: SwiftUI resolves
+        // the innermost `contextMenu` covering the click, and only blank space
+        // falls through to this one.
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(visibleWorkspaces) { workspace in
+                        WorkspaceSessionRow(
+                            workspace: workspace,
+                            store: store,
+                            dropTarget: $dropTarget,
+                            onSelectTab: onSelectTab,
+                            onCloseTab: onCloseTab,
+                            onCloseWorkspace: onCloseWorkspace,
+                            onDrop: handleDrop,
+                            filterQuery: filterQuery,
+                            isFlattened: isFlattened,
+                            singleWorkspacePolicy: singleWorkspacePolicy,
+                            onTogglePolicy: toggleSingleWorkspacePolicy
+                        )
+                    }
+                    if isFilterActive && visibleWorkspaces.isEmpty {
+                        noMatchesPlaceholder
+                    }
                 }
-                if isFilterActive && visibleWorkspaces.isEmpty {
-                    noMatchesPlaceholder
-                }
-            }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 4)
-            .frame(maxWidth: .infinity, alignment: .top)
-        }
-        // F11: the empty-area menu is attached to the ScrollView's own
-        // background rather than a layer inside its content. A `.background`
-        // on the ScrollView itself is sized to the ScrollView's real
-        // viewport frame by construction (no magic constant needed, and no
-        // vertical-centering surprise for a short list), and it never
-        // scrolls with the content, so it still sits behind every row —
-        // right-clicking a row hits that row's own `contextMenu` first, and
-        // right-clicking blank space anywhere in the viewport (short list or
-        // long) reaches this one. Deliberately no `onDrop(of:delegate:)`
-        // here: that API deadlocks the XCTest host (see
-        // `WorkspaceDragDrop.swift`).
-        .background(
-            Color.clear
+                .padding(.vertical, 6)
+                .padding(.horizontal, 4)
+                // `minHeight`, not `height`: a list longer than the viewport
+                // must still scroll normally.
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: proxy.size.height,
+                    alignment: .top
+                )
                 .contentShape(Rectangle())
+                // Deliberately no `onDrop(of:delegate:)` here: that API
+                // deadlocks the XCTest host (see `WorkspaceDragDrop.swift`).
                 .contextMenu {
                     emptyAreaMenuItems
                 }
-        )
+            }
+        }
     }
 
     /// F6 empty-result affordance: a non-empty query that matches nothing
