@@ -41,6 +41,12 @@ jobs:
         if: steps.analyze.outputs.changed == 'yes'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The analysis step adds an `upstream` remote, and gh resolves the
+          # target repository from remote names before origin — so without
+          # this every gh call below aims at ghostty-org/ghostty and is
+          # rejected, which reads as a permissions problem rather than a
+          # wrong-target one.
+          GH_REPO: ${{ github.repository }}
         run: |
           title="Upstream Ghostty has moved"
           # One rolling issue. A new one per run would bury the review list
