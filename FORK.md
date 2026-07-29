@@ -91,11 +91,34 @@ hard-coded.
 
 ## Known gaps
 
-- `new tab` without an explicit `in window …` target is unreliable under
-  osascript automation; `new tab in window 1` works.
+- `new tab` is only dispatched when the `in` parameter is present. `new tab in
+  window 1` and `new tab in front window` work; `new tab` alone fails with
+  errAEEventNotHandled (-1708), and so does `new tab with configuration …`
+  without an `in`. It is not automation flakiness — the raw `«event GhstNTab»`
+  fails the same way with the app frontmost, and upstream Ghostty fails
+  identically, so this is inherited rather than introduced. `new window` takes
+  no `in` and works with no parameters at all. Left alone because the fix is a
+  dictionary change and the dictionary is deliberately frozen; pass `in front
+  window`.
 - Collapse All, Expand All and the single-workspace policy toggle are reachable
   from menus, not the command palette; the palette is driven by Ghostty config
   and has no app-local command source.
 - Source-pinned assertions catch a modifier being removed or moved, but not one
   being added alongside.
 - The app icon is still Ghostty's.
+
+## Working on this
+
+The build directories hold `Chostty.app` copies carrying the same bundle
+identifier as the installed one. Once LaunchServices has seen them,
+`tell application "Chostty"` and `tell application id "com.chostty.app"` can
+resolve to a copy that is not running and block in `AESendMessage` forever,
+which looks exactly like the app hanging — it is not; its main thread is idle.
+Unregister them before any scripting work:
+
+    lsregister -u "$PWD/macos/build/Release/Chostty.app"
+
+`lsregister` lives in
+`/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support`.
+`tell application "/Applications/Chostty.app"` bypasses the ambiguity and is a
+quick way to tell the two failures apart.
