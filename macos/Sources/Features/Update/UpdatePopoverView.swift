@@ -20,6 +20,11 @@ struct UpdatePopoverView: View {
                 // should not call the popover for idles.
                 EmptyView()
 
+            case .disabledNoChosttyFeed:
+                // Terminal, non-actionable state: there is nothing to confirm,
+                // retry, or dismiss, so the popover shows nothing.
+                EmptyView()
+
             case .permissionRequest(let request):
                 PermissionRequestView(request: request, dismiss: dismiss)
 
@@ -62,7 +67,7 @@ private struct PermissionRequestView: View {
                 Text("Enable automatic updates?")
                     .font(.system(size: 13, weight: .semibold))
 
-                Text("Ghostty can automatically check for updates in the background.")
+                Text("Chostty can automatically check for updates in the background.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

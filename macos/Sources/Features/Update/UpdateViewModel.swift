@@ -12,6 +12,8 @@ class UpdateViewModel: ObservableObject {
         switch state {
         case .idle:
             return ""
+        case .disabledNoChosttyFeed:
+            return "Updates Disabled"
         case .permissionRequest:
             return "Enable Automatic Updates?"
         case .checking:
@@ -57,6 +59,8 @@ class UpdateViewModel: ObservableObject {
         switch state {
         case .idle:
             return nil
+        case .disabledNoChosttyFeed:
+            return "arrow.down.circle.dotted"
         case .permissionRequest:
             return "questionmark.circle"
         case .checking:
@@ -82,6 +86,8 @@ class UpdateViewModel: ObservableObject {
         switch state {
         case .idle:
             return ""
+        case .disabledNoChosttyFeed:
+            return "Chostty does not have an update feed yet, so in-app updates are turned off"
         case .permissionRequest:
             return "Configure automatic update preferences"
         case .checking:
@@ -125,6 +131,8 @@ class UpdateViewModel: ObservableObject {
     var iconColor: Color {
         switch state {
         case .idle:
+            return .secondary
+        case .disabledNoChosttyFeed:
             return .secondary
         case .permissionRequest:
             return .white
@@ -176,6 +184,12 @@ class UpdateViewModel: ObservableObject {
 
 enum UpdateState: Equatable {
     case idle
+    /// In-app updates are turned off because Chostty does not own an update
+    /// feed or signing key yet. This is a terminal, non-actionable state: no
+    /// scheduler runs, no manual check is possible, and no network request is
+    /// ever made. It exists so the UI reports the real reason instead of
+    /// silently appearing idle.
+    case disabledNoChosttyFeed
     case permissionRequest(PermissionRequest)
     case checking(Checking)
     case updateAvailable(UpdateAvailable)

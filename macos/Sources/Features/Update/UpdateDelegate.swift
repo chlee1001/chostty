@@ -3,17 +3,15 @@ import Cocoa
 
 extension UpdateDriver: SPUUpdaterDelegate {
     func feedURLString(for updater: SPUUpdater) -> String? {
-        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
-            return nil
-        }
-
-        // Sparkle supports a native concept of "channels" but it requires that
-        // you share a single appcast file. We don't want to do that so we
-        // do this instead.
-        switch appDelegate.ghostty.config.autoUpdateChannel {
-        case .tip: return "https://tip.files.ghostty.org/appcast.xml"
-        case .stable: return "https://release.files.ghostty.org/appcast.xml"
-        }
+        // Chostty is a fork with its own product identity (Chostty.app /
+        // chostty / com.chostty.app). Pointing at upstream Ghostty's appcast
+        // would let an upstream release replace this fork, so in-app updates
+        // stay fully disabled until Chostty owns a feed, signing key, hosting,
+        // and rotation policy.
+        //
+        // Returning nil means Sparkle has no feed and cannot find, download,
+        // or install anything.
+        return nil
     }
 
     /// Called when an update is scheduled to install silently,
