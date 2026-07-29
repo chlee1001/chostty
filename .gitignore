@@ -32,3 +32,8 @@ glad.zip
 vgcore.*
 
 /sprite_face_test*
+
+# Chostty: agent workflow scratch and macOS build output
+.gjc/
+artifacts/
+macos/build/
