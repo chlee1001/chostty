@@ -10,9 +10,11 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
     // Separate defaults based on debug vs release builds so we can test icons
     // without messing up releases.
     #if DEBUG
-    private let ghosttyUserDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty.debug")
+    private let primaryDefaults = UserDefaults(suiteName: "com.chostty.app.debug")
+    private let legacyDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty.debug")
     #else
-    private let ghosttyUserDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty")
+    private let primaryDefaults = UserDefaults(suiteName: "com.chostty.app")
+    private let legacyDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty")
     #endif
 
     private var iconChangeObserver: Any?
@@ -20,22 +22,28 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
     /// The primary NSDockTilePlugin function.
     func setDockTile(_ dockTile: NSDockTile?) {
         // If no dock tile or no access to Ghostty defaults, we can't do anything.
-        guard let dockTile, let ghosttyUserDefaults else {
+        guard let dockTile else {
             iconChangeObserver = nil
             return
         }
 
         // Try to restore the previous icon on launch.
-        iconDidChange(ghosttyUserDefaults.appIcon, dockTile: dockTile)
+        iconDidChange(currentAppIcon(), dockTile: dockTile)
 
         // Setup a new observer for when the icon changes so we can update. This message
         // is sent by the primary Ghostty app.
         iconChangeObserver = DistributedNotificationCenter
             .default()
             .publisher(for: .ghosttyIconDidChange)
-            .map { [weak self] _ in self?.ghosttyUserDefaults?.appIcon }
+            .map { [weak self] _ in self?.currentAppIcon() }
             .receive(on: DispatchQueue.global())
             .sink { [weak self] newIcon in self?.iconDidChange(newIcon, dockTile: dockTile) }
+    }
+
+    /// Read the configured app icon, preferring the Chostty defaults domain
+    /// and falling back to the legacy Ghostty domain for migration.
+    private func currentAppIcon() -> AppIcon? {
+        primaryDefaults.flatMap { $0.appIcon } ?? legacyDefaults.flatMap { $0.appIcon }
     }
 
     private func iconDidChange(_ newIcon: AppIcon?, dockTile: NSDockTile) {

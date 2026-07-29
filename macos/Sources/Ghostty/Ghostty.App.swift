@@ -1133,7 +1133,10 @@ extension Ghostty {
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
 
                     // See gotoTab for notes on this check.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    guard let controller = surfaceView.window?.windowController as? BaseTerminalController,
+                          let tabID = controller.presentedSessionID,
+                          let workspace = controller.workspaceStore.workspace(forTabID: tabID),
+                          workspace.tabs.count > 1 else { return false }
 
                     NotificationCenter.default.post(
                         name: .ghosttyMoveTab,
@@ -1165,7 +1168,10 @@ extension Ghostty {
 
                     // Similar to goto_split (see comment there) about our performability,
                     // we should make this more accurate later.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    guard let controller = surfaceView.window?.windowController as? BaseTerminalController,
+                          let tabID = controller.presentedSessionID,
+                          let workspace = controller.workspaceStore.workspace(forTabID: tabID),
+                          workspace.tabs.count > 1 else { return false }
 
                     NotificationCenter.default.post(
                         name: Notification.ghosttyGotoTab,
@@ -1235,17 +1241,13 @@ extension Ghostty {
             target: ghostty_target_s,
             direction: ghostty_action_goto_window_e
         ) -> Bool {
-            // Collect candidate windows: visible terminal windows that are either
-            // standalone or the currently selected tab in their tab group. This
-            // treats each native tab group as a single "window" for navigation
-            // purposes, since goto_tab handles per-tab navigation.
+            // Collect candidate windows: visible, physical terminal windows.
+            // Native tabbing is disallowed, so every window is its own
+            // hierarchy of virtual tabs; `goto_tab` handles per-tab
+            // navigation within one, this handles moving between windows.
             let candidates: [NSWindow] = NSApplication.shared.windows.filter { window in
                 guard window.windowController is BaseTerminalController else { return false }
                 guard window.isVisible, !window.isMiniaturized else { return false }
-                // For native tabs, only include the selected tab in each group
-                if let group = window.tabGroup, group.selectedWindow !== window {
-                    return false
-                }
                 return true
             }
 
@@ -1646,13 +1648,17 @@ extension Ghostty {
 
             case GHOSTTY_TARGET_SURFACE:
                 guard let title = String(cString: v.title!, encoding: .utf8) else { return false }
-                let titleOverride = title.isEmpty ? nil : title
                 guard let surface = target.target.surface else { return false }
                 guard let surfaceView = self.surfaceView(from: surface) else { return false }
                 guard let window = surfaceView.window,
-                      let controller = window.windowController as? BaseTerminalController
+                      let controller = window.windowController as? BaseTerminalController,
+                      let presentedSessionID = controller.presentedSessionID
                 else { return false }
-                controller.titleOverride = titleOverride
+                // Write through the store so the tab strip/sidebar label
+                // actually changes, not just the window title (which is
+                // derived from the presented session's `titleOverride`).
+                controller.workspaceStore.renameTab(presentedSessionID, to: title)
+                controller.applyTitleToWindow()
                 return true
 
             default:

@@ -55,8 +55,11 @@ class QuickTerminalController: BaseTerminalController {
         self.screenStateCache = QuickTerminalScreenStateCache(stateByDisplay: restorationState?.screenStateEntries ?? [:])
         // Important detail here: we initialize with an empty surface tree so
         // that we don't start a terminal process. This gets started when the
-        // first terminal is shown in `animateIn`.
-        super.init(ghostty, baseConfig: base, surfaceTree: .init())
+        // first terminal is shown in `animateIn`. We use `makeEmpty` so the
+        // store has one session with an empty surface tree (nonoptional store,
+        // committed initial snapshot) without spawning a PTY.
+        let graph = TerminalControllerGraphFactory.makeEmpty(ghostty: ghostty)
+        super.init(ghostty, graph: graph)
 
         // Setup our notifications for behaviors
         let center = NotificationCenter.default

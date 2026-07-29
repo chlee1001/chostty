@@ -66,10 +66,11 @@ class ServiceProvider: NSObject {
                 _ = TerminalController.newWindow(delegate.ghostty, withBaseConfig: config)
 
             case .tab:
-                _ = TerminalController.newTab(
-                    delegate.ghostty,
-                    from: TerminalController.preferredParent?.window,
-                    withBaseConfig: config)
+                // Services callbacks arrive on the main thread but are not
+                // statically main-actor isolated.
+                MainActor.assumeIsolated {
+                    _ = delegate.terminalCommands.createVirtualTab(baseConfig: config)
+                }
             }
         }
 

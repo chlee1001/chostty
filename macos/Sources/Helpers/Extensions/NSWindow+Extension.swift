@@ -31,34 +31,7 @@ extension NSWindow {
     }
 }
 
-// MARK: Native Tabbing
-
-extension NSWindow {
-    /// True if this is the first window in the tab group.
-    var isFirstWindowInTabGroup: Bool {
-        guard let firstWindow = tabGroup?.windows.first else { return true }
-        return firstWindow === self
-    }
-
-    /// Wraps `addTabbedWindow` with an Objective-C exception catcher because AppKit can
-    /// throw NSExceptions in visual tab picker flows. Swift cannot safely recover from
-    /// those exceptions, so we route through Obj-C and log a recoverable failure.
-    @discardableResult
-    func addTabbedWindowSafely(
-        _ child: NSWindow,
-        ordered: NSWindow.OrderingMode
-    ) -> Bool {
-        var error: NSError?
-        let success = GhosttyAddTabbedWindowSafely(self, child, ordered.rawValue, &error)
-        if let error {
-            Ghostty.logger.error("addTabbedWindow failed: \(error.localizedDescription, privacy: .public)")
-        }
-
-        return success
-    }
-}
-
-/// Native tabbing private API usage. :(
+/// Private-API access to the titlebar view, used only for titlebar text styling.
 extension NSWindow {
     var titlebarView: NSView? {
         // In normal window, `NSTabBar` typically appears as a subview of `NSTitlebarView` within `NSThemeFrame`.
@@ -68,44 +41,5 @@ extension NSWindow {
         guard let themeFrameView = contentView?.rootView else { return nil }
         guard themeFrameView.responds(to: Selector(("titlebarView"))) else { return nil }
         return themeFrameView.value(forKey: "titlebarView") as? NSView
-    }
-
-    /// Returns the [private] NSTabBar view, if it exists.
-    var tabBarView: NSView? {
-        titlebarView?.firstDescendant(withClassName: "NSTabBar")
-    }
-
-    /// Returns tab button views in visual order from left to right.
-    func tabButtonsInVisualOrder() -> [NSView] {
-        guard let tabBarView else { return [] }
-        return tabBarView
-            .descendants(withClassName: "NSTabButton")
-            .sorted { $0.frame.minX < $1.frame.minX }
-    }
-
-    /// Returns the visual tab index and matching tab button at the given screen point.
-    func tabButtonHit(atScreenPoint screenPoint: NSPoint) -> (index: Int, tabButton: NSView)? {
-        guard let tabBarView, let tabBarWindow = tabBarView.window else { return nil }
-
-        // In fullscreen, AppKit can host the titlebar and tab bar in a separate
-        // NSToolbarFullScreenWindow. Hit testing has to use that window's base
-        // coordinate space or content clicks can be misinterpreted as tab clicks.
-        let locationInTabBarWindow = tabBarWindow.convertPoint(fromScreen: screenPoint)
-        let locationInTabBar = tabBarView.convert(locationInTabBarWindow, from: nil)
-        guard tabBarView.bounds.contains(locationInTabBar) else { return nil }
-
-        for (index, tabButton) in tabButtonsInVisualOrder().enumerated() {
-            let locationInTabButton = tabButton.convert(locationInTabBarWindow, from: nil)
-            if tabButton.bounds.contains(locationInTabButton) {
-                return (index, tabButton)
-            }
-        }
-
-        return nil
-    }
-
-    /// Returns the index of the tab button at the given screen point, if any.
-    func tabIndex(atScreenPoint screenPoint: NSPoint) -> Int? {
-        tabButtonHit(atScreenPoint: screenPoint)?.index
     }
 }

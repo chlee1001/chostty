@@ -365,7 +365,14 @@ extension Ghostty {
             let key = "macos-titlebar-style"
             guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return defaultValue }
             guard let ptr = v else { return defaultValue }
-            return MacOSTitlebarStyle(rawValue: String(cString: ptr)) ?? defaultValue
+            let style = MacOSTitlebarStyle(rawValue: String(cString: ptr)) ?? defaultValue
+
+            // Per IR 3: native tabbing is disallowed, so the dedicated "tabs"
+            // titlebar rendering no longer applies. `tabs` is silently
+            // aliased to `transparent` here — the single read site — so
+            // existing config files keep parsing with NO warning, while
+            // every other caller can treat `.tabs` as unreachable.
+            return style == .tabs ? .transparent : style
         }
 
         var macosTitlebarProxyIcon: MacOSTitlebarProxyIcon {

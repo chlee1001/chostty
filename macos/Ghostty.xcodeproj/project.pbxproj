@@ -121,6 +121,19 @@
 				App/macOS/main.swift,
 				App/macOS/MainMenu.xib,
 				Features/About/About.xib,
+				Features/Sidebar/SidebarView.swift,
+				Features/Sidebar/VirtualTabBar.swift,
+				Features/Workspace/ReservedShortcutDispatcher.swift,
+				Features/Terminal/TerminalControllerTestHarness.swift,
+				Features/Sidebar/WorkspaceDragDrop.swift,
+				Features/Workspace/DetachedUndoLease.swift,
+				Features/Workspace/ClosedTabHistory.swift,
+				Features/Workspace/GitMetadataService.swift,
+				Features/Workspace/SurfaceEventDispatcher.swift,
+				Features/Workspace/SurfaceOwnerRegistry.swift,
+				Features/Workspace/TerminalCommandRouter.swift,
+				Features/Workspace/TerminalSessionState.swift,
+				Features/Workspace/WorkspaceSessionStore.swift,
 				Features/About/AboutController.swift,
 				Features/About/AboutView.swift,
 				Features/About/AboutViewModel.swift,
@@ -193,12 +206,8 @@
 				"Features/Terminal/Window Styles/HiddenTitlebarTerminalWindow.swift",
 				"Features/Terminal/Window Styles/Terminal.xib",
 				"Features/Terminal/Window Styles/TerminalHiddenTitlebar.xib",
-				"Features/Terminal/Window Styles/TerminalTabsTitlebarTahoe.xib",
-				"Features/Terminal/Window Styles/TerminalTabsTitlebarVentura.xib",
 				"Features/Terminal/Window Styles/TerminalTransparentTitlebar.xib",
 				"Features/Terminal/Window Styles/TerminalWindow.swift",
-				"Features/Terminal/Window Styles/TitlebarTabsTahoeTerminalWindow.swift",
-				"Features/Terminal/Window Styles/TitlebarTabsVenturaTerminalWindow.swift",
 				"Features/Terminal/Window Styles/TransparentTitlebarTerminalWindow.swift",
 				Features/Update/UpdateBadge.swift,
 				Features/Update/UpdateController.swift,
@@ -248,12 +257,9 @@
 				Helpers/LastWindowPosition.swift,
 				Helpers/MetalView.swift,
 				Helpers/NonDraggableHostingView.swift,
-				Helpers/ObjCExceptionCatcher.m,
 				Helpers/PermissionRequest.swift,
 				Helpers/Private/CGS.swift,
 				Helpers/Private/Dock.swift,
-				Helpers/TabGroupCloseCoordinator.swift,
-				Helpers/TabTitleEditor.swift,
 				Helpers/VibrantLayer.m,
 			);
 			target = A5D4499C2B53AE7B000F5B83 /* Ghostty-iOS */;
@@ -749,29 +755,30 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = chostty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Ghostty;
+				INFOPLIST_KEY_CFBundleDisplayName = Chostty;
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "A program running within Ghostty would like to access your system's audio.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Chostty would like to use AppleScript.";
+				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "A program running within Chostty would like to access your system's audio.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Chostty would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Chostty would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Chostty would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Chostty would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Chostty would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Chostty would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Chostty would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Chostty would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Chostty would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Chostty would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Chostty would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Chostty would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Chostty requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -780,8 +787,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.ghostty;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.app;
+				PRODUCT_NAME = Chostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/macOS/ghostty-bridging-header.h";
 				SWIFT_VERSION = 5.0;
@@ -799,7 +807,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -822,7 +830,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -845,7 +853,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.UITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -867,14 +875,14 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Ghostty Dock Tile Plugin";
+				INFOPLIST_KEY_CFBundleDisplayName = "Chostty Dock Tile Plugin";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-dock-tile";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app.dock-tile";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
@@ -896,14 +904,14 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Ghostty Dock Tile Plugin";
+				INFOPLIST_KEY_CFBundleDisplayName = "Chostty Dock Tile Plugin";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-dock-tile";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app.dock-tile";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
@@ -925,14 +933,14 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Ghostty Dock Tile Plugin";
+				INFOPLIST_KEY_CFBundleDisplayName = "Chostty Dock Tile Plugin";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSPrincipalClass = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-dock-tile";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app.dock-tile";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
@@ -956,7 +964,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
@@ -964,7 +972,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/chostty";
 			};
 			name = Debug;
 		};
@@ -980,14 +988,14 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/chostty";
 			};
 			name = Release;
 		};
@@ -1003,14 +1011,14 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/chostty";
 			};
 			name = ReleaseLocal;
 		};
@@ -1148,27 +1156,28 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = chostty;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Ghostty[DEBUG]";
+				INFOPLIST_KEY_CFBundleDisplayName = "Chostty[DEBUG]";
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Chostty would like to use AppleScript.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Chostty would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Chostty would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Chostty would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Chostty would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Chostty would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Chostty would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Chostty would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Chostty would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Chostty would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Chostty would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Chostty would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Chostty would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Chostty requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1177,8 +1186,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.ghostty.debug;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.app.debug;
+				PRODUCT_NAME = Chostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/macOS/ghostty-bridging-header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -1202,28 +1212,29 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = chostty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Ghostty;
+				INFOPLIST_KEY_CFBundleDisplayName = Chostty;
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Ghostty would like to use AppleScript.";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Ghostty would like to use Bluetooth.";
-				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Ghostty would like to access your Calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Ghostty would like to use the camera.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Ghostty would like to access your Contacts.";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running within Chostty would like to use AppleScript.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "A program running within Chostty would like to use Bluetooth.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "A program running within Chostty would like to access your Calendar.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "A program running within Chostty would like to use the camera.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "A program running within Chostty would like to access your Contacts.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Ghostty would like to access the local network.";
-				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Ghostty would like to use your location temporarily.";
-				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Ghostty would like to access your location information.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A program running within Chostty would like to access the local network.";
+				INFOPLIST_KEY_NSLocationTemporaryUsageDescriptionDictionary = "A program running within Chostty would like to use your location temporarily.";
+				INFOPLIST_KEY_NSLocationUsageDescription = "A program running within Chostty would like to access your location information.";
 				INFOPLIST_KEY_NSMainNibFile = MainMenu;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Ghostty would like to use your microphone.";
-				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Ghostty would like to access motion data.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Ghostty would like to access your Photo Library.";
-				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Ghostty would like to access your reminders.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Ghostty would like to use speech recognition.";
-				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Ghostty requires elevated privileges.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running within Chostty would like to use your microphone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "A program running within Chostty would like to access motion data.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "A program running within Chostty would like to access your Photo Library.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "A program running within Chostty would like to access your reminders.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "A program running within Chostty would like to use speech recognition.";
+				INFOPLIST_KEY_NSSystemAdministrationUsageDescription = "A program running within Chostty requires elevated privileges.";
 				INFOPLIST_PREPROCESS = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1232,8 +1243,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.ghostty;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.chostty.app;
+				PRODUCT_NAME = Chostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/macOS/ghostty-bridging-header.h";
 				SWIFT_VERSION = 5.0;
@@ -1254,7 +1266,8 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Ghostty;
+				INFOPLIST_KEY_CFBundleDisplayName = Chostty;
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1269,7 +1282,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-ios";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app-ios";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
@@ -1293,7 +1306,8 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Ghostty;
+				INFOPLIST_KEY_CFBundleDisplayName = Chostty;
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1308,7 +1322,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-ios";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app-ios";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1332,7 +1346,8 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Ghostty;
+				INFOPLIST_KEY_CFBundleDisplayName = Chostty;
+				INFOPLIST_KEY_CFBundleName = Chostty;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -1347,7 +1362,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 0.1;
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mitchellh.ghostty-ios";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.chostty.app-ios";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;

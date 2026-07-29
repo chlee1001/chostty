@@ -272,12 +272,6 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         // Removing the "titled" style also derefs all our accessory view controllers
         // so we need to restore those.
         for c in savedState.titlebarAccessoryViewControllers {
-            // Restoring the tab bar causes all sorts of problems. Its best to just ignore it,
-            // even though this is kind of a hack.
-            if let window = window as? TerminalWindow, window.isTabBar(c) {
-                continue
-            }
-
             if window.titlebarAccessoryViewControllers.firstIndex(of: c) == nil {
                 window.addTitlebarAccessoryViewController(c)
             }
@@ -286,25 +280,6 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         // Removing "titled" also clears our toolbar
         window.toolbar = savedState.toolbar
         window.toolbarStyle = savedState.toolbarStyle
-
-        // If the window was previously in a tab group that isn't empty now,
-        // we re-add it. We have to do this because our process of doing non-native
-        // fullscreen removes the window from the tab group.
-        if let tabGroup = savedState.tabGroup,
-           let tabIndex = savedState.tabGroupIndex,
-            !tabGroup.windows.isEmpty {
-            if tabIndex == 0 {
-                // We were previously the first tab. Add it before ("below")
-                // the first window in the tab group currently.
-                tabGroup.windows.first!.addTabbedWindowSafely(window, ordered: .below)
-            } else if tabIndex <= tabGroup.windows.count {
-                // We were somewhere in the middle
-                tabGroup.windows[tabIndex - 1].addTabbedWindowSafely(window, ordered: .above)
-            } else {
-                // We were at the end
-                tabGroup.windows.last!.addTabbedWindowSafely(window, ordered: .below)
-            }
-        }
 
         if let firstResponder {
             window.makeFirstResponder(firstResponder)
@@ -391,8 +366,6 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
     /// The state that must be saved for non-native fullscreen to exit fullscreen.
     class SavedState {
         let screenID: UInt32?
-        let tabGroup: NSWindowTabGroup?
-        let tabGroupIndex: Int?
         let contentFrame: NSRect
         let styleMask: NSWindow.StyleMask
         let toolbar: NSToolbar?
@@ -405,8 +378,6 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
             guard let contentView = window.contentView else { return nil }
 
             self.screenID = window.screen?.displayID
-            self.tabGroup = window.tabGroup
-            self.tabGroupIndex = window.tabGroup?.windows.firstIndex(of: window)
             self.contentFrame = window.convertToScreen(contentView.frame)
             self.styleMask = window.styleMask
             self.toolbar = window.toolbar
