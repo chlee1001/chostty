@@ -99,6 +99,10 @@ signs and packages it. The script refuses to publish a bundle that carries
 `SUPublicEDKey` or that is not a universal binary — a runner that quietly
 produced a single-architecture build would otherwise package and ship fine.
 
+A tag on a commit whose message carries `[skip ci]` publishes nothing: GitHub
+drops every workflow for that push, tag pushes included. Tag a commit without
+it.
+
 Signing is ad-hoc because this fork has no Developer ID. That is a distribution
 consequence, not a build shortcut: every download is quarantined until the user
 runs `xattr -cr`, and the release notes say so rather than letting it look like
