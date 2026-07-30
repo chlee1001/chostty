@@ -8,8 +8,8 @@ struct ReservedChordDescriptor {
     let modifierFlags: NSEvent.ModifierFlags
 }
 
-/// Recognizes and performs the reserved workspace/tab-switch shortcuts
-/// (F1): `Cmd+1`…`Cmd+8` (select workspace by index), `Cmd+9` (select the
+/// Recognizes and performs the reserved workspace/tab-switch shortcuts:
+/// `Cmd+1`…`Cmd+8` (select workspace by index), `Cmd+9` (select the
 /// last workspace), `Cmd+Shift+[` / `Cmd+Shift+]` (previous/next virtual tab
 /// within the selected workspace), and `Ctrl+Tab` / `Ctrl+Shift+Tab`
 /// (next/previous workspace).
@@ -116,7 +116,7 @@ enum ReservedShortcutDispatcher {
     ///
     /// Applies only when `keyWindowKind == .terminal` and
     /// `firstResponderIsTextField == false` — this protects the sidebar's
-    /// inline workspace/tab rename field (and the F6 filter field) from
+    /// inline workspace/tab rename field (and the filter field) from
     /// having its keystrokes stolen.
     static func decision(
         for event: NSEvent,

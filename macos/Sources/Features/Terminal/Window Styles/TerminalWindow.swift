@@ -24,6 +24,14 @@ class TerminalWindow: NSWindow {
     /// Update notification UI in titlebar
     private let updateAccessory = NSTitlebarAccessoryViewController()
 
+    /// Workspace controls (sidebar toggle, new workspace, workspace actions)
+    /// hosted immediately right of the traffic lights.
+    private let workspaceControlsAccessory = NSTitlebarAccessoryViewController()
+
+    /// Whether `installWorkspaceControls` has run. `addTitlebarAccessoryViewController`
+    /// would happily add the same controller twice.
+    private var workspaceControlsInstalled = false
+
     /// The configuration derived from the Ghostty config so we don't need to rely on references.
     private(set) var derivedConfig: DerivedConfig = .init()
 
@@ -150,6 +158,46 @@ class TerminalWindow: NSWindow {
     override func resignMain() {
         super.resignMain()
         viewModel.isMainWindow = false
+    }
+
+    // MARK: Workspace Controls
+
+    /// Installs `content` as the leading titlebar accessory, which AppKit lays
+    /// out immediately right of the traffic lights.
+    ///
+    /// Called by the controller rather than from `awakeFromNib` because the view
+    /// needs the controller's workspace store, and `windowController` is still
+    /// nil while the nib is loading.
+    func installWorkspaceControls<Content: View>(_ content: Content) {
+        guard styleMask.contains(.titled), !workspaceControlsInstalled else { return }
+        workspaceControlsInstalled = true
+
+        workspaceControlsAccessory.layoutAttribute = .leading
+
+        // NonDraggableHostingView: a plain NSHostingView in the titlebar lets a
+        // click-drag move the window instead of pressing the button under it.
+        let host = NonDraggableHostingView(rootView: content)
+
+        // Frame-based sizing on purpose. A constraints-based accessory view
+        // (`translatesAutoresizingMaskIntoConstraints = false`) resolves to zero
+        // width inside `NSTitlebarAccessoryClipView`, which clips the buttons away
+        // while still laying them out — they stay reachable by accessibility and
+        // are invisible on screen.
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+
+        workspaceControlsAccessory.view = host
+        addTitlebarAccessoryViewController(workspaceControlsAccessory)
+    }
+
+    /// Hidden whenever the controls render as an in-window strip instead, so the
+    /// titlebar that slides down over native fullscreen doesn't show a second
+    /// copy of the same buttons.
+    var workspaceControlsAccessoryHidden: Bool {
+        get { workspaceControlsAccessory.isHidden }
+        set {
+            guard workspaceControlsInstalled else { return }
+            workspaceControlsAccessory.isHidden = newValue
+        }
     }
 
     // MARK: Surface Zoom
@@ -368,7 +416,7 @@ class TerminalWindow: NSWindow {
             self.macosTitlebarStyle = config.macosTitlebarStyle
 
             // `tabs` is silently aliased to `transparent` at the config read
-            // site (IR 3), so every reachable style uses the 16pt radius.
+            // site, so every reachable style uses the 16pt radius.
             self.windowCornerRadius = 16
         }
     }

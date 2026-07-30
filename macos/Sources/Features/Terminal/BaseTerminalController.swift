@@ -35,8 +35,8 @@ class BaseTerminalController: NSWindowController,
     /// The app instance that this terminal view will represent.
     let ghostty: Ghostty.App
 
-    /// Stable, unique identifier for this physical controller/window. Per
-    /// DR-1/Phase 1, this UUID identifies the physical owner for the lifetime
+    /// Stable, unique identifier for this physical controller/window. This
+    /// UUID identifies the physical owner for the lifetime
     /// of the controller and is the value surfaced to accessibility, undo, and
     /// (in later phases) the owner registry.
     let physicalUUID: UUID
@@ -51,7 +51,7 @@ class BaseTerminalController: NSWindowController,
         didSet { surfaceTreeDidChange(from: oldValue, to: surfaceTree) }
     }
 
-    /// Per DR-1/Phase 1, this controller's nonoptional workspace store.
+    /// This controller's nonoptional workspace store.
     ///
     /// The store is constructed up-front by ``TerminalControllerGraphFactory``
     /// and injected via the designated `init(_:graph:)` initializer. There is
@@ -69,7 +69,7 @@ class BaseTerminalController: NSWindowController,
     /// recently presented on this controller. Mounting compares the candidate
     /// generation to this value and only re-mounts when strictly newer.
     private(set) var presentedMountGeneration: UInt64 = 0
-    /// Per-controller bounded history of destructively-closed tabs (F8). The
+    /// Per-controller bounded history of destructively-closed tabs. The
     /// SOLE authority for `reopenClosedTab()` — never consult `undoManager`
     /// for "what did I just close", since that stack is process-wide and
     /// shared with New Window/New Tab/Move Split/Close Other Tabs/Close Tabs
@@ -84,6 +84,23 @@ class BaseTerminalController: NSWindowController,
 
     /// True when any surface in this controller currently has an active bell.
     @Published private(set) var bell: Bool = false
+
+    /// Where this window renders the workspace controls (sidebar toggle, new
+    /// workspace, workspace actions).
+    ///
+    /// Recomputed on every fullscreen transition, which is the moment a window
+    /// gains or loses a titlebar that can host them. Base default is
+    /// `.sidebarHeader`; see `computeWorkspaceControlsPlacement()`.
+    @Published private(set) var workspaceControlsPlacement: WorkspaceControlsPlacement = .sidebarHeader
+
+    /// Mirrors `window.title` for the `.contentStrip` placement, which draws the
+    /// title itself because the system title is hidden or gone in every case
+    /// that selects it.
+    @Published private(set) var windowTitle: String = ""
+
+    /// Mirrors `window.representedURL` for the same reason: the strip draws the
+    /// proxy icon that the hidden titlebar would have shown.
+    @Published private(set) var windowRepresentedURL: URL?
 
     /// Whether the terminal surface should focus when the mouse is over it.
     var focusFollowsMouse: Bool {
@@ -169,7 +186,7 @@ class BaseTerminalController: NSWindowController,
         fatalError("init(coder:) is not supported for this view")
     }
 
-    /// Designated initializer. Per DR-1/Phase 1, the controller receives a
+    /// Designated initializer. The controller receives a
     /// fully initialized ``TerminalControllerGraphFactory.InitialGraph``
     /// containing a nonoptional store with a committed initial snapshot, the
     /// initial session, and the surface tree to present.
@@ -336,7 +353,7 @@ class BaseTerminalController: NSWindowController,
     }
 
 
-    // MARK: Virtual workspace support (DR-2 simplified facade)
+    // MARK: Virtual workspace support
 
     /// Selects a workspace/tab by (workspaceID, tabID). The desired selection is
     /// applied through the store's stage→commit transaction (one snapshot
@@ -344,7 +361,7 @@ class BaseTerminalController: NSWindowController,
     /// only when the committed candidate generation strictly exceeds the
     /// previously presented generation.
     ///
-    /// Per DR-1/Phase 1, this is the single entry point for changing which
+    /// This is the single entry point for changing which
     /// session is presented. The old session's tree is retained by the store
     /// so its PTY stays alive; the previously-presented session is unmounted.
     func selectSession(workspaceID: UUID, tabID: UUID) {
@@ -468,7 +485,7 @@ class BaseTerminalController: NSWindowController,
     }
 
     /// Creates a new virtual workspace with a fresh terminal surface.
-    /// Per DR-1, this does NOT create a new NSWindow.
+    /// This does NOT create a new NSWindow.
     @discardableResult
     func newVirtualWorkspace(
         source: Ghostty.SurfaceView? = nil,
@@ -479,7 +496,7 @@ class BaseTerminalController: NSWindowController,
         guard let ghostty_app = ghostty.app else { return nil }
 
         // Create a new surface for the new workspace, resolving its working
-        // directory through the shared F5 precedence: explicit baseConfig >
+        // directory through the shared precedence: explicit baseConfig >
         // the currently-selected workspace's defaultDirectory > inherited
         // config > shell default.
         let config = TerminalCommandRouter.resolvedConfig(
@@ -744,7 +761,7 @@ class BaseTerminalController: NSWindowController,
         return pairs
     }
 
-    // Internal (not private) so ClosedTabHistory/F8 regression tests can
+    // Internal (not private) so ClosedTabHistory regression tests can
     // exercise the exact production close path directly, without depending
     // on `needsConfirmQuit` against a real spawned PTY (async confirmation
     // sheets never resolve synchronously in a headless test host).
@@ -1041,14 +1058,14 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
-    /// Duplicates a virtual tab (F7). Reachable from a non-presented tab's
+    /// Duplicates a virtual tab. Reachable from a non-presented tab's
     /// context menu, so the config is built from the SOURCE tab's surface —
     /// never the controller's currently-focused surface.
     ///
     /// Order: `inheritedConfig` from the source session's focused surface (or
     /// its first surface) with the tab context, then override
-    /// `workingDirectory` with the source's own LIVE `pwd`, then apply F5
-    /// rung-1 semantics via `TerminalCommandRouter.resolvedConfig` (the
+    /// `workingDirectory` with the source's own LIVE `pwd`, then apply
+    /// rung-1 precedence semantics via `TerminalCommandRouter.resolvedConfig` (the
     /// explicit override wins outright over the workspace default).
     ///
     /// Copies `pwd` and `titleOverride`. Does NOT copy scrollback or process
@@ -1822,10 +1839,13 @@ class BaseTerminalController: NSWindowController,
             window.title = computeTitle(
                 title: effectiveOverride,
                 bell: focusedSurface?.bell ?? false)
-            return
+        } else {
+            window.title = lastComputedTitle
         }
 
-        window.title = lastComputedTitle
+        // Mirror it for the in-window controls strip, which has to draw the
+        // title itself. See ``windowTitle``.
+        windowTitle = window.title
     }
 
     func pwdDidChange(to: URL?) {
@@ -1840,6 +1860,10 @@ class BaseTerminalController: NSWindowController,
         } else {
             window.representedURL = nil
         }
+
+        // Mirror it for the in-window controls strip. See
+        // ``windowRepresentedURL``.
+        windowRepresentedURL = window.representedURL
     }
 
     func cellSizeDidChange(to: NSSize) {
@@ -2051,8 +2075,48 @@ class BaseTerminalController: NSWindowController,
             updateOverlayIsVisible = defaultUpdateOverlayVisibility()
         }
 
+        // A fullscreen transition changes whether the titlebar can host the
+        // workspace controls: non-native fullscreen removes the titlebar
+        // outright and native fullscreen moves it into an auto-hiding overlay.
+        syncWorkspaceControlsPlacement()
+
         // Always resync our appearance
         syncAppearance()
+    }
+
+    // MARK: Workspace Controls
+
+    /// Recomputes ``workspaceControlsPlacement`` and keeps the leading titlebar
+    /// accessory in step with it.
+    ///
+    /// The two hosts are mutually exclusive on purpose: in native fullscreen the
+    /// auto-hidden titlebar still slides down on hover, and its accessory would
+    /// duplicate the buttons the in-window strip is already showing.
+    func syncWorkspaceControlsPlacement() {
+        let placement = computeWorkspaceControlsPlacement()
+        workspaceControlsPlacement = placement
+        (window as? TerminalWindow)?.workspaceControlsAccessoryHidden = !placement.showsTitlebarAccessory
+    }
+
+    /// The placement for this window. Base implementation keeps the controls in
+    /// the sidebar header: it makes no assumption that the window has a titlebar
+    /// (the quick terminal is a borderless panel) or room for a strip.
+    /// `TerminalController` overrides this.
+    func computeWorkspaceControlsPlacement() -> WorkspaceControlsPlacement {
+        .sidebarHeader
+    }
+
+    /// Runs a reserved workspace command on behalf of this window's workspace
+    /// controls, whichever host is currently rendering them.
+    ///
+    /// Routed through ``TerminalCommandRouter`` so a button click resolves its
+    /// destination controller exactly the way `⌘N` / `⌘⇧T` and the menu items
+    /// do, instead of assuming this controller.
+    func performWorkspaceControlsCommand(_ command: TerminalCommandRouter.ReservedTerminalCommand) {
+        guard let appDelegate = NSApp.delegate as? AppDelegate,
+              let router = appDelegate.terminalCommands as TerminalCommandRouter?
+        else { return }
+        _ = router.perform(command, source: focusedSurface ?? surfaceTree.first)
     }
 
     // MARK: Clipboard Confirmation
@@ -2138,6 +2202,11 @@ class BaseTerminalController: NSWindowController,
 
         // Set our update overlay state
         updateOverlayIsVisible = defaultUpdateOverlayVisibility()
+
+        // Seed the strip's title mirror; `applyTitleToWindow` keeps it current
+        // from here on, but a window created with a configured title never goes
+        // through it.
+        windowTitle = window.title
     }
 
     func defaultUpdateOverlayVisibility() -> Bool {
@@ -2205,7 +2274,7 @@ class BaseTerminalController: NSWindowController,
     func windowWillClose(_ notification: Notification) {
         guard let window else { return }
 
-        // Per Phase 2: unregister surfaces from the owner registry before any
+        // Unregister surfaces from the owner registry before any
         // other close work so the closing controller's surfaces immediately
         // become unavailable to live lookup.
         if let appDelegate = NSApp.delegate as? AppDelegate {

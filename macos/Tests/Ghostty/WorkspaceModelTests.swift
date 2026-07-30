@@ -4,7 +4,7 @@ import Foundation
 import Testing
 @testable import Ghostty
 
-/// Tests for the Phase 2 foundational workspace model types:
+/// Tests for the foundational workspace model types:
 /// `TerminalSessionState`, `SurfaceOwnerRegistry`, and `TerminalCommandRouter`.
 ///
 /// These tests exercise the pure-model behavior that does not require a live

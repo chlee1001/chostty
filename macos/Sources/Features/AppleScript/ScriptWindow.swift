@@ -3,7 +3,7 @@ import AppKit
 /// AppleScript-facing wrapper around a logical Ghostty window.
 ///
 /// `ScriptWindow` presents one object per physical terminal window
-/// controller. Its `tabs` collection is the Phase 5 flattened view: every
+/// controller. Its `tabs` collection is the flattened view: every
 /// virtual tab across every workspace the controller owns, not just the
 /// (at most one) AppKit tab-group member native tabbing used to expose. See
 /// `ScriptTab`'s doc for the resulting identity/enumeration contract.

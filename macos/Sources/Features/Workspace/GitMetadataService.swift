@@ -2,9 +2,8 @@ import Foundation
 
 /// Async git branch resolver with caching for sidebar display.
 ///
-/// Per the plan's Phase 4 GitMetadataService spec: an actor that provides
-/// normalized-PWD/generation cache, debounce/cancel/TTL, `.git` dir/file/
-/// relative-gitdir support, and a process-wide two-probe bound.
+/// An actor with a normalized-PWD/generation cache, debounce/cancel/TTL,
+/// `.git` dir/file/relative-gitdir support, and a process-wide two-probe bound.
 ///
 /// This is a simplified version that resolves git branches asynchronously
 /// and caches results with a TTL to avoid main-thread filesystem access.

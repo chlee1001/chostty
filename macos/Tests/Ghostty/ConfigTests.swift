@@ -99,7 +99,7 @@ struct ConfigTests {
         ("native", Ghostty.Config.MacOSTitlebarStyle.native),
         ("transparent", Ghostty.Config.MacOSTitlebarStyle.transparent),
         // `tabs` still parses (the key and enum case stay valid) but is
-        // silently aliased to `transparent` at the read site (IR 3): the
+        // silently aliased to `transparent` at the read site: the
         // titlebar-tabs chrome it used to select was removed along with
         // native tabbing, with no warning emitted.
         ("tabs", Ghostty.Config.MacOSTitlebarStyle.transparent),

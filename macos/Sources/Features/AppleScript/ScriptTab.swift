@@ -5,16 +5,16 @@ import AppKit
 /// `ScriptWindow.tabs` vends these objects so AppleScript can traverse
 /// `window -> tab` without knowing anything about AppKit controllers.
 ///
-/// Phase 5 flattening contract: a `tab` is exactly one entry of
+/// Flattening contract: a `tab` is exactly one entry of
 /// `WorkspaceSessionStore.allSessions` — a workspace's virtual tab — never an
 /// AppKit tab-group member (which no longer exists). `ScriptWindow.tabs`
 /// enumerates every session across every workspace the window's controller
 /// owns, in `allSessions` order, so scripting order and persistence order can
 /// never diverge. Which workspace a tab belongs to is exposed read-only via
-/// `workspace name` (sdef code `GTwN`); Phase 5 deliberately does NOT add a
+/// `workspace name` (sdef code `GTwN`); this deliberately does NOT add a
 /// `workspace` scripting class.
 ///
-/// Tab identity belongs HERE, not to the physical controller. Before Phase 5,
+/// Tab identity belongs HERE, not to the physical controller. Before flattening,
 /// `ScriptTab`'s stable id was derived from the owning controller's
 /// `ObjectIdentifier`, so every tab in a window shared one id (there was only
 /// ever one AppKit tab-group member to address). It is now keyed off the

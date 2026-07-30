@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Ghostty
 
-/// Regression tests for F11: right-clicking blank space below the last row in
+/// Regression tests for right-clicking blank space below the last row in
 /// the sidebar must open the workspace menu.
 ///
 /// This shipped twice in a state that looked correct and did nothing. First as

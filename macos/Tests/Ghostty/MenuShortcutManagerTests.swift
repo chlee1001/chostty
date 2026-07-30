@@ -48,7 +48,7 @@ struct MenuShortcutManagerTests {
         #expect(goToLeftItem.keyEquivalentModifierMask == .command)
     }
 
-    // MARK: - P2: Undo/Reopen menu pin (`AppDelegate.pinUndoShortcut`/`pinReopenShortcut`)
+    // MARK: - Undo/Reopen menu pin (`AppDelegate.pinUndoShortcut`/`pinReopenShortcut`)
 
     /// `undo`'s config binding is `performable`, so it is never painted from
     /// the reverse lookup (`syncMenuShortcut` always clears it). Pinning

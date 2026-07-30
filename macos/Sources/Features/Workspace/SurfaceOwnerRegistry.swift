@@ -20,7 +20,7 @@ struct SurfaceOwnerLocation: Equatable, Hashable {
 /// A weak, `@MainActor` registry mapping live surface UUIDs to the ordinary controller
 /// that owns them.
 ///
-/// Per DR-1, the registry is the single source of truth for "which ordinary controller
+/// The registry is the single source of truth for "which ordinary controller
 /// owns this surface." Entries are value types (`SurfaceOwnerLocation`) that identify a
 /// controller by `ObjectIdentifier` — they **never** retain the controller, session,
 /// surface, lease, or transfer record. Quick Terminal is never registered here; it is
@@ -67,7 +67,7 @@ final class SurfaceOwnerRegistry {
 
     /// Removes every location belonging to `controllerID`.
     ///
-    /// Per DR-1 this is the **first** `windowWillClose` action so that the closing
+    /// This is the **first** `windowWillClose` action so that the closing
     /// controller's surfaces immediately become unavailable to live lookup.
     func unregister(_ controllerID: ObjectIdentifier) {
         surfaceToLocation = surfaceToLocation.filter { _, loc in

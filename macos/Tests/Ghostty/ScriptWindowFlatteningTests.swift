@@ -2,7 +2,7 @@ import AppKit
 import Testing
 @testable import Ghostty
 
-/// Tests for the F3 Phase 5 AppleScript flattening contract:
+/// Tests for the AppleScript flattening contract:
 ///
 /// - `window` = one physical controller (`ScriptWindow`).
 /// - `tab` = one VIRTUAL tab, enumerated EXACTLY as

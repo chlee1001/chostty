@@ -9,7 +9,7 @@ import os
 /// nil if the path is not inside a git work tree.
 enum GitBranchResolver {
     /// Test-only call counter, incremented at the top of `branch(for:)`. This
-    /// is the counting seam F6 requires to prove the sidebar filter's typing
+    /// is the counting seam that proves the sidebar filter's typing
     /// path never calls this synchronous filesystem walk.
     ///
     /// Guarded by an `OSAllocatedUnfairLock`: `branch(for:)` runs on
@@ -69,12 +69,15 @@ enum GitBranchResolver {
 /// separate AppKit windows or native tab groups. Clicking a tab switches
 /// which session is presented in the owning window.
 struct SidebarView: View {
-    /// The per-controller workspace session store. Nonoptional per DR-1/Phase 1:
+    /// The per-controller workspace session store. Nonoptional:
     /// every controller receives a fully-initialized store before presentation.
     @ObservedObject private var workspaceSessionStore: WorkspaceSessionStore
 
-    /// Called when the user requests to toggle the sidebar visibility.
-    let onToggle: () -> Void
+    /// Where this window renders the workspace controls (sidebar toggle, new
+    /// workspace, workspace actions). The header renders them itself only for
+    /// `.sidebarHeader`; every other placement is hosted outside the sidebar so
+    /// closing the sidebar cannot take its own reopen button with it.
+    let controlsPlacement: WorkspaceControlsPlacement
 
     /// Called when the user requests a new workspace.
     var onNewWorkspace: () -> Void = {}
@@ -88,28 +91,20 @@ struct SidebarView: View {
 
     /// Called when the user closes a workspace.
     var onCloseWorkspace: ((UUID) -> Void)? = nil
-    /// Called when the user picks "Reopen Closed Tab" from the F11 empty-area
+    /// Called when the user picks "Reopen Closed Tab" from the empty-area
     /// context menu. The owning controller resolves `ClosedTabHistory`;
     /// presentation never touches it directly.
     var onReopenClosedTab: () -> Void = {}
 
-    /// F6: the sidebar search/filter query. Private view state — filtering is
+    /// The sidebar search/filter query. Private view state — filtering is
     /// presentation-only and never reaches the store.
     @State private var filterText: String = ""
 
-    /// Mirrors `WorkspaceSessionList`'s key so the header menu shows and
-    /// toggles the same policy the list renders from.
-    @AppStorage("SidebarSingleWorkspacePolicy") private var singleWorkspacePolicyRaw: String =
-        SidebarSingleWorkspacePolicy.alwaysGrouped.rawValue
-
-    private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
-        SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
-    }
 
 
     init(
         workspaceSessionStore: WorkspaceSessionStore,
-        onToggle: @escaping () -> Void,
+        controlsPlacement: WorkspaceControlsPlacement,
         onNewWorkspace: @escaping () -> Void = {},
         onSelectTab: @escaping (UUID, UUID) -> Void,
         onCloseTab: ((UUID) -> Void)? = nil,
@@ -117,7 +112,7 @@ struct SidebarView: View {
         onReopenClosedTab: @escaping () -> Void = {}
     ) {
         self.workspaceSessionStore = workspaceSessionStore
-        self.onToggle = onToggle
+        self.controlsPlacement = controlsPlacement
         self.onNewWorkspace = onNewWorkspace
         self.onSelectTab = onSelectTab
         self.onCloseTab = onCloseTab
@@ -157,50 +152,22 @@ struct SidebarView: View {
             Text("\(workspaceSessionStore.snapshot.workspaces.count)·\(tabCount)")
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.tertiary)
-            Button(action: { onNewWorkspace() }) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("New workspace")
-            // Workspace actions. Lives in the header rather than on its own
-            // full-width row above the list, which cost a whole row of
-            // vertical space for one right-aligned glyph.
-            Menu {
-                WorkspaceActionsMenuItems(
+            // The toggle, "+" and actions menu normally live next to the
+            // traffic lights (or in the in-window strip when there is no
+            // titlebar to host them), so closing the sidebar cannot take its
+            // own reopen button with it. Only the quick terminal, which has
+            // neither a titlebar nor room for a strip, keeps them here.
+            if controlsPlacement == .sidebarHeader {
+                WorkspaceControls(
                     store: workspaceSessionStore,
-                    isFlattened: workspaceSessionStore.snapshot.workspaces.count == 1
-                        && singleWorkspacePolicy == .flatten,
-                    singleWorkspacePolicy: singleWorkspacePolicy,
                     onNewWorkspace: onNewWorkspace,
-                    onReopenClosedTab: onReopenClosedTab,
-                    onTogglePolicy: {
-                        singleWorkspacePolicyRaw = (singleWorkspacePolicy == .flatten
-                            ? SidebarSingleWorkspacePolicy.alwaysGrouped
-                            : .flatten).rawValue
-                    })
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    onReopenClosedTab: onReopenClosedTab)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Workspace actions")
-            Button(action: onToggle) {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Hide sidebar (⌘B)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
-    /// F6: filters the workspace/tab tree by name, title, titleOverride, or
+    /// Filters the workspace/tab tree by name, title, titleOverride, or
     /// pwd. Purely a `filterText` binding — the pure `SidebarFilter.filter`
     /// and `SidebarFilter.effectiveCollapsed` run downstream in
     /// `WorkspaceSessionList`/`WorkspaceSessionRow`. An empty query keeps
@@ -284,11 +251,11 @@ struct WorkspaceSessionList: View {
     var onNewWorkspace: () -> Void = {}
     var onReopenClosedTab: () -> Void = {}
 
-    /// F6: search/filter query from the sidebar header. Empty means "show
-    /// everything", reproducing pre-F6 rendering exactly.
+    /// Search/filter query from the sidebar header. Empty means "show
+    /// everything", reproducing unfiltered rendering exactly.
     var filterQuery: String = ""
 
-    /// F10: governs whether a lone workspace renders flattened (no header
+    /// Governs whether a lone workspace renders flattened (no header
     /// row/chevron) or always grouped. App-local — never added to the
     /// Ghostty config surface.
     @AppStorage("SidebarSingleWorkspacePolicy") private var singleWorkspacePolicyRaw: String =
@@ -307,7 +274,7 @@ struct WorkspaceSessionList: View {
     /// insertion indicator.
     @State private var dropTarget: WorkspaceDragPayload?
 
-    /// Workspaces after the F6 filter. An empty query returns
+    /// Workspaces after the filter. An empty query returns
     /// `store.snapshot.workspaces` unchanged (same array, same order).
     private var visibleWorkspaces: [WorkspaceSession] {
         SidebarFilter.filter(workspaces: store.snapshot.workspaces, query: filterQuery)
@@ -322,7 +289,7 @@ struct WorkspaceSessionList: View {
     }
 
     var body: some View {
-        // F11: right-clicking blank space below the last row opens the
+        // Right-clicking blank space below the last row opens the
         // workspace menu.
         //
         // Blank space in a ScrollView belongs to no view, so there is nothing
@@ -382,7 +349,7 @@ struct WorkspaceSessionList: View {
         }
     }
 
-    /// F6 empty-result affordance: a non-empty query that matches nothing
+    /// Empty-result affordance: a non-empty query that matches nothing
     /// renders this instead of a blank sidebar with no explanation.
     private var noMatchesPlaceholder: some View {
         Text("No matches")
@@ -392,12 +359,12 @@ struct WorkspaceSessionList: View {
             .padding(.top, 24)
     }
 
-    /// F11 items: New Workspace, Collapse All, Expand All, Reopen Closed Tab,
-    /// and the F10 policy toggle. "Collapse All" reuses
+    /// Items: New Workspace, Collapse All, Expand All, Reopen Closed Tab,
+    /// and the policy toggle. "Collapse All" reuses
     /// `collapseAllExceptSelected()` — the presented workspace must stay
     /// expanded per acceptance — so it is exactly one validated commit.
     ///
-    /// F5/F10: when the single-workspace `flatten` policy hides the
+    /// When the single-workspace `flatten` policy hides the
     /// workspace header row (and with it Rename/Color/Default Directory),
     /// those commands move here so they stay reachable on a fresh install,
     /// which starts with exactly one workspace under the default policy.
@@ -455,7 +422,7 @@ struct WorkspaceSessionList: View {
 
 /// Presents an `NSOpenPanel` restricted to directories and returns the
 /// chosen path, or `nil` on cancel. Shared by the per-row context menu and
-/// the F11 empty-area (flattened) "Set/Change Default Directory…" commands
+/// the empty-area (flattened) "Set/Change Default Directory…" commands
 /// so there is exactly one place this dialog is built.
 private func chooseDirectory(current: String?) -> String? {
     let panel = NSOpenPanel()
@@ -479,18 +446,18 @@ private struct WorkspaceSessionRow: View {
     var onCloseWorkspace: ((UUID) -> Void)? = nil
     var onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
 
-    /// F6: search/filter query, used only to compute `effectiveCollapsed`
+    /// Search/filter query, used only to compute `effectiveCollapsed`
     /// below. Never mutates `store` — an active filter auto-expands a
     /// collapsed workspace visually so a match inside it stays visible.
     var filterQuery: String = ""
 
-    /// F10: when true (single workspace, `flatten` policy) this row renders
+    /// When true (single workspace, `flatten` policy) this row renders
     /// its tabs at the top level with no header/chevron/close button.
     var isFlattened: Bool = false
 
-    /// F10/P2: the current single-workspace policy and its toggle, mirrored
+    /// The current single-workspace policy and its toggle, mirrored
     /// into this row's own context menu so the policy toggle has a second
-    /// route beyond the F11 empty-area background layer — a miss there
+    /// route beyond the empty-area background layer — a miss there
     /// previously left no way back to "Always Group Workspaces".
     var singleWorkspacePolicy: SidebarSingleWorkspacePolicy = .alwaysGrouped
     var onTogglePolicy: () -> Void = {}
@@ -512,7 +479,7 @@ private struct WorkspaceSessionRow: View {
         dropTarget == .workspace(workspace.id)
     }
 
-    /// The header's visual collapse state. Presentation-only per F6: a
+    /// The header's visual collapse state. Presentation-only: a
     /// filter query auto-expands a collapsed workspace so a buried match
     /// still renders, without ever calling `setWorkspaceCollapsed`.
     private var effectiveCollapsed: Bool {
@@ -528,7 +495,7 @@ private struct WorkspaceSessionRow: View {
 
     var body: some View {
         if isFlattened {
-            // F10: a lone workspace under the `flatten` policy renders its
+            // A lone workspace under the `flatten` policy renders its
             // tabs at the top level — no header row, no chevron, no
             // close-workspace button.
             VStack(alignment: .leading, spacing: 2) {
@@ -665,8 +632,8 @@ private struct WorkspaceSessionRow: View {
                         store.setWorkspaceDefaultDirectory(workspace.id, to: nil)
                     }
                 }
-                // P2: second route to the F10 policy toggle so a miss on the
-                // F11 empty-area background layer is not the only way back.
+                // Second route to the policy toggle so a miss on the
+                // empty-area background layer is not the only way back.
                 Divider()
                 Button(singleWorkspacePolicy == .flatten
                        ? "Always Group Workspaces"
@@ -681,7 +648,7 @@ private struct WorkspaceSessionRow: View {
 
             // Tab list, hidden while the workspace is collapsed. The header
             // keeps showing the tab count so a collapsed workspace still says
-            // how much it holds. F6's `effectiveCollapsed` overrides a true
+            // how much it holds. `effectiveCollapsed` overrides a true
             // user collapse while a filter query is active.
             if !effectiveCollapsed {
                 ForEach(workspace.tabs) { tab in

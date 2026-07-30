@@ -5,7 +5,7 @@ import Testing
 import GhosttyKit
 @testable import Ghostty
 
-/// Tests for the Phase 1 value-only structural transaction contract on
+/// Tests for the value-only structural transaction contract on
 /// `WorkspaceSessionStore`:
 ///
 /// - `stage()` and `validate(_:)` MUST emit zero publisher events and mutate
@@ -599,7 +599,7 @@ struct WorkspaceStoreTransactionTests {
         store.expandAll()
         #expect(store.snapshot.workspaces.allSatisfy { !$0.isCollapsed })
     }
-    // MARK: F5 - defaultDirectory carry-forward matrix
+    // MARK: defaultDirectory carry-forward matrix
     //
     // `color`/`isCollapsed` regressed once because a rebuild site used the
     // bare `WorkspaceProjection` memberwise initializer instead of carrying
@@ -803,14 +803,14 @@ struct WorkspaceStoreTransactionTests {
     }
 
 }
-// MARK: - F5 precedence
+// MARK: - Working-directory precedence
 //
 // `resolvedConfig` is the single point that decides a new surface's working
 // directory. The rungs below are the whole feature; without these the
 // stale-directory fall-through and the "workspace outranks inherited" rule are
 // only verified by reading the code.
 
-@Suite("F5 working-directory precedence")
+@Suite("Working-directory precedence")
 @MainActor
 struct WorkingDirectoryPrecedenceTests {
     private func workspace(defaultDirectory: String?) -> WorkspaceSession {
@@ -923,7 +923,7 @@ struct WorkingDirectoryPrecedenceTests {
         // libghostty populates workingDirectory purely because
         // window-inherit-working-directory is on. Treating that as an explicit
         // request would short-circuit rung 1 and silently beat the workspace
-        // default — the headline F5 case.
+        // default — the headline case.
         #expect(resolved?.workingDirectory == "/tmp")
     }
 
@@ -1043,7 +1043,7 @@ struct ReservedShortcutMatchingTests {
     }
 
     @Test func cmdShiftTIsReopenClosedTabPerF8() {
-        // Per F8/IR 2, Cmd+Shift+T was reassigned from `undo` to "Reopen
+        // Cmd+Shift+T was reassigned from `undo` to "Reopen
         // Closed Tab"; `undo` stays on Cmd+Z. It is now reserved, not
         // unmatched.
         let router = TerminalCommandRouter()

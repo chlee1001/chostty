@@ -4,7 +4,7 @@ import GhosttyKit
 /// App-level router for reserved terminal commands (new workspace, new tab, new physical
 /// window).
 ///
-/// Per DR-7, this router is owned by `AppDelegate` and arbitrates reserved shortcuts
+/// This router is owned by `AppDelegate` and arbitrates reserved shortcuts
 /// **before** any configured Ghostty core binding dispatch, `keyDown`, or menu-equivalent
 /// fallback. Source may be `nil`; the resolution order provides a destination even when no
 /// surface is focused.
@@ -28,7 +28,7 @@ final class TerminalCommandRouter {
         case newTab
         /// Cmd+Shift+N — create one new independent physical window.
         case newPhysicalWindow
-        /// Cmd+Shift+T — reopen the most recently closed tab (F8), per
+        /// Cmd+Shift+T — reopen the most recently closed tab, per
         /// ``ClosedTabHistory`` on the resolved ordinary controller. Reassigned
         /// from `undo`; `undo` stays on `Cmd+Z`.
         case reopenClosedTab
@@ -57,8 +57,8 @@ final class TerminalCommandRouter {
     }
 
     /// Single implementation point for resolving the working directory (and
-    /// other config) a brand-new surface should spawn with, per F5's
-    /// precedence rules. Called from both `createVirtualTab` and
+    /// other config) a brand-new surface should spawn with, following the
+    /// working-directory precedence rules. Called from both `createVirtualTab` and
     /// `BaseTerminalController.newVirtualWorkspace`.
     ///
     /// Precedence, highest first:
@@ -310,7 +310,7 @@ final class TerminalCommandRouter {
 
     // MARK: - Resolution
 
-    /// Resolves the destination `TerminalController` following the DR-7 order:
+    /// Resolves the destination `TerminalController` following the documented order:
     /// explicit source (dispatcher → registry → window) → key → main → last-main → frontmost.
     private func resolvedController(
         from source: Ghostty.SurfaceView?

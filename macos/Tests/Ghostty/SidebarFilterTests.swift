@@ -5,13 +5,13 @@ import Testing
 import GhosttyKit
 @testable import Ghostty
 
-/// Tests for Phase 4's presentation-only sidebar features:
+/// Tests for the presentation-only sidebar features:
 ///
-/// - F6: the pure `SidebarFilter.filter`/`effectiveCollapsed`, plus proof
+/// - The pure `SidebarFilter.filter`/`effectiveCollapsed`, plus proof
 ///   that filtering a 200-tab store never calls the synchronous
 ///   `GitBranchResolver.branch(for:)` filesystem walk.
-/// - F10: the pure `SidebarPolicy.shouldFlatten` predicate.
-/// - F11: "Collapse All"/"Expand All" are exactly the store calls the
+/// - The pure `SidebarPolicy.shouldFlatten` predicate.
+/// - "Collapse All"/"Expand All" are exactly the store calls the
 ///   empty-area context menu wires up, and each is a single validated commit
 ///   that leaves the selected workspace expanded.
 @MainActor
@@ -41,7 +41,7 @@ struct SidebarFilterTests {
         return store
     }
 
-    // MARK: - F6: SidebarFilter.filter
+    // MARK: - SidebarFilter.filter
 
     @Test func emptyQueryReturnsWorkspacesUnchanged() {
         let workspaces = [
@@ -90,7 +90,7 @@ struct SidebarFilterTests {
         #expect(SidebarFilter.filter(workspaces: [ws], query: "nomatch").isEmpty)
     }
 
-    // MARK: - F6: effectiveCollapsed
+    // MARK: - effectiveCollapsed
 
     @Test func effectiveCollapsedIsVisualOnlyAndAutoExpandsWhileFiltering() {
         // Collapsed + empty query: stays collapsed exactly as today.
@@ -113,7 +113,7 @@ struct SidebarFilterTests {
         #expect(SidebarFilter.effectiveCollapsed(isCollapsed: ws.isCollapsed, query: "target") == false)
     }
 
-    // MARK: - F6: never calls the synchronous git resolver on the typing path
+    // MARK: - Never calls the synchronous git resolver on the typing path
 
     @Test func filteringA200TabStoreNeverCallsTheSynchronousGitResolver() {
         let store = makeStore(tabCount: 200)
@@ -128,7 +128,7 @@ struct SidebarFilterTests {
 
         #expect(GitBranchResolver.callCount == before)
     }
-    /// F6's actual acceptance: typing a filter query must never touch the
+    /// The actual acceptance: typing a filter query must never touch the
     /// store. `SidebarFilter.filter` operates on `store.snapshot.workspaces`
     /// as a plain value — it never calls anything on `store` itself — so
     /// driving several queries through it must produce ZERO
@@ -151,7 +151,7 @@ struct SidebarFilterTests {
         #expect(store.snapshot.mountGeneration == before)
     }
 
-    // MARK: - F10: SidebarPolicy.shouldFlatten
+    // MARK: - SidebarPolicy.shouldFlatten
 
     @Test func shouldFlattenOnlyForExactlyOneWorkspaceUnderFlattenPolicy() {
         #expect(SidebarPolicy.shouldFlatten(workspaceCount: 1, policy: .flatten) == true)
@@ -166,9 +166,9 @@ struct SidebarFilterTests {
         #expect(SidebarSingleWorkspacePolicy.alwaysGrouped.toggled == .flatten)
     }
 
-    // MARK: - F11: "Collapse All"/"Expand All" action wiring
+    // MARK: - "Collapse All"/"Expand All" action wiring
 
-    /// The F11 empty-area menu's "Collapse All" item calls
+    /// The empty-area menu's "Collapse All" item calls
     /// `store.collapseAllExceptSelected()` directly — this test exercises
     /// that exact call and asserts the acceptance criterion: one generation
     /// bump, and the presented workspace stays expanded.

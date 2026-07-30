@@ -2,7 +2,7 @@ import AppKit
 import Testing
 @testable import Ghostty
 
-/// Tests for the F1 reserved workspace/tab-switch shortcuts:
+/// Tests for the reserved workspace/tab-switch shortcuts:
 /// `ReservedShortcutDispatcher.decision(for:keyWindowKind:firstResponderIsTextField:)`
 /// (pure recognition) and `ReservedShortcutDispatcher.perform(_:on:)`
 /// (execution against a real, headless `TerminalController` built through
@@ -263,7 +263,7 @@ struct ReservedShortcutRecognitionTests {
         }
     }
 
-    // MARK: - Caps Lock must not break reserved chords (P3)
+    // MARK: - Caps Lock must not break reserved chords
 
     /// `.deviceIndependentFlagsMask` includes `.capsLock`/`.numericPad`/
     /// `.function`/`.help`, so comparing against it for EXACT equality would
