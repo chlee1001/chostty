@@ -99,9 +99,10 @@ signs and packages it. The script refuses to publish a bundle that carries
 `SUPublicEDKey` or that is not a universal binary — a runner that quietly
 produced a single-architecture build would otherwise package and ship fine.
 
-A tag on a commit whose message carries `[skip ci]` publishes nothing: GitHub
-drops every workflow for that push, tag pushes included. Tag a commit without
-it.
+A tag on a commit whose message asks GitHub to skip CI publishes nothing:
+GitHub drops every workflow for that push, tag pushes included. The token
+matches anywhere in the message — including a message that only talks about it —
+so tag a commit whose message does not contain it at all.
 
 Signing is ad-hoc because this fork has no Developer ID. That is a distribution
 consequence, not a build shortcut: every download is quarantined until the user
