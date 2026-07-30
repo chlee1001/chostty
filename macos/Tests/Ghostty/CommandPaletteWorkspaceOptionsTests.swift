@@ -4,7 +4,7 @@ import SwiftUI
 import Testing
 @testable import Ghostty
 
-/// Tests for F2 — `TerminalCommandPaletteView.workspaceCommandOptions(store:perform:)`.
+/// Tests for `TerminalCommandPaletteView.workspaceCommandOptions(store:perform:)`.
 ///
 /// Built through `TerminalControllerTestHarness` so invocation can assert
 /// what is actually PRESENTED (`presentedSessionID`, the mounted
@@ -120,7 +120,7 @@ struct CommandPaletteWorkspaceOptionsTests {
     }
 
     /// "Duplicate Tab" routes through the SAME real
-    /// `BaseTerminalController.duplicateTab(_:)` path F7 already exercises —
+    /// `BaseTerminalController.duplicateTab(_:)` path the duplicate-tab tests exercise —
     /// never a bespoke command-palette-only implementation.
     @Test func duplicateTabEntryReachesRealDuplicateTabPath() throws {
         let ws = makeWorkspace(name: "Workspace 1", tabCount: 2)

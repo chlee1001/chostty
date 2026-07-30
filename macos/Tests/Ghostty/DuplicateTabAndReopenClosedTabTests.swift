@@ -2,8 +2,8 @@ import AppKit
 import Testing
 @testable import Ghostty
 
-/// Integration tests for F7 "Duplicate Tab" (`BaseTerminalController.duplicateTab(_:)`)
-/// and F8 "Reopen Closed Tab" (`BaseTerminalController.reopenClosedTab()`), built
+/// Integration tests for "Duplicate Tab" (`BaseTerminalController.duplicateTab(_:)`)
+/// and "Reopen Closed Tab" (`BaseTerminalController.reopenClosedTab()`), built
 /// through `TerminalControllerTestHarness` so acceptance can assert what is
 /// actually PRESENTED (`presentedSessionID`, the mounted `surfaceTree`) rather
 /// than store state alone.
@@ -29,7 +29,7 @@ struct DuplicateTabAndReopenClosedTabTests {
         return WorkspaceSession(id: UUID(), name: name, tabs: tabs, selectedTabID: tabs.first?.id)
     }
 
-    // MARK: - F7: Duplicate Tab
+    // MARK: - Duplicate Tab
 
     @Test func duplicateInsertsImmediatelyAfterSourceAndSelectsIt() throws {
         let ws = makeWorkspace(name: "Workspace 1", tabCount: 3)
@@ -86,7 +86,7 @@ struct DuplicateTabAndReopenClosedTabTests {
         #expect(workspace.tabs.map(\.id) == [sourceWs.tabs[0].id, sourceWs.tabs[1].id, newID])
     }
 
-    // MARK: - F8: Reopen Closed Tab
+    // MARK: - Reopen Closed Tab
 
     /// Criterion 1: close then immediately reopen restores the SAME session
     /// id and the SAME live `SurfaceView` identities (the fast path — the
@@ -234,7 +234,7 @@ struct DuplicateTabAndReopenClosedTabTests {
         #expect(restoredWorkspace.tabs.map(\.id) == originalOrder)
     }
 
-    // MARK: Regression found by the Phase 2 red-team pass
+    // MARK: Regression found by the red-team pass
 
     @Test func closeOtherTabsThenUndoThenReopenDoesNotDuplicate() throws {
         let workspaces = [makeWorkspace(name: "Workspace 1", tabCount: 3)]

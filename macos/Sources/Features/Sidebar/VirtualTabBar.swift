@@ -42,13 +42,13 @@ struct VirtualTabBar: View {
         store.snapshot.workspaces.first { $0.id == store.snapshot.selection.workspaceID }
     }
 
-    /// F9: fixed vertical height for the tab strip. `GeometryReader` (used
+    /// Fixed vertical height for the tab strip. `GeometryReader` (used
     /// below to size items) greedily claims all available space on both
     /// axes, so without an explicit height it would expand to fill the
     /// entire remaining window instead of sitting as a thin strip.
     private static let barHeight: CGFloat = 44
 
-    /// F9: inter-item spacing, shared between the HStack and
+    /// Inter-item spacing, shared between the HStack and
     /// `tabItemWidth(availableWidth:tabCount:)` so the math stays in sync.
     private static let itemSpacing: CGFloat = 6
 
@@ -197,7 +197,7 @@ private struct VirtualTabBarItem: View {
     let onCloseOthers: () -> Void
     let onCloseToTheRight: () -> Void
 
-    /// F9: fixed width from `VirtualTabBar.tabItemWidth(availableWidth:tabCount:)`,
+    /// Fixed width from `VirtualTabBar.tabItemWidth(availableWidth:tabCount:)`,
     /// computed by the parent from the real `GeometryReader`-reported strip
     /// width. Replaces the old `.frame(maxWidth: .infinity)` item-body frame
     /// so items don't stretch to fill an unbounded `ScrollView`.

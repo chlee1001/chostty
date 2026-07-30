@@ -260,7 +260,7 @@ extension NSApplication {
             parentWindow = TerminalController.preferredParent?.window
         }
 
-        // Per Phase 3: `make new tab` creates a virtual tab in the resolved
+        // `make new tab` creates a virtual tab in the resolved
         // ordinary controller rather than another physical window.
         let sourceSurface = (parentWindow?.windowController as? TerminalController)?.focusedSurface
         guard let createdController = appDelegate.terminalCommands.createVirtualTab(

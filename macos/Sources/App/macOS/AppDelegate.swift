@@ -101,7 +101,7 @@ class AppDelegate: NSObject,
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
 
-    /// Per DR-1, AppDelegate owns the weak surface-owner registry and command router.
+    /// AppDelegate owns the weak surface-owner registry and command router.
     /// These are the single app-level integration points for workspace routing.
     private(set) var surfaceOwners: SurfaceOwnerRegistry!
     private(set) var terminalCommands: TerminalCommandRouter!
@@ -574,7 +574,7 @@ class AppDelegate: NSObject,
 
     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
 
-        // Per DR-7: intercept reserved shortcuts (Cmd+N/T/Shift+N) BEFORE
+        // Intercept reserved shortcuts (Cmd+N/T/Shift+N) BEFORE
         // any configured Ghostty binding dispatch or main-window guard.
         if MainActor.assumeIsolated({
             terminalCommands.performReservedShortcut(event, source: currentSurfaceView())
@@ -583,7 +583,7 @@ class AppDelegate: NSObject,
         }
 
 
-        // Per F1: intercept reserved workspace/tab-switch shortcuts
+        // Intercept reserved workspace/tab-switch shortcuts
         // (Cmd+1-9, Cmd+Shift+[/], Ctrl+Tab/Ctrl+Shift+Tab) BEFORE any
         // configured Ghostty binding dispatch or main-window guard, same as
         // the Cmd+N/T/Shift+N interception above. Resolution is strictly to
@@ -667,7 +667,7 @@ class AppDelegate: NSObject,
 
     /// Whether the key window's first responder is a text-editing view. Used
     /// to guard `ReservedShortcutDispatcher` so it never steals keystrokes
-    /// from the sidebar's inline workspace/tab rename field or the F6 filter
+    /// from the sidebar's inline workspace/tab rename field or the filter
     /// field.
     private func keyWindowFirstResponderIsTextField() -> Bool {
         NSApp.keyWindow?.firstResponder is NSText
@@ -680,7 +680,7 @@ class AppDelegate: NSObject,
     private func reservedShortcutKeyWindowController() -> TerminalController? {
         NSApp.keyWindow?.windowController as? TerminalController
     }
-    /// Detects reserved product chords (F1's `ReservedShortcutDispatcher` and
+    /// Detects reserved product chords (`ReservedShortcutDispatcher` and
     /// the app-level `TerminalCommandRouter`) that collide with a user
     /// keybind in `config`, returning the human-readable label of each
     /// colliding chord.
@@ -689,8 +689,8 @@ class AppDelegate: NSObject,
     /// `ghostty_config_key_is_binding` ever runs, so a user keybind on one of
     /// these chords is silently swallowed — the reserved shortcut always
     /// wins and the user never learns why their keybind does nothing. This
-    /// walk cannot un-swallow the chord (PM-3 accepted that reserved always
-    /// wins); it only surfaces the collision so it can be logged.
+    /// walk cannot un-swallow the chord — reserved always wins by design —
+    /// it only surfaces the collision so it can be logged.
     @MainActor
     func reservedChordCollisions(config: Ghostty.Config) -> [String] {
         guard let cConfig = config.config else { return [] }
@@ -826,7 +826,7 @@ class AppDelegate: NSObject,
     @objc private func ghosttyNewTab(_ notification: Notification) {
         guard let surfaceView = notification.object as? Ghostty.SurfaceView else { return }
 
-        // Per Phase 3: create a virtual tab, not a native AppKit tab.
+        // Create a virtual tab, not a native AppKit tab.
         //
         // libghostty already computed a config for this action, but its
         // `workingDirectory` is populated purely because
@@ -892,8 +892,8 @@ class AppDelegate: NSObject,
             self.syncMenuShortcuts(config)
         }
 
-        // PM-3: warn (once per collision) when a user keybind lands on a
-        // chord that F1/the app-level router treat as reserved product
+        // Warn (once per collision) when a user keybind lands on a
+        // chord that the dispatcher or the app-level router treat as reserved product
         // behavior. See `reservedChordCollisions`'s doc for why this can
         // never do more than warn.
         let collisions = MainActor.assumeIsolated {
@@ -1081,14 +1081,14 @@ class AppDelegate: NSObject,
         menuNewTab?.keyEquivalent = "t"
         menuNewTab?.keyEquivalentModifierMask = [.command]
 
-        // Per F8/IR 2: Cmd+Shift+T is reassigned from `undo` to "Reopen Closed
+        // Cmd+Shift+T is reassigned from `undo` to "Reopen Closed
         // Tab"; `undo` stays on `Cmd+Z`. This pin only paints the Reopen item —
         // `menuUndo` is corrected separately, right after its own
         // `syncMenuShortcut` call, because the sync runs later and would
         // otherwise overwrite anything pinned here.
         pinReopenClosedTabMenuItem()
 
-        // Per F1: the Workspace submenu's shortcuts are reserved product
+        // The Workspace submenu's shortcuts are reserved product
         // behavior too, so they are painted directly here and never through
         // `syncMenuShortcut`.
         installReservedMenuItems()
@@ -1124,7 +1124,7 @@ class AppDelegate: NSObject,
     }
 
     private var _reservedMenuItems: ReservedMenuItems?
-    /// "Reopen Closed Tab" (F8/Cmd+Shift+T) has no xib item — built and
+    /// "Reopen Closed Tab" (Cmd+Shift+T) has no xib item — built and
     /// pinned once, same pattern as "New Workspace" below. Unlike Undo/Redo
     /// (whose title is rewritten per validateMenuItem to show the pending
     /// action), this stays permanently titled "Reopen Closed Tab" — never
@@ -1143,7 +1143,7 @@ class AppDelegate: NSObject,
         item?.keyEquivalentModifierMask = [.command]
     }
 
-    /// Pins `item` to Cmd+Shift+T — "Reopen Closed Tab" (F8)'s only displayed
+    /// Pins `item` to Cmd+Shift+T — "Reopen Closed Tab"'s only displayed
     /// shortcut, distinct from Undo's Cmd+Z. Extracted as a pure static
     /// function so its exact chord is directly unit-testable.
     @MainActor
@@ -1302,7 +1302,7 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newTab(_ sender: Any?) {
-        // Per Phase 3: "New Tab" is a virtual tab, never a native AppKit tab.
+        // "New Tab" is a virtual tab, never a native AppKit tab.
         // This action is reachable from the Dock menu (which has no explicit
         // target), so it must route through the same command router as Cmd+T
         // rather than the legacy native-tab window path.

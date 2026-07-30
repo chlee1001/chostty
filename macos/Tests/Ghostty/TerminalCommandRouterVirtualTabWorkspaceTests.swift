@@ -2,7 +2,7 @@ import AppKit
 import Testing
 @testable import Ghostty
 
-/// Regression coverage for the P1 architect finding: `createVirtualTab` used
+/// Regression coverage for an architecture review finding: `createVirtualTab` used
 /// `source` only to resolve the owning CONTROLLER, then read
 /// `controller.workspaceStore.selectedWorkspace` for both the inherited
 /// config and the destination workspace. A `new_tab` whose `source` surface

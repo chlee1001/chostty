@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Ghostty
 
-/// Tests for `ClosedTabHistory`, the SOLE authority for F8 "Reopen Closed Tab"
+/// Tests for `ClosedTabHistory`, the SOLE authority for "Reopen Closed Tab"
 /// (Cmd+Shift+T). These exercise the ring/eviction/fast-path/fallback
 /// mechanism directly, independent of the shared, process-wide `undoManager`
 /// stack (which is what a blind `undoManager.undo()` would incorrectly pop —
@@ -61,7 +61,7 @@ struct ClosedTabHistoryTests {
         #expect(history.popNewest() == nil)
     }
 
-    // MARK: - P1 regression: history must hold leases WEAKLY
+    // MARK: - Regression: history must hold leases WEAKLY
 
     /// The lease's finalize handler is the ONLY thing that tears down a
     /// detached session. That must run once the undo registration that

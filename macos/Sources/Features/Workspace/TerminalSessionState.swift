@@ -5,7 +5,7 @@ import GhosttyKit
 
 /// Owns the state of a single terminal tab/session.
 ///
-/// Per DR-2, `TerminalSessionState` owns only tab/session state: the stable tab UUID,
+/// `TerminalSessionState` owns only tab/session state: the stable tab UUID,
 /// the split tree of surfaces, focused/remembered surface UUIDs, title/PWD/bell/progress/
 /// color/config/restorability, telemetry subscriptions, a metadata generation counter, and
 /// an idempotent teardown. It deliberately does **not** retain a controller or window, and
@@ -23,7 +23,7 @@ final class TerminalSessionState: ObservableObject, Identifiable {
 
     /// The live split tree of surfaces belonging to this session.
     ///
-    /// Per DR-1/Phase 1, structural topology is **not** published on the session.
+    /// Structural topology is **not** published on the session.
     /// The owning ``WorkspaceSessionStore`` is the sole structural publisher; this
     /// stored property is mutated only by store commit (via the owning controller)
     /// so that observation of structural change happens through exactly one
@@ -79,7 +79,7 @@ final class TerminalSessionState: ObservableObject, Identifiable {
 
     /// Adopts an existing split tree without creating any surface.
     ///
-    /// Per DR-1/Phase 1, sessions never create their own default surface. The
+    /// Sessions never create their own default surface. The
     /// caller (graph factory, restoration, transfer, or owning controller) must
     /// inject a fully constructed tree; this is the sole non-test initializer.
     ///
@@ -107,14 +107,14 @@ final class TerminalSessionState: ObservableObject, Identifiable {
 
     /// Detaches this session from active presentation without destroying state.
     ///
-    /// Per DR-1/Phase 1, this is the inverse of mounting: called by the owning
+    /// This is the inverse of mounting: called by the owning
     /// controller when this session is no longer the presented one (e.g. when
     /// the user switches to a different tab). Unlike ``tearDown()``, this does
     /// NOT release surfaces, PTYs, telemetry subscriptions, or focus state —
     /// those are retained so the session can be re-mounted later.
     ///
     /// This hook establishes a presentation-lifecycle boundary distinct from
-    /// final teardown. The Phase 1 implementation is intentionally non-destructive;
+    /// final teardown. The implementation is intentionally non-destructive;
     /// future phases may use this hook to release presentation-only resources
     /// without ending the underlying PTY.
     func unmount() {

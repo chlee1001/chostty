@@ -1,6 +1,6 @@
 import Foundation
 
-/// F6: pure, presentation-only sidebar search/filter.
+/// Pure, presentation-only sidebar search/filter.
 ///
 /// Scope is GLOBAL over `WorkspaceSession.name` and each tab's `title`,
 /// `titleOverride`, and `pwd`. Git-branch matching is deliberately DESCOPED:

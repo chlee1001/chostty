@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import Ghostty
 
-/// Tests for F9 (tab bar scroll + minimum width).
+/// Tests for the tab bar's scrolling and minimum width.
 ///
 /// Actually hosting `VirtualTabBar` (`NSHostingView`, an on-screen
 /// `NSWindow`, even `ImageRenderer`) reliably hung or crashed the XCTest
@@ -110,7 +110,7 @@ struct VirtualTabBarScrollTests {
     // MARK: - Shipped call-site pinning
 
     /// The item body's frame MUST be the fixed `itemWidth.points`, not
-    /// `maxWidth: .infinity` — that's the one frame site F9 changes.
+    /// `maxWidth: .infinity` — that's the one frame site the scroll work changes.
     @Test func itemBodyFrameUsesFixedItemWidthNotMaxWidthInfinity() {
         #expect(Self.source.contains(".frame(width: itemWidth.points)"))
     }
@@ -136,7 +136,7 @@ struct VirtualTabBarScrollTests {
             "Self.tabItemWidth(availableWidth: proxy.size.width, tabCount: workspace.tabs.count)"))
     }
 
-    /// The container and label frames F9 must KEEP untouched.
+    /// The container and label frames that must stay untouched.
     @Test func containerAndLabelFramesStayMaxWidthInfinity() {
         // Anchored on the ADJACENCY, which only the real container frame
         // produces; a stray mention of either modifier elsewhere cannot
@@ -146,7 +146,7 @@ struct VirtualTabBarScrollTests {
         #expect(Self.source.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
     }
 
-    /// F9 wraps the strip in a horizontal, indicator-less `ScrollView` plus a
+    /// The strip is wrapped in a horizontal, indicator-less `ScrollView` plus a
     /// `ScrollViewReader`, and auto-scrolls on selection change with a
     /// centered anchor.
     @Test func scrollViewAndAutoScrollAreWired() {
@@ -162,7 +162,7 @@ struct VirtualTabBarScrollTests {
             ".onChange(of: store.snapshot.selection.tabID) { newValue in withAnimation { scrollProxy.scrollTo(newValue, anchor: .center) } }"))
     }
 
-    /// F9 must not introduce `onDrop(of:delegate:)` — that API deadlocks the
+    /// The tab bar must not introduce `onDrop(of:delegate:)` — that API deadlocks the
     /// XCTest host (this suite's own hosting attempts hit exactly that class
     /// of hang).
     @Test func neverUsesOnDropOfDelegate() {

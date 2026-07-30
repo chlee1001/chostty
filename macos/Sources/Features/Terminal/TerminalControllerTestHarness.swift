@@ -1,7 +1,7 @@
 import Cocoa
 import GhosttyKit
 
-/// Phase 2 controller-construction test seam.
+/// Controller-construction test seam.
 ///
 /// `TerminalControllerGraphFactory.makeFromWorkspaces(_:selection:)` rebuilds
 /// a graph from an already-live hierarchy: nothing is decoded, no surface is

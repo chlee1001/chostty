@@ -1,6 +1,6 @@
 import Foundation
 
-/// F10: whether a lone workspace renders flattened (no header row/chevron,
+/// Whether a lone workspace renders flattened (no header row/chevron,
 /// tabs at the top level) or always grouped. Governed by an app-local
 /// `@AppStorage` key (`SidebarSingleWorkspacePolicy`) so nothing is added to
 /// the Ghostty config surface.
@@ -19,7 +19,7 @@ enum SidebarSingleWorkspacePolicy: String, CaseIterable {
     }
 }
 
-/// F10: pure predicate deciding flattened vs. grouped sidebar rendering.
+/// Pure predicate deciding flattened vs. grouped sidebar rendering.
 enum SidebarPolicy {
     /// True only for exactly one workspace under the `flatten` policy. Two or
     /// more workspaces (or the `alwaysGrouped` policy) always render grouped,

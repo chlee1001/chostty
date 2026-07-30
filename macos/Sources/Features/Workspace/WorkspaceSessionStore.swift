@@ -127,7 +127,7 @@ struct WorkspaceStructuralCandidate: Hashable {
 // MARK: - Workspace
 
 /// A virtual workspace containing ordered terminal tabs.
-/// Per DR-1, a workspace never creates or owns an NSWindow.
+/// A workspace never creates or owns an NSWindow.
 struct WorkspaceSession: Identifiable {
     let id: UUID
     var name: String
@@ -160,7 +160,7 @@ struct WorkspaceSession: Identifiable {
 
 /// A per-controller store of virtual workspaces → tabs → sessions.
 ///
-/// Per DR-1 / Phase 1, the store is owned by exactly one ordinary
+/// The store is owned by exactly one ordinary
 /// `TerminalController` and exposes structural change through **one** published
 /// property: ``snapshot``. Every structural mutation flows through the
 /// ``stage`` → ``validate`` → ``commit`` transaction:

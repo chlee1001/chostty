@@ -116,7 +116,7 @@ struct NewTerminalIntent: AppIntent {
             }
 
         case .tab:
-            // Per Phase 3: `.tab` creates a virtual tab, not a physical window.
+            // `.tab` creates a virtual tab, not a physical window.
             guard let appDelegate = NSApp.delegate as? AppDelegate else {
                 throw GhosttyIntentError.appUnavailable
             }
