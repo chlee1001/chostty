@@ -54,6 +54,24 @@ These are matched on hardware key codes, not characters, so they behave
 identically under non-Latin input sources. `⌘⌥` arrows and bare `⌘[` / `⌘]` are
 deliberately NOT claimed — they are live `goto_split` bindings upstream.
 
+## Workspace controls
+
+The sidebar toggle, the new-workspace `+`, and the workspace actions menu sit in
+the titlebar, immediately right of the traffic lights. They used to live in the
+sidebar header, where closing the sidebar took the button that reopens it away
+too and left `⌘B` as the only way back.
+
+Windows with no titlebar to host them draw the same three buttons as a strip
+along the top of the window content, next to the window title — fullscreen
+(native parks the titlebar in an auto-hiding overlay, non-native removes it) and
+`window-decorations = false`. Two windows keep the controls in the sidebar
+header instead: the quick terminal, a borderless panel with no titlebar and no
+room for a strip, and `macos-titlebar-style = hidden`, where a strip would hand
+back the window chrome the setting exists to remove.
+
+`WorkspaceControlsPlacement.forStandaloneWindow` is the whole decision, and
+`WorkspaceControlsPlacementTests` covers its matrix.
+
 ## Building
 
 ```sh
@@ -110,6 +128,11 @@ silicon and pass:
 - Fullscreen enter and exit, native and non-native, with one tab and with four.
 - Twenty tabs render and scroll; `Cmd+Shift+]` brings the last one into view.
 - Right-clicking blank sidebar space opens the workspace menu.
+- Workspace controls in all three hosts, including a native fullscreen
+  transition — `GhosttyWorkspaceControlsUITests` drives the real app, asserting
+  hittability and, in fullscreen, that clicking `+` creates a workspace. The
+  first cut of the accessory was laid out but clipped to zero width, which an
+  existence-only assertion accepted.
 
 Where hosting is impossible, some assertions pin the shipped source text rather
 than observed layout. Those normalize away comments and whitespace first, and

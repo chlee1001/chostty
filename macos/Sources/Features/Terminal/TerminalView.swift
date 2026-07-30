@@ -35,10 +35,26 @@ protocol TerminalViewModel: ObservableObject {
 
     var updateOverlayIsVisible: Bool { get }
 
-    /// The per-controller workspace store for virtual workspaces (DR-1/Phase 1).
+    /// The per-controller workspace store for virtual workspaces.
     /// Nonoptional: every controller receives a fully-initialized store via the
     /// graph factory before presentation.
     var workspaceStore: WorkspaceSessionStore { get }
+
+    /// Where this window renders the workspace controls (sidebar toggle, new
+    /// workspace, workspace actions). Published on the controller: entering or
+    /// leaving fullscreen changes whether the titlebar can host them.
+    var workspaceControlsPlacement: WorkspaceControlsPlacement { get }
+
+    /// Mirrors `window.title` and `window.representedURL`. Only the
+    /// `.contentStrip` placement reads these, because it has to draw the title
+    /// itself — every case that selects it has no visible system title.
+    var windowTitle: String { get }
+    var windowRepresentedURL: URL? { get }
+
+    /// Runs a reserved workspace command (new workspace, reopen closed tab) for
+    /// this window's controls, through the same `TerminalCommandRouter` the
+    /// keyboard shortcuts and menu items use.
+    func performWorkspaceControlsCommand(_ command: TerminalCommandRouter.ReservedTerminalCommand)
 
     /// Select a workspace/tab. The controller drives the store's stage→commit
     /// transaction and mounts the resulting session at the new generation.
@@ -99,16 +115,30 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
             ErrorView()
         case .ready:
             ZStack {
+                VStack(spacing: 0) {
+                // Our own titlebar row, for windows with no titlebar to host the
+                // workspace controls: fullscreen, or no window decorations at all.
+                // See `WorkspaceControlsPlacement`.
+                if viewModel.workspaceControlsPlacement == .contentStrip {
+                    WorkspaceControlsStrip(
+                        store: viewModel.workspaceStore,
+                        title: viewModel.windowTitle,
+                        representedURL: viewModel.windowRepresentedURL,
+                        onNewWorkspace: {
+                            viewModel.performWorkspaceControlsCommand(.newWorkspace)
+                        },
+                        onReopenClosedTab: {
+                            viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
+                        })
+                }
+
                 HStack(spacing: 0) {
                     if sidebarVisible {
                         SidebarView(
                             workspaceSessionStore: viewModel.workspaceStore,
-                            onToggle: { sidebarVisible.toggle() },
+                            controlsPlacement: viewModel.workspaceControlsPlacement,
                             onNewWorkspace: {
-                                guard let appDelegate = NSApp.delegate as? AppDelegate,
-                                      let router = appDelegate.terminalCommands as TerminalCommandRouter?,
-                                      let surface = viewModel.surfaceTree.first else { return }
-                                _ = router.perform(.newWorkspace, source: surface)
+                                viewModel.performWorkspaceControlsCommand(.newWorkspace)
                             },
                             onSelectTab: { workspaceID, tabID in
                                 viewModel.selectSession(workspaceID: workspaceID, tabID: tabID)
@@ -120,10 +150,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                                 viewModel.closeWorkspace(wsID)
                             },
                             onReopenClosedTab: {
-                                guard let appDelegate = NSApp.delegate as? AppDelegate,
-                                      let router = appDelegate.terminalCommands as TerminalCommandRouter?,
-                                      let surface = viewModel.surfaceTree.first else { return }
-                                _ = router.perform(.reopenClosedTab, source: surface)
+                                viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
                             }
                         )
                         .frame(width: sidebarWidth)
@@ -183,6 +210,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                }
                 }
 
                 if let surfaceView = lastFocusedSurface?.value {

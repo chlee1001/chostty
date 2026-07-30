@@ -123,6 +123,7 @@
 				Features/About/About.xib,
 				Features/Sidebar/SidebarView.swift,
 				Features/Sidebar/VirtualTabBar.swift,
+				Features/Sidebar/WorkspaceControls.swift,
 				Features/Workspace/ReservedShortcutDispatcher.swift,
 				Features/Terminal/TerminalControllerTestHarness.swift,
 				Features/Sidebar/WorkspaceDragDrop.swift,

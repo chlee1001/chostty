@@ -41,9 +41,11 @@ Universal binary, macOS 13 and later.
 
 ## Using it
 
-`⌘B` toggles the sidebar. `⌘N` makes a workspace, `⌘T` a tab inside the current
-one, `⌘⇧N` a separate physical window. Right-click a workspace, a tab, or empty
-sidebar space for the rest. The full chord table is in [FORK.md](FORK.md).
+`⌘B` toggles the sidebar, or use the buttons next to the traffic lights — the
+toggle, `+` for a new workspace, and the workspace actions menu. `⌘N` makes a
+workspace, `⌘T` a tab inside the current one, `⌘⇧N` a separate physical window.
+Right-click a workspace, a tab, or empty sidebar space for the rest. The full
+chord table is in [FORK.md](FORK.md).
 
 Configuration is unchanged from Ghostty — `~/.config/ghostty/config`, the same
 keybind and theme syntax, `TERM=xterm-ghostty`. An existing Ghostty setup works

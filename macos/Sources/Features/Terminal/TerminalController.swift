@@ -8,7 +8,7 @@ import GhosttyKit
 
 /// Normalized graph factory for ordinary terminal controllers.
 ///
-/// Per DR-1 / Phase 1, a complete Workspace → Virtual Tab → Pane graph must
+/// A complete Workspace → Virtual Tab → Pane graph must
 /// exist **before** observation, registration, or view load. This factory
 /// constructs that graph as a fully initialized ``InitialGraph`` value: it
 /// creates the surface, wraps it in a session, builds the
@@ -241,8 +241,8 @@ class TerminalController: BaseTerminalController {
         let nib = switch config.macosTitlebarStyle {
         case .native: "Terminal"
         case .hidden: "TerminalHiddenTitlebar"
-        // `tabs` is silently aliased to `transparent` at the config read site
-        // (IR 3) — this case is unreachable but kept for switch exhaustivity.
+        // `tabs` is silently aliased to `transparent` at the config read site,
+        // so this case is unreachable but kept for switch exhaustivity.
         case .transparent, .tabs: "TerminalTransparentTitlebar"
         }
 
@@ -941,6 +941,21 @@ class TerminalController: BaseTerminalController {
 
         window.contentView = container
 
+        // Workspace controls next to the traffic lights. Installed from here,
+        // not `TerminalWindow.awakeFromNib`, because the view needs this
+        // controller's workspace store.
+        if let terminalWindow = window as? TerminalWindow {
+            terminalWindow.installWorkspaceControls(WorkspaceControls(
+                store: workspaceStore,
+                onNewWorkspace: { [weak self] in
+                    self?.performWorkspaceControlsCommand(.newWorkspace)
+                },
+                onReopenClosedTab: { [weak self] in
+                    self?.performWorkspaceControlsCommand(.reopenClosedTab)
+                }))
+        }
+        syncWorkspaceControlsPlacement()
+
         // If we have a default size, we want to apply it.
         if let defaultSize {
             defaultSize.apply(to: window)
@@ -958,6 +973,18 @@ class TerminalController: BaseTerminalController {
         // apply this based on the root config but change it later based on surface
         // config (see focused surface change callback).
         syncAppearance(.init(config))
+    }
+
+    /// Standalone terminal windows put the controls in the titlebar; see
+    /// ``WorkspaceControlsPlacement/forStandaloneWindow(isTitled:isFullscreen:titlebarStyle:)``
+    /// for the window states that cannot host an accessory and what they use
+    /// instead.
+    override func computeWorkspaceControlsPlacement() -> WorkspaceControlsPlacement {
+        guard let window else { return .contentStrip }
+        return .forStandaloneWindow(
+            isTitled: window.styleMask.contains(.titled),
+            isFullscreen: window.styleMask.contains(.fullScreen),
+            titlebarStyle: derivedConfig.macosTitlebarStyle)
     }
 
     /// Setup correct window frame before showing the window
@@ -1135,7 +1162,7 @@ class TerminalController: BaseTerminalController {
     /// Whether "Close Other Tabs" should be enabled for the given workspace's
     /// tabs. Extracted as a pure, window-free function so `validateMenuItem`
     /// and the VirtualTabBar's item context menu can share one definition
-    /// instead of drifting — PM-9 requires the same predicate at every
+    /// instead of drifting — the same predicate has to hold at every
     /// affordance, and this is directly testable without a live controller.
     static func canCloseOtherTabs(tabs: [TerminalSessionState]) -> Bool {
         tabs.count > 1
