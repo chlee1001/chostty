@@ -13,6 +13,9 @@
 #                                    [--commit <sha>] [--build <n>]
 
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LICENSE_SOURCE="$REPO_ROOT/LICENSE"
 
 APP=""
 VERSION=""
@@ -34,6 +37,7 @@ done
 [ -n "$APP" ] || { echo "--app is required" >&2; exit 2; }
 [ -n "$VERSION" ] || { echo "--version is required" >&2; exit 2; }
 [ -d "$APP" ] || { echo "no app bundle at $APP" >&2; exit 1; }
+[ -f "$LICENSE_SOURCE" ] || { echo "missing license: $LICENSE_SOURCE" >&2; exit 1; }
 
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD="${BUILD:-1}"
@@ -58,6 +62,15 @@ if /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST" >/dev/null 2>&1; t
 	echo "refusing to package: SUPublicEDKey is present, so the disabled updater is still armed" >&2
 	exit 1
 fi
+
+# Every distributed copy must carry the upstream MIT notice. Install it before
+# signing so both the zip and DMG contain the exact repository LICENSE.
+LICENSE_DEST="$APP/Contents/Resources/LICENSE"
+install -m 0644 "$LICENSE_SOURCE" "$LICENSE_DEST"
+cmp -s "$LICENSE_SOURCE" "$LICENSE_DEST" || {
+	echo "refusing to package: bundled LICENSE does not match repository LICENSE" >&2
+	exit 1
+}
 
 # --- Sign ------------------------------------------------------------------
 
@@ -97,6 +110,11 @@ echo "signed ad-hoc: $(codesign -dv "$APP" 2>&1 | grep -c 'Signature=adhoc') (1 
 ZIP="$OUT/Chostty-$VERSION-macos-universal.zip"
 rm -f "$ZIP"
 (cd "$(dirname "$APP")" && zip -9 -r -q --symlinks "$ZIP" "$(basename "$APP")")
+ARCHIVE_LICENSE="$(basename "$APP")/Contents/Resources/LICENSE"
+unzip -p "$ZIP" "$ARCHIVE_LICENSE" | cmp -s - "$LICENSE_SOURCE" || {
+	echo "refusing to package: zip is missing the repository LICENSE" >&2
+	exit 1
+}
 
 DMG="$OUT/Chostty-$VERSION.dmg"
 STAGE="$(mktemp -d)"
