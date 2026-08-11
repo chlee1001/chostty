@@ -61,6 +61,7 @@ extension TerminalRestorableState {
         let selectedWorkspaceID: UUID?
         let selectedTabID: UUID?
 
+        let filesPanel: FilesPanelPresentationState.Persisted?
         init(
             focusedSurface: String?,
             surfaceTree: SplitTree<ViewType>,
@@ -70,7 +71,8 @@ extension TerminalRestorableState {
             physicalID: UUID? = nil,
             workspaces: [WorkspaceState<ViewType>]? = nil,
             selectedWorkspaceID: UUID? = nil,
-            selectedTabID: UUID? = nil
+            selectedTabID: UUID? = nil,
+            filesPanel: FilesPanelPresentationState.Persisted? = nil
         ) {
             self.focusedSurface = focusedSurface
             self.surfaceTree = surfaceTree
@@ -81,11 +83,13 @@ extension TerminalRestorableState {
             self.workspaces = workspaces
             self.selectedWorkspaceID = selectedWorkspaceID
             self.selectedTabID = selectedTabID
+            self.filesPanel = filesPanel
         }
     }
 }
 
 extension TerminalRestorableState.InternalState where ViewType == Ghostty.SurfaceView {
+    @MainActor
     init(from controller: TerminalController) {
         // Snapshot the full virtual hierarchy. The presented tree is written
         // back into its owning session first so the encoded hierarchy matches
@@ -147,7 +151,8 @@ extension TerminalRestorableState.InternalState where ViewType == Ghostty.Surfac
             physicalID: controller.physicalUUID,
             workspaces: workspaces,
             selectedWorkspaceID: snapshot.selection.workspaceID,
-            selectedTabID: snapshot.selection.tabID
+            selectedTabID: snapshot.selection.tabID,
+            filesPanel: controller.filesPanelController?.presentation.persisted
         )
     }
 }

@@ -58,6 +58,7 @@ class BaseTerminalController: NSWindowController,
     /// no optional, lazy, IUO, or empty-bootstrap seam: a controller cannot
     /// exist without a fully initialized store and committed initial snapshot.
     let workspaceStore: WorkspaceSessionStore
+    var filesPanelController: FilesPanelController? { nil }
 
     /// The session ID last **successfully presented** (mounted) on this
     /// controller. Distinct from the store's desired selection: a desired
@@ -580,6 +581,7 @@ class BaseTerminalController: NSWindowController,
         // Remove from store. The session stays in the live registry until we
         // explicitly unregister, so the removeTab transaction can still see it.
         guard let removedSession = store.removeTab(tabID) else { return nil }
+        removedSession.readerStore.close()
 
         // If we were presenting this tab, switch to the new selection.
         if presentedHit {
@@ -682,6 +684,7 @@ class BaseTerminalController: NSWindowController,
         // Remove from store.
         let removedSessions = store.removeWorkspace(workspaceID)
         guard !removedSessions.isEmpty else { return [] }
+        removedSessions.forEach { $0.readerStore.close() }
 
         // If we were presenting a tab from this workspace, switch.
         if presentedHit {
@@ -1517,9 +1520,26 @@ class BaseTerminalController: NSWindowController,
         window.zoom(nil)
     }
 
+    static func shouldInterceptSurfaceClose(
+        processExited: Bool,
+        readerOpen: Bool
+    ) -> Bool {
+        !processExited && readerOpen
+    }
+
     @objc private func ghosttyDidCloseSurface(_ notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard let node = surfaceTree.root?.node(view: target) else { return }
+        if let presentedSessionID,
+           let session = workspaceStore.session(forTabID: presentedSessionID),
+           Self.shouldInterceptSurfaceClose(
+               processExited: target.processExited,
+               readerOpen: session.readerStore.isOpen
+           ) {
+            session.readerStore.close()
+            window?.makeFirstResponder(target)
+            return
+        }
         closeSurface(
             node,
             withConfirmation: (notification.userInfo?["process_alive"] as? Bool) ?? false)

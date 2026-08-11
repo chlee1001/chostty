@@ -39,6 +39,7 @@ protocol TerminalViewModel: ObservableObject {
     /// Nonoptional: every controller receives a fully-initialized store via the
     /// graph factory before presentation.
     var workspaceStore: WorkspaceSessionStore { get }
+    var filesPanelController: FilesPanelController? { get }
 
     /// Where this window renders the workspace controls (sidebar toggle, new
     /// workspace, workspace actions). Published on the controller: entering or
@@ -106,6 +107,11 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
         guard let surfacePwd, surfacePwd != "" else { return nil }
         return URL(fileURLWithPath: surfacePwd)
     }
+    private var selectedReaderStore: TerminalReaderStore? {
+        viewModel.workspaceStore
+            .session(forTabID: viewModel.workspaceStore.snapshot.selection.tabID)?
+            .readerStore
+    }
 
     var body: some View {
         switch ghostty.readiness {
@@ -129,7 +135,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         },
                         onReopenClosedTab: {
                             viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
-                        })
+                        },
+                        filesPanelController: viewModel.filesPanelController)
                 }
 
                 HStack(spacing: 0) {
@@ -151,7 +158,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                             },
                             onReopenClosedTab: {
                                 viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
-                            }
+                            },
+                            filesPanelController: viewModel.filesPanelController
                         )
                         .frame(width: sidebarWidth)
 
@@ -183,33 +191,59 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         }
                     )
 
-                    TerminalSplitTreeView(
-                        tree: viewModel.surfaceTree,
-                        action: { delegate?.performSplitAction($0) })
-                        .environmentObject(ghostty)
-                        .ghosttyLastFocusedSurface(lastFocusedSurface)
-                        .focused($focused)
-                        .onAppear { self.focused = true }
-                        .onChange(of: focusedSurface) { newValue in
-                            // We want to keep track of our last focused surface so even if
-                            // we lose focus we keep this set to the last non-nil value.
-                            if newValue != nil {
-                                lastFocusedSurface = .init(newValue)
-                                self.delegate?.focusedSurfaceDidChange(to: newValue)
+                    ZStack {
+                        TerminalSplitTreeView(
+                            tree: viewModel.surfaceTree,
+                            action: { delegate?.performSplitAction($0) })
+                            .environmentObject(ghostty)
+                            .ghosttyLastFocusedSurface(lastFocusedSurface)
+                            .focused($focused)
+                            .onAppear { self.focused = true }
+                            .onChange(of: focusedSurface) { newValue in
+                                if newValue != nil {
+                                    lastFocusedSurface = .init(newValue)
+                                    self.delegate?.focusedSurfaceDidChange(to: newValue)
+                                }
+                            }
+                            .onChange(of: pwdURL) { newValue in
+                                self.delegate?.pwdDidChange(to: newValue)
+                            }
+                            .onChange(of: cellSize) { newValue in
+                                guard let size = newValue else { return }
+                                self.delegate?.cellSizeDidChange(to: size)
+                            }
+                            .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
+                                   idealHeight: lastFocusedSurface?.value?.initialSize?.height)
+
+                        if let readerStore = selectedReaderStore {
+                            FilesPanelReaderHost(store: readerStore) { isOpen in
+                                guard let surface = lastFocusedSurface?.value else { return }
+                                if isOpen {
+                                    surface.window?.makeFirstResponder(nil)
+                                } else {
+                                    surface.window?.makeFirstResponder(surface)
+                                }
                             }
                         }
-                        .onChange(of: pwdURL) { newValue in
-                            self.delegate?.pwdDidChange(to: newValue)
-                        }
-                        .onChange(of: cellSize) { newValue in
-                            guard let size = newValue else { return }
-                            self.delegate?.cellSizeDidChange(to: size)
-                        }
-                        .frame(idealWidth: lastFocusedSurface?.value?.initialSize?.width,
-                               idealHeight: lastFocusedSurface?.value?.initialSize?.height)
+                    }
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
                 .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                    if let filesPanelController = viewModel.filesPanelController {
+                        FilesPanelContainer(
+                            controller: filesPanelController,
+                            terminalController: viewModel as? TerminalController,
+                            readerStore: selectedReaderStore
+                        )
+                    }
+                }
+                .background {
+                    if let filesPanelController = viewModel.filesPanelController {
+                        FilesPanelLayoutProbe(
+                            controller: filesPanelController,
+                            sidebarWidth: sidebarVisible ? sidebarWidth : 0
+                        )
+                    }
                 }
                 }
 
@@ -238,6 +272,52 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     }
 }
 
+private struct FilesPanelContainer: View {
+    @ObservedObject var controller: FilesPanelController
+    let terminalController: TerminalController?
+    let readerStore: TerminalReaderStore?
+
+    var body: some View {
+        if controller.presentation.visible && !controller.presentation.isAutoCollapsedByLayout {
+            HStack(spacing: 0) {
+                FilesPanelDivider(width: Binding(
+                    get: { controller.presentation.width },
+                    set: { controller.presentation.width = $0 }
+                ))
+                FilesPanelView(
+                    controller: controller,
+                    terminalController: terminalController,
+                    readerStore: readerStore
+                )
+                .frame(width: controller.presentation.width)
+            }
+        }
+    }
+}
+
+private struct FilesPanelLayoutProbe: View {
+    @ObservedObject var controller: FilesPanelController
+    let sidebarWidth: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            let shouldCollapse = FilesPanelPresentationState.shouldAutoCollapse(
+                availableWidth: proxy.size.width,
+                sidebarWidth: sidebarWidth,
+                panelWidth: controller.presentation.width
+            )
+            Color.clear
+                .onAppear {
+                    controller.presentation.isAutoCollapsedByLayout = shouldCollapse
+                }
+                .onChange(of: shouldCollapse) { newValue in
+                    controller.presentation.isAutoCollapsedByLayout = newValue
+                }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
 private struct UpdateOverlay: View {
     var body: some View {
         if let appDelegate = NSApp.delegate as? AppDelegate {
