@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd)
 NOTICES="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
 RESOLVED="$REPO_ROOT/macos/Ghostty.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 
