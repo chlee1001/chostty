@@ -106,6 +106,7 @@ class AppDelegate: NSObject,
     private(set) var surfaceOwners: SurfaceOwnerRegistry!
     private(set) var terminalCommands: TerminalCommandRouter!
     private(set) var surfaceDispatcher: SurfaceEventDispatcher!
+    let filesPanelWatchBroker = FilesPanelWatchBroker()
 
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
@@ -1330,6 +1331,11 @@ class AppDelegate: NSObject,
     @IBAction func toggleQuickTerminal(_ sender: Any) {
         quickController.toggle()
     }
+    @IBAction func toggleFilesPanel(_ sender: Any?) {
+        guard let controller = reservedShortcutKeyWindowController(),
+              let filesPanelController = controller.filesPanelController else { return }
+        filesPanelController.toggleVisible()
+    }
 
     /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Ghostty as the frontmost application
     @IBAction func toggleVisibility(_ sender: Any) {
@@ -1640,6 +1646,16 @@ extension AppDelegate: NSMenuItemValidation {
             // Float on top items only active if the key window is a primary
             // terminal window (not quick terminal).
             return NSApp.keyWindow is TerminalWindow
+        case #selector(toggleFilesPanel(_:)):
+            guard let controller = reservedShortcutKeyWindowController(),
+                  let filesPanelController = controller.filesPanelController else {
+                item.title = "Show Files Panel"
+                return false
+            }
+            item.title = filesPanelController.presentation.visible
+                ? "Hide Files Panel"
+                : "Show Files Panel"
+            return true
 
         case #selector(undo(_:)):
             if undoManager.canUndo {

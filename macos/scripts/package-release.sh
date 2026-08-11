@@ -16,6 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LICENSE_SOURCE="$REPO_ROOT/LICENSE"
+NOTICES_SOURCE="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
 
 APP=""
 VERSION=""
@@ -38,6 +39,7 @@ done
 [ -n "$VERSION" ] || { echo "--version is required" >&2; exit 2; }
 [ -d "$APP" ] || { echo "no app bundle at $APP" >&2; exit 1; }
 [ -f "$LICENSE_SOURCE" ] || { echo "missing license: $LICENSE_SOURCE" >&2; exit 1; }
+[ -f "$NOTICES_SOURCE" ] || { echo "missing third-party notices: $NOTICES_SOURCE" >&2; exit 1; }
 
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD="${BUILD:-1}"
@@ -69,6 +71,12 @@ LICENSE_DEST="$APP/Contents/Resources/LICENSE"
 install -m 0644 "$LICENSE_SOURCE" "$LICENSE_DEST"
 cmp -s "$LICENSE_SOURCE" "$LICENSE_DEST" || {
 	echo "refusing to package: bundled LICENSE does not match repository LICENSE" >&2
+	exit 1
+}
+NOTICES_DEST="$APP/Contents/Resources/THIRD-PARTY-NOTICES.md"
+install -m 0644 "$NOTICES_SOURCE" "$NOTICES_DEST"
+cmp -s "$NOTICES_SOURCE" "$NOTICES_DEST" || {
+	echo "refusing to package: bundled THIRD-PARTY-NOTICES does not match repository original" >&2
 	exit 1
 }
 
@@ -113,6 +121,11 @@ rm -f "$ZIP"
 ARCHIVE_LICENSE="$(basename "$APP")/Contents/Resources/LICENSE"
 unzip -p "$ZIP" "$ARCHIVE_LICENSE" | cmp -s - "$LICENSE_SOURCE" || {
 	echo "refusing to package: zip is missing the repository LICENSE" >&2
+	exit 1
+}
+ARCHIVE_NOTICES="$(basename "$APP")/Contents/Resources/THIRD-PARTY-NOTICES.md"
+unzip -p "$ZIP" "$ARCHIVE_NOTICES" | cmp -s - "$NOTICES_SOURCE" || {
+	echo "refusing to package: zip is missing the repository THIRD-PARTY-NOTICES" >&2
 	exit 1
 }
 

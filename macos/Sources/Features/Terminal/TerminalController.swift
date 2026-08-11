@@ -263,6 +263,14 @@ class TerminalController: BaseTerminalController {
 
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
+    private lazy var ownedFilesPanelController: FilesPanelController = {
+        let broker = (NSApp.delegate as? AppDelegate)?.filesPanelWatchBroker ?? FilesPanelWatchBroker()
+        let controller = FilesPanelController(watchBroker: broker)
+        controller.attach(to: self)
+        return controller
+    }()
+
+    override var filesPanelController: FilesPanelController? { ownedFilesPanelController }
 
     /// Designated initializer that adopts an already-built normalized graph.
     /// Used by v8 restoration to mount a full multi-workspace hierarchy.
@@ -743,12 +751,17 @@ class TerminalController: BaseTerminalController {
         closeWindowImmediately()
     }
 
+    static func closeReadersBeforeWindowUndo(_ sessions: [TerminalSessionState]) {
+        sessions.forEach { $0.readerStore.close() }
+    }
+
     /// Closes the current window (including any other tabs) immediately and without
     /// confirmation. This will setup proper undo state so the action can be undone.
     func closeWindowImmediately() {
         guard let window = window else { return }
 
         cancelPendingInitialPresentation()
+        Self.closeReadersBeforeWindowUndo(workspaceStore.allSessions)
 
         registerUndoForCloseWindow()
 
@@ -952,7 +965,8 @@ class TerminalController: BaseTerminalController {
                 },
                 onReopenClosedTab: { [weak self] in
                     self?.performWorkspaceControlsCommand(.reopenClosedTab)
-                }))
+                },
+                filesPanelController: filesPanelController))
         }
         syncWorkspaceControlsPlacement()
 
@@ -1040,6 +1054,7 @@ class TerminalController: BaseTerminalController {
     override func windowWillClose(_ notification: Notification) {
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
+        filesPanelController?.teardown()
 
         // If we remove a window, we reset the cascade point to the key window so that
         // the next window cascade's from that one.

@@ -339,6 +339,12 @@
                                     <action selector="toggleCommandPalette:" target="-1" id="FcT-XD-gM1"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Show Files Panel" id="FPL-2A-NEL">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="toggleFilesPanel:" target="bbz-4X-AYv" id="FPL-AC-T10"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Change Tab Title..." id="iac-lh-Cl7">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

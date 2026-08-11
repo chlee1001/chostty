@@ -89,6 +89,9 @@ final class TerminalRestorableState: TerminalRestorable {
     var titleOverride: String? {
         internalState.titleOverride
     }
+    var filesPanel: FilesPanelPresentationState.Persisted? {
+        internalState.filesPanel
+    }
 
     /// Internal State we use to perform unit tests
     ///
@@ -97,6 +100,7 @@ final class TerminalRestorableState: TerminalRestorable {
     /// we use an internal type to perform migration and tests
     private let internalState: InternalState<Ghostty.SurfaceView>
 
+    @MainActor
     init(from controller: TerminalController) {
         internalState = .init(from: controller)
     }
@@ -220,6 +224,9 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
             }
         }
 
+        if let filesPanel = state.filesPanel {
+            c.filesPanelController?.hydrate(from: filesPanel)
+        }
         completionHandler(window, nil)
         guard let mode = state.effectiveFullscreenMode, mode != .native else {
             // We let AppKit handle native fullscreen

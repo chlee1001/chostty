@@ -72,6 +72,7 @@ struct WorkspaceControls: View {
     /// controller, so a click carries the same authority as `⌘N` / `⌘⇧T`.
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
+    var filesPanelController: FilesPanelController? = nil
 
     /// The same key `TerminalView` binds, so toggling from any host moves the
     /// same sidebar.
@@ -95,6 +96,9 @@ struct WorkspaceControls: View {
             .help(sidebarVisible ? "Hide sidebar (⌘B)" : "Show sidebar (⌘B)")
             .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
 
+            if let filesPanelController {
+                FilesPanelToggleButton(controller: filesPanelController)
+            }
             Button(action: onNewWorkspace) {
                 Image(systemName: "plus")
             }
@@ -128,6 +132,19 @@ struct WorkspaceControls: View {
     }
 }
 
+private struct FilesPanelToggleButton: View {
+    @ObservedObject var controller: FilesPanelController
+
+    var body: some View {
+        Button(action: controller.toggleVisible) {
+            Image(systemName: "sidebar.right")
+        }
+        .buttonStyle(.plain)
+        .help(controller.presentation.visible ? "Hide Files Panel" : "Show Files Panel")
+        .accessibilityLabel(controller.presentation.visible ? "Hide Files Panel" : "Show Files Panel")
+    }
+}
+
 // MARK: - Content Strip
 
 /// The `contentStrip` host: a titlebar row drawn at the top of the window
@@ -141,6 +158,7 @@ struct WorkspaceControlsStrip: View {
     let representedURL: URL?
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
+    var filesPanelController: FilesPanelController? = nil
 
     /// One standard titlebar height, so the strip stands in for the titlebar
     /// rather than reading as an extra band of content.
@@ -151,7 +169,8 @@ struct WorkspaceControlsStrip: View {
             WorkspaceControls(
                 store: store,
                 onNewWorkspace: onNewWorkspace,
-                onReopenClosedTab: onReopenClosedTab)
+                onReopenClosedTab: onReopenClosedTab,
+                filesPanelController: filesPanelController)
 
             // Two spacers rather than a centering overlay: the title can never
             // land underneath the controls no matter how narrow the window is.

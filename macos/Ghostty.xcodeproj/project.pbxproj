@@ -15,6 +15,7 @@
 		8F3A9B4C2FA6B88000A18D13 /* Ghostty.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4B2FA6B88000A18D13 /* Ghostty.sdef */; };
 		9351BE8E3D22937F003B3499 /* nvim in Resources */ = {isa = PBXBuildFile; fileRef = 9351BE8E2D22937F003B3499 /* nvim */; };
 		A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A51BFC262B30F1B800E92F16 /* Sparkle */; };
+		C0F11EAD31A0000000000001 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = C0F11EAD31A0000000000003 /* MarkdownUI */; };
 		A53D0C8E2B53B0EA00305CE6 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5D495A1299BEC7E00DD1313 /* GhosttyKit.xcframework */; };
 		A53D0C952B53B4D800305CE6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5B30538299BEAAB0047F10C /* Assets.xcassets */; };
 		A546F1142D7B68D7003B11A0 /* locale in Resources */ = {isa = PBXBuildFile; fileRef = A546F1132D7B68D7003B11A0 /* locale */; };
@@ -175,6 +176,35 @@
 				"Features/Custom App Icon/DockTilePlugin.swift",
 				"Features/Custom App Icon/Extensions/Notification+AppIcon.swift",
 				"Features/Custom App Icon/Extensions/UserDefaults+AppIcon.swift",
+				Features/FilesPanel/FilesPanelDocumentKind.swift,
+				Features/FilesPanel/FilesPanelController.swift,
+				Features/FilesPanel/FilesPanelDivider.swift,
+				Features/FilesPanel/FilesPanelExcludeRules.swift,
+				Features/FilesPanel/FilesPanelFileActions.swift,
+				Features/FilesPanel/FilesPanelNode.swift,
+				Features/FilesPanel/FilesPanelPathFormatting.swift,
+				Features/FilesPanel/FilesPanelQuickLookCoordinator.swift,
+				Features/FilesPanel/FilesPanelQuickLookHost.swift,
+				Features/FilesPanel/FilesPanelRootResolver.swift,
+				Features/FilesPanel/FilesPanelScanner.swift,
+				Features/FilesPanel/FilesPanelTreeViewModel.swift,
+				Features/FilesPanel/FilesPanelRow.swift,
+				Features/FilesPanel/FilesPanelView.swift,
+				Features/FilesPanel/FilesPanelWatchBroker.swift,
+				Features/FilesPanel/FilesPanelPresentationState.swift,
+				Features/FilesPanel/Reader/FilesPanelDocumentLoader.swift,
+				Features/FilesPanel/Reader/FilesPanelImageReaderView.swift,
+				Features/FilesPanel/Reader/FilesPanelImageDocument.swift,
+				Features/FilesPanel/Reader/FilesPanelReaderHost.swift,
+				Features/FilesPanel/Reader/FilesPanelReaderOverlayView.swift,
+				Features/FilesPanel/Reader/FilesPanelMarkdownDocument.swift,
+				Features/FilesPanel/Reader/FilesPanelReaderMemoryBudget.swift,
+				Features/FilesPanel/Reader/FilesPanelTextDocument.swift,
+				Features/FilesPanel/Reader/FilesPanelTextReaderView.swift,
+				Features/FilesPanel/Reader/FilesPanelUnsupportedReaderView.swift,
+				Features/FilesPanel/Reader/MarkdownRenderer.swift,
+				Features/FilesPanel/Reader/MarkdownUIRenderer.swift,
+				Features/FilesPanel/Reader/TerminalReaderStore.swift,
 				"Features/Global Keybinds/GlobalEventTap.swift",
 				Features/QuickTerminal/QuickTerminal.xib,
 				Features/QuickTerminal/QuickTerminalController.swift,
@@ -309,6 +339,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */,
+				C0F11EAD31A0000000000001 /* MarkdownUI in Frameworks */,
 				A56B880B2A840447007A0E29 /* Carbon.framework in Frameworks */,
 				A571AB1D2A206FCF00248498 /* GhosttyKit.xcframework in Frameworks */,
 			);
@@ -471,6 +502,7 @@
 			name = Ghostty;
 			packageProductDependencies = (
 				A51BFC262B30F1B800E92F16 /* Sparkle */,
+				C0F11EAD31A0000000000003 /* MarkdownUI */,
 			);
 			productName = Ghostty;
 			productReference = A5B30531299BEAAA0047F10C /* Ghostty.app */;
@@ -537,6 +569,7 @@
 			mainGroup = A5B30528299BEAAA0047F10C;
 			packageReferences = (
 				A51BFC252B30F1B700E92F16 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				C0F11EAD31A0000000000002 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 			);
 			productRefGroup = A5B30532299BEAAA0047F10C /* Products */;
 			projectDirPath = "";
@@ -1447,6 +1480,14 @@
 				minimumVersion = 2.5.1;
 			};
 		};
+		C0F11EAD31A0000000000002 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1454,6 +1495,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A51BFC252B30F1B700E92F16 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		C0F11EAD31A0000000000003 /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0F11EAD31A0000000000002 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

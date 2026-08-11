@@ -60,6 +60,7 @@ final class TerminalSessionState: ObservableObject, Identifiable {
 
     /// Whether this session should participate in window restoration.
     @Published var isRestorable: Bool
+    let readerStore = TerminalReaderStore()
 
     // MARK: - Telemetry / lifecycle
 
@@ -134,6 +135,7 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
+        readerStore.close()
         telemetryCancellables.removeAll()
         surfaceTree = .init()
         focusedSurfaceID = nil

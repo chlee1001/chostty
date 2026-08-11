@@ -78,6 +78,7 @@ struct SidebarView: View {
     /// `.sidebarHeader`; every other placement is hosted outside the sidebar so
     /// closing the sidebar cannot take its own reopen button with it.
     let controlsPlacement: WorkspaceControlsPlacement
+    let filesPanelController: FilesPanelController?
 
     /// Called when the user requests a new workspace.
     var onNewWorkspace: () -> Void = {}
@@ -109,7 +110,8 @@ struct SidebarView: View {
         onSelectTab: @escaping (UUID, UUID) -> Void,
         onCloseTab: ((UUID) -> Void)? = nil,
         onCloseWorkspace: ((UUID) -> Void)? = nil,
-        onReopenClosedTab: @escaping () -> Void = {}
+        onReopenClosedTab: @escaping () -> Void = {},
+        filesPanelController: FilesPanelController? = nil
     ) {
         self.workspaceSessionStore = workspaceSessionStore
         self.controlsPlacement = controlsPlacement
@@ -118,6 +120,7 @@ struct SidebarView: View {
         self.onCloseTab = onCloseTab
         self.onCloseWorkspace = onCloseWorkspace
         self.onReopenClosedTab = onReopenClosedTab
+        self.filesPanelController = filesPanelController
     }
 
     var body: some View {
@@ -161,7 +164,8 @@ struct SidebarView: View {
                 WorkspaceControls(
                     store: workspaceSessionStore,
                     onNewWorkspace: onNewWorkspace,
-                    onReopenClosedTab: onReopenClosedTab)
+                    onReopenClosedTab: onReopenClosedTab,
+                    filesPanelController: filesPanelController)
             }
         }
         .padding(.horizontal, 12)
