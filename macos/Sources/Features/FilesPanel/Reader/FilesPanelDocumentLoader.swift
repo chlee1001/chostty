@@ -12,6 +12,18 @@ actor FilesPanelDocumentLoader: FilesPanelDocumentLoading {
         case unreadable
         case invalidEncoding
         case invalidImage
+
+        /// User-facing reason shown in the Reader's failed state. The raw enum
+        /// case name is a developer symbol and must never reach the surface.
+        var message: String {
+            switch self {
+            case .missing: "The file no longer exists at this path."
+            case .permissionDenied: "You don’t have permission to read this file."
+            case .unreadable: "The file couldn’t be read."
+            case .invalidEncoding: "The file isn’t valid UTF-8 text."
+            case .invalidImage: "The image data couldn’t be decoded."
+            }
+        }
     }
 
     func load(path: String) async -> Result<TerminalReaderStore.Content, LoadError> {
@@ -28,14 +40,16 @@ actor FilesPanelDocumentLoader: FilesPanelDocumentLoading {
             return .failure(.unreadable)
         }
 
-        var kind = FilesPanelDocumentKind.classify(path: url.path, sizeBytes: size)
-        if kind == .binary, let prefix = readPrefix(url: url) {
-            kind = FilesPanelDocumentKind.classifyContent(prefix: prefix) ?? kind
-        }
+        let kind = FilesPanelDocumentKind.classify(
+            path: url.path,
+            sizeBytes: size,
+            prefix: readPrefix(url: url)
+        )
 
         if case .tooLarge(let limit) = kind {
             return .success(.unsupported(path: url.path, kind: "File exceeds \(limit) bytes", sizeBytes: size))
         }
+        if Task.isCancelled { return .failure(.unreadable) }
 
         switch kind {
         case .markdown:
@@ -44,8 +58,29 @@ actor FilesPanelDocumentLoader: FilesPanelDocumentLoading {
         case .text:
             guard let text = readText(url: url) else { return .failure(.invalidEncoding) }
             return .success(.text(.init(sourcePath: url.path, text: text)))
+        case .structured(let format):
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+                return .failure(.unreadable)
+            }
+            do {
+                if Task.isCancelled { return .failure(.unreadable) }
+                return .success(.structured(try .parse(path: url.path, data: data, format: format)))
+            } catch {
+                let document = FilesPanelStructuredDocument.failed(
+                    path: url.path,
+                    data: data,
+                    format: format,
+                    error: error
+                )
+                guard document.source != nil else { return .failure(.invalidEncoding) }
+                return .success(.structured(document))
+            }
+        case .html:
+            guard let text = readText(url: url) else { return .failure(.invalidEncoding) }
+            return .success(.html(.init(sourcePath: url.path, text: text)))
         case .image:
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  !Task.isCancelled,
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
                 return .failure(.invalidImage)
             }

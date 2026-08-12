@@ -25,6 +25,20 @@ struct TerminalReaderStoreBudgetTests {
         #expect(budget.currentUsedBytes == 0)
     }
 
+    @Test func protectedReservationIsNeverEvicted() {
+        let budget = FilesPanelReaderMemoryBudget(maximumBytes: 10)
+        let selected = UUID()
+        let background = UUID()
+        let selectedEviction = Flag()
+        budget.register(id: selected) { selectedEviction.set() }
+        budget.register(id: background) {}
+
+        #expect(budget.reserve(7, for: selected))
+        #expect(!budget.reserve(7, for: background, protecting: selected))
+        #expect(!selectedEviction.value)
+        #expect(budget.currentUsedBytes == 7)
+    }
+
     private final class Flag: @unchecked Sendable {
         private let lock = NSLock()
         private var stored = false

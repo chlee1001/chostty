@@ -752,7 +752,7 @@ class TerminalController: BaseTerminalController {
     }
 
     static func closeReadersBeforeWindowUndo(_ sessions: [TerminalSessionState]) {
-        sessions.forEach { $0.readerStore.close() }
+        sessions.forEach { $0.readerStore.closeAll() }
     }
 
     /// Closes the current window (including any other tabs) immediately and without
@@ -1146,6 +1146,9 @@ class TerminalController: BaseTerminalController {
     }
 
     @IBAction func closeTab(_ sender: Any?) {
+        // A presented Reader consumes the close command before it can reach the
+        // virtual tab; see `closeReaderDocumentIfPresented`.
+        guard !closeReaderDocumentIfPresented() else { return }
         // "Close Tab" closes the presented VIRTUAL tab. The old guard asked the
         // AppKit tab-group's window count, which is always ≤ 1 now that native
         // tabbing is disallowed, so this action degraded into closing the whole

@@ -17,10 +17,10 @@ struct FilesPanelReaderOverlayView<Content: View>: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Button("Close", systemImage: "xmark", action: onClose)
+                Button("Hide", systemImage: "xmark", action: onClose)
                     .labelStyle(.iconOnly)
                     .keyboardShortcut(.escape, modifiers: [])
-                    .help("Close Reader")
+                    .help("Hide Reader")
             }
             .padding(.horizontal, 12)
             .frame(height: 40)

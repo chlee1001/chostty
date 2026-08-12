@@ -8,9 +8,39 @@ struct MarkdownUIRenderer: MarkdownRenderer {
         AnyView(
             Markdown(document.source, baseURL: document.baseURL, imageBaseURL: document.baseURL)
                 .markdownImageProvider(FilesPanelMarkdownImageProvider())
+                .markdownBlockStyle(\.codeBlock) { configuration in
+                    FilesPanelHighlightedCodeBlock(
+                        source: configuration.content,
+                        language: configuration.language
+                    )
+                }
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         )
+    }
+}
+
+private struct FilesPanelHighlightedCodeBlock: View {
+    let source: String
+    let language: String?
+    @State private var lines: [AttributedString]?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array((lines ?? [AttributedString(source)]).enumerated()), id: \.offset) { _, line in
+                    Text(line.characters.isEmpty ? AttributedString(" ") : line)
+                }
+            }
+            .font(.system(.body, design: .monospaced))
+            .textSelection(.enabled)
+            .padding(12)
+        }
+        .background(Color.secondary.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: source) {
+            lines = await FilesPanelSyntaxHighlighter.shared.highlightLines(source, language: language)
+        }
     }
 }
 

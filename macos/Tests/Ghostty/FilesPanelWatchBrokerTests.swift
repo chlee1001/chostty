@@ -7,8 +7,8 @@ struct FilesPanelWatchBrokerTests {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let broker = FilesPanelWatchBroker()
-        let first = try #require(broker.subscribe(root: root.path) {})
-        let second = try #require(broker.subscribe(root: root.path) {})
+        let first = try #require(broker.subscribe(root: root.path) { _ in })
+        let second = try #require(broker.subscribe(root: root.path) { _ in })
 
         #expect(broker.activeStreamCount == 1)
         #expect(broker.subscriberCount(for: root.path) == 2)
@@ -24,7 +24,7 @@ struct FilesPanelWatchBrokerTests {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let broker = FilesPanelWatchBroker()
-        var subscription: FilesPanelWatchBroker.Subscription? = broker.subscribe(root: root.path) {}
+        var subscription: FilesPanelWatchBroker.Subscription? = broker.subscribe(root: root.path) { _ in }
         try #require(subscription != nil)
         #expect(broker.subscriberCount(for: root.path) == 1)
         subscription = nil

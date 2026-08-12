@@ -38,6 +38,48 @@ struct FilesPanelDocumentLoaderTests {
         #expect(size > FilesPanelDocumentKind.maximumTextBytes)
     }
 
+    @Test func malformedStructuredDocumentPreservesSourceAndParseError() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("broken.json")
+        try Data("{".utf8).write(to: url)
+
+        let result = await FilesPanelDocumentLoader().load(path: url.path)
+        guard case .success(.structured(let document)) = result else {
+            Issue.record("expected structured fallback")
+            return
+        }
+        #expect(document.source == "{")
+        #expect(document.root == nil)
+        #expect(document.parseError != nil)
+    }
+
+    @Test func missingExtensionUsesBoundedJSONSignature() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("settings")
+        try Data(#"{"reader":true}"#.utf8).write(to: url)
+
+        let result = await FilesPanelDocumentLoader().load(path: url.path)
+        guard case .success(.structured(let document)) = result else {
+            Issue.record("expected signature-classified JSON")
+            return
+        }
+        #expect(document.format == .json)
+    }
+
+    @Test func deletedDocumentReturnsRecoverableMissingError() async {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("txt")
+            .path
+        let result = await FilesPanelDocumentLoader().load(path: path)
+        guard case .failure(.missing) = result else {
+            Issue.record("expected missing error")
+            return
+        }
+    }
+
     private func makeDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

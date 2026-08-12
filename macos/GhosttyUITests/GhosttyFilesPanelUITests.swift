@@ -45,14 +45,44 @@ final class GhosttyFilesPanelUITests: GhosttyCustomConfigCase {
         XCTAssertTrue(reader.staticTexts["Chord"].waitForExistence(timeout: 10))
         XCTAssertTrue(reader.staticTexts["Action"].exists)
 
+        let readmeURL = repositoryRoot.appendingPathComponent("README.md")
+        let readme = app.buttons["files-panel-row-\(readmeURL.path)"]
+        XCTAssertTrue(readme.waitForExistence(timeout: 10))
+        readme.click()
+        XCTAssertTrue(app.descendants(matching: .any)["reader-document-tab-\(readmeURL.path)"].waitForExistence(timeout: 5))
+
+        // Opening an existing path reselects its permanent tab rather than
+        // adding another document.
+        fork.click()
+        XCTAssertTrue(app.descendants(matching: .any)[
+            "reader-document-tab-\(repositoryRoot.appendingPathComponent("FORK.md").path)"
+        ].waitForExistence(timeout: 5))
+
         app.activate()
         let readerScreenshot = XCTAttachment(screenshot: window.screenshot())
         readerScreenshot.name = "files-panel-reader"
         readerScreenshot.lifetime = .keepAlways
         add(readerScreenshot)
 
+        app.activate()
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(reader.waitForNonExistence(timeout: 5))
         XCTAssertTrue(window.exists)
+
+        fork.click()
+        XCTAssertTrue(reader.waitForExistence(timeout: 5))
+        // Closing the selected document is asserted through the tab's own close
+        // affordance. The Cmd+W chord routes to the same store call, but macOS
+        // does not reliably deliver synthesized Command chords to the app under
+        // test, which would make this assertion measure the automation layer
+        // instead of the product.
+        let forkTab = app.descendants(matching: .any)[
+            "reader-document-tab-\(repositoryRoot.appendingPathComponent("FORK.md").path)"
+        ]
+        app.activate()
+        forkTab.buttons["Close FORK.md"].click()
+        XCTAssertTrue(forkTab.waitForNonExistence(timeout: 5), "closing the selected document should remove its tab")
+        XCTAssertTrue(reader.exists, "the remaining document should stay open")
+        XCTAssertTrue(app.descendants(matching: .any)["reader-document-tab-\(readmeURL.path)"].exists)
     }
 }
