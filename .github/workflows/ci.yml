@@ -35,12 +35,19 @@ jobs:
       # Building GhosttyKit accounts for roughly 12 of the 16 minutes in this
       # job. Its output only changes when Zig/core inputs change, so macOS-only
       # pull requests can reuse the last matching framework.
+      #
+      # `zig-out/share` is cached with it because the Xcode target copies
+      # terminfo, shell completions and the man pages straight out of that
+      # directory. Caching only the framework skips the Zig build that also
+      # produces those resources, and the app target then fails to copy them.
       - name: Cache GhosttyKit
         id: ghosttykit
         uses: actions/cache@v4
         with:
-          path: macos/GhosttyKit.xcframework
-          key: ghosttykit-debug-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+          path: |
+            macos/GhosttyKit.xcframework
+            zig-out/share
+          key: ghosttykit-debug-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       # The native-tab audit is pure text analysis, so run it before the long
       # build. It is the gate that keeps AppKit's window tabbing from creeping
