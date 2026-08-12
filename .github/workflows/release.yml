@@ -1,9 +1,10 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -14,8 +15,15 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
   macos:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     # Matches the Xcode this fork is developed against. The project builds
     # against the macOS 26 SDK; an older image fails at compile time rather
     # than producing a working older-SDK build.
@@ -28,25 +36,65 @@ jobs:
           # zig build derives a version from git when one is not passed, and
           # the packaging step records the commit.
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve version
         id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            v="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            existing=$(git tag --points-at HEAD --list 'v*' \
+              --sort=-version:refname |
+              awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')
+            if [ -n "$existing" ]; then
+              tag="$existing"
+              v="${tag#v}"
+            else
+              # This fork retains upstream Ghostty tags, so the local tag list
+              # cannot identify Chostty's latest version. Published releases
+              # are the authoritative sequence.
+              latest=$(gh release list --limit 100 \
+                --json tagName,isDraft,isPrerelease,publishedAt \
+                --jq '[.[] | select(
+                  .isDraft == false and
+                  .isPrerelease == false and
+                  (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+                )] | sort_by(.publishedAt) | last | .tagName // empty')
+              if [ -n "$latest" ]; then
+                current="${latest#v}"
+                major="${current%%.*}"
+                remainder="${current#*.}"
+                minor="${remainder%%.*}"
+                patch="${remainder#*.}"
+                v="$major.$minor.$((patch + 1))"
+              else
+                v="0.1.0"
+              fi
+              tag="v$v"
+            fi
           else
             v="${{ inputs.version }}"
+            tag=""
           fi
           # zig parses this as a semantic version and the build fails late if
           # it does not; reject it here where the error is readable.
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' || {
             echo "not a semantic version: $v" >&2; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Cache GhosttyKit
+        id: ghosttykit
+        uses: actions/cache@v4
+        with:
+          path: macos/GhosttyKit.xcframework
+          key: ghosttykit-releasefast-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       - name: Show toolchain
         run: |
@@ -58,6 +106,7 @@ jobs:
       # this inside a Nix shell; on a GitHub runner plain Zig plus the Xcode
       # SDK is enough, and it produces the universal slice on its own.
       - name: Build GhosttyKit
+        if: steps.ghosttykit.outputs.cache-hit != 'true'
         run: |
           zig build \
             -Doptimize=ReleaseFast \
@@ -89,10 +138,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Create release tag
+        if: github.event_name == 'workflow_run'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$TAG")" = "$(git rev-parse HEAD)" || {
+              echo "$TAG already points at another commit" >&2
+              exit 1
+            }
+          else
+            git tag -a "$TAG" -m "Chostty ${{ steps.v.outputs.version }}"
+            git push origin "$TAG"
+          fi
+
       - name: Publish release
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_run'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
           files: dist-release/*
           generate_release_notes: true
           body: |
