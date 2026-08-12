@@ -32,6 +32,16 @@ jobs:
         with:
           version: 0.16.0
 
+      # Building GhosttyKit accounts for roughly 12 of the 16 minutes in this
+      # job. Its output only changes when Zig/core inputs change, so macOS-only
+      # pull requests can reuse the last matching framework.
+      - name: Cache GhosttyKit
+        id: ghosttykit
+        uses: actions/cache@v4
+        with:
+          path: macos/GhosttyKit.xcframework
+          key: ghosttykit-debug-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+
       # The native-tab audit is pure text analysis, so run it before the long
       # build. It is the gate that keeps AppKit's window tabbing from creeping
       # back in, and it fails in seconds when it fails.
@@ -39,6 +49,7 @@ jobs:
         run: ./macos/scripts/native-tab-audit.sh
 
       - name: Build GhosttyKit
+        if: steps.ghosttykit.outputs.cache-hit != 'true'
         run: zig build -Demit-macos-app=false
 
       # UI tests need accessibility permissions no CI runner grants, so the
