@@ -145,11 +145,13 @@ final class FilesPanelController: ObservableObject {
             // event storm, not a refresh. Those roots list on demand instead.
             watchSubscription = FilesPanelWatchBroker.isBroadRoot(root)
                 ? nil
-                : watchBroker.subscribe(root: root) { [weak self] in
+                : watchBroker.subscribe(root: root) { [weak self] changedPaths in
                     Task { @MainActor in
                         guard let self else { return }
                         self.treeViewModel.reload()
-                        self.controller?.workspaceStore.allSessions.forEach { $0.readerStore.reload() }
+                        self.controller?.workspaceStore.allSessions.forEach {
+                            $0.readerStore.markStale(paths: changedPaths)
+                        }
                     }
                 }
         }

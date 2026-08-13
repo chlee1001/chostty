@@ -36,6 +36,16 @@ bundle, and the appcast workflows are deleted. An enabled updater pointed at
 upstream's feed would replace this fork with stock Ghostty. Do not re-enable it
 without this fork's own feed and signing key.
 
+**Files panel Reader.** Opening a file from the right Files panel adds a
+read-only document tab to the selected Virtual Tab without unmounting its
+terminal surface. Each Virtual Tab keeps up to 20 open documents independently;
+opening an existing path reselects it, `Esc` hides the Reader, and `⌘W` closes
+only the selected document while the Reader is active. Markdown, source text,
+JSON/YAML/TOML/XML/property lists, images, and static HTML have dedicated
+views; other formats use an embedded Quick Look preview. Static HTML runs with
+JavaScript and network resources disabled. Open document tabs are intentionally
+not restored after an app restart.
+
 ## Reserved shortcuts
 
 | Chord | Action |

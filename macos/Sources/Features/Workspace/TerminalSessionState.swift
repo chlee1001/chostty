@@ -135,7 +135,7 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     func tearDown() {
         guard !isTornDown else { return }
         isTornDown = true
-        readerStore.close()
+        readerStore.closeAll()
         telemetryCancellables.removeAll()
         surfaceTree = .init()
         focusedSurfaceID = nil

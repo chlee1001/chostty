@@ -324,7 +324,7 @@ class BaseTerminalController: NSWindowController,
         // Listen for local events that we need to know of outside of
         // single surface handlers.
         self.eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.flagsChanged]
+            matching: [.flagsChanged, .keyDown]
         ) { [weak self] event in self?.localEventHandler(event) }
     }
 
@@ -581,7 +581,7 @@ class BaseTerminalController: NSWindowController,
         // Remove from store. The session stays in the live registry until we
         // explicitly unregister, so the removeTab transaction can still see it.
         guard let removedSession = store.removeTab(tabID) else { return nil }
-        removedSession.readerStore.close()
+        removedSession.readerStore.closeAll()
 
         // If we were presenting this tab, switch to the new selection.
         if presentedHit {
@@ -684,7 +684,7 @@ class BaseTerminalController: NSWindowController,
         // Remove from store.
         let removedSessions = store.removeWorkspace(workspaceID)
         guard !removedSessions.isEmpty else { return [] }
-        removedSessions.forEach { $0.readerStore.close() }
+        removedSessions.forEach { $0.readerStore.closeAll() }
 
         // If we were presenting a tab from this workspace, switch.
         if presentedHit {
@@ -1536,8 +1536,10 @@ class BaseTerminalController: NSWindowController,
                processExited: target.processExited,
                readerOpen: session.readerStore.isOpen
            ) {
-            session.readerStore.close()
-            window?.makeFirstResponder(target)
+            session.readerStore.closeSelectedDocument()
+            if !session.readerStore.isOpen {
+                window?.makeFirstResponder(target)
+            }
             return
         }
         closeSurface(
@@ -1740,9 +1742,29 @@ class BaseTerminalController: NSWindowController,
         case .flagsChanged:
             localEventFlagsChanged(event)
 
+        case .keyDown:
+            localEventKeyDown(event)
+
         default:
             event
         }
+    }
+
+    /// Close is bound inside libghostty and fires from the focused terminal
+    /// surface. A presented Reader clears that surface's first-responder
+    /// status, so without this the command reaches nothing at all. Matching on
+    /// the hardware key code keeps it correct under non-Latin input sources,
+    /// like every other reserved chord in this fork.
+    private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
+        let closeKeyCode: UInt16 = 13 // "w"
+        guard event.keyCode == closeKeyCode,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+        else { return event }
+        // Synthesized events (UI automation) can carry no window, so fall back
+        // to the key window rather than dropping the command.
+        let target = event.window ?? NSApp.keyWindow
+        guard target === window else { return event }
+        return closeReaderDocumentIfPresented() ? nil : event
     }
 
     private func localEventFlagsChanged(_ event: NSEvent) -> NSEvent? {
@@ -2373,7 +2395,25 @@ class BaseTerminalController: NSWindowController,
 
     // MARK: First Responder
 
+    /// While a Reader owns the presented tab's center, "Close" targets the
+    /// selected document rather than the terminal. This is decided from the
+    /// presented session, NOT from `focusedSurface`: opening a Reader clears
+    /// the surface's first-responder status, so a focus-derived route would
+    /// race and silently drop the command.
+    @discardableResult
+    func closeReaderDocumentIfPresented() -> Bool {
+        guard let presentedSessionID,
+              let session = workspaceStore.session(forTabID: presentedSessionID),
+              session.readerStore.isOpen else { return false }
+        session.readerStore.closeSelectedDocument()
+        if !session.readerStore.isOpen {
+            focusedSurface.map { window?.makeFirstResponder($0) }
+        }
+        return true
+    }
+
     @IBAction func close(_ sender: Any) {
+        guard !closeReaderDocumentIfPresented() else { return }
         guard let surface = focusedSurface?.surface else { return }
         ghostty.requestClose(surface: surface)
     }

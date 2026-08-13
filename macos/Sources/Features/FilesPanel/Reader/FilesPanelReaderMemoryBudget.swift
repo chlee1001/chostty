@@ -33,7 +33,7 @@ final class FilesPanelReaderMemoryBudget: @unchecked Sendable {
     }
 
     @discardableResult
-    func reserve(_ bytes: Int, for id: UUID) -> Bool {
+    func reserve(_ bytes: Int, for id: UUID, protecting protectedID: UUID? = nil) -> Bool {
         var evictions: [@Sendable () -> Void] = []
         let accepted = state.withLock { value -> Bool in
             guard var entry = value.entries[id], bytes <= maximumBytes else { return false }
@@ -44,7 +44,7 @@ final class FilesPanelReaderMemoryBudget: @unchecked Sendable {
 
             while value.entries.values.reduce(0, { $0 + $1.bytes }) > maximumBytes {
                 guard let victim = value.entries
-                    .filter({ $0.key != id && $0.value.bytes > 0 })
+                    .filter({ $0.key != id && $0.key != protectedID && $0.value.bytes > 0 })
                     .min(by: { $0.value.lastAccess < $1.value.lastAccess }) else {
                     entry.bytes = 0
                     value.entries[id] = entry
@@ -59,6 +59,15 @@ final class FilesPanelReaderMemoryBudget: @unchecked Sendable {
         }
         evictions.forEach { $0() }
         return accepted
+    }
+
+    func touch(id: UUID) {
+        state.withLock { value in
+            guard var entry = value.entries[id] else { return }
+            value.clock &+= 1
+            entry.lastAccess = value.clock
+            value.entries[id] = entry
+        }
     }
 
     func release(id: UUID) {

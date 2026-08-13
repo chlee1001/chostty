@@ -2,7 +2,7 @@ import CoreServices
 import Foundation
 
 final class FilesPanelWatchBroker: @unchecked Sendable {
-    typealias Handler = @Sendable () -> Void
+    typealias Handler = @Sendable (Set<String>?) -> Void
 
     final class Subscription: @unchecked Sendable {
         private let lock = NSLock()
@@ -132,28 +132,29 @@ final class FilesPanelWatchBroker: @unchecked Sendable {
         FSEventStreamRelease(entryToStop.stream)
     }
 
-    private func receive(root: String) {
+    private func receive(root: String, paths: Set<String>?) {
         lock.withLock {
             guard let entry = entries[root] else { return }
             entry.debounceWorkItem?.cancel()
-            let item = DispatchWorkItem { [weak self] in self?.deliver(root: root) }
+            let item = DispatchWorkItem { [weak self] in self?.deliver(root: root, paths: paths) }
             entry.debounceWorkItem = item
             queue.asyncAfter(deadline: .now() + Self.debounceInterval, execute: item)
         }
     }
 
-    private func deliver(root: String) {
+    private func deliver(root: String, paths: Set<String>?) {
         let handlers: [Handler] = lock.withLock {
             guard let entry = entries[root] else { return [] }
             entry.debounceWorkItem = nil
             return Array(entry.handlers.values)
         }
-        handlers.forEach { $0() }
+        handlers.forEach { $0(paths) }
     }
 
-    private static let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+    private static let callback: FSEventStreamCallback = { _, info, count, eventPaths, _, _ in
         guard let info else { return }
         let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
-        box.broker?.receive(root: box.root)
+        let paths = (eventPaths as? [String]).map { Set($0.prefix(count)) }
+        box.broker?.receive(root: box.root, paths: paths)
     }
 }

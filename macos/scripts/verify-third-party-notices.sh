@@ -31,6 +31,9 @@ expected = {
     "swift-markdown-ui": "LICENSE",
     "networkimage": "LICENSE",
     "swift-cmark": "COPYING",
+    "highlighterswift": "LICENCE.md",
+    "yams": "LICENSE",
+    "tomldecoder": "LICENSE.md",
 }
 
 headings = re.findall(r"^## ([^ ]+) ([^\n]+)$", notices, flags=re.MULTILINE)
@@ -45,7 +48,13 @@ for identity, filename in expected.items():
     if not match:
         raise SystemExit(f"missing notice section: {identity} {version}")
     embedded = match.group(1).encode("utf-8")
-    upstream = (checkouts_path / identity.replace("networkimage", "NetworkImage") / filename).read_bytes()
+    checkout_names = {
+        "networkimage": "NetworkImage",
+        "highlighterswift": "HighlighterSwift",
+        "tomldecoder": "TOMLDecoder",
+        "yams": "Yams",
+    }
+    upstream = (checkouts_path / checkout_names.get(identity, identity) / filename).read_bytes()
     if embedded != upstream:
         raise SystemExit(f"notice differs from upstream license: {identity}")
     print(f"verified {identity} {version}")

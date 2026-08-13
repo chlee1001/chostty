@@ -2,9 +2,24 @@ import SwiftUI
 
 struct FilesPanelTextReaderView: View {
     let document: FilesPanelTextDocument
-    @State private var wrapsLines = false
-    @State private var searchQuery = ""
+    @Binding private var wrapsLines: Bool
+    @Binding private var searchQuery: String
+    @Binding private var scrollLine: Int
     @State private var selectedMatch = 0
+    @State private var highlightedLines: [AttributedString]?
+    @State private var visibleLines: Set<Int> = []
+
+    init(
+        document: FilesPanelTextDocument,
+        wrapsLines: Binding<Bool> = .constant(false),
+        searchQuery: Binding<String> = .constant(""),
+        scrollLine: Binding<Int> = .constant(0)
+    ) {
+        self.document = document
+        self._wrapsLines = wrapsLines
+        self._searchQuery = searchQuery
+        self._scrollLine = scrollLine
+    }
 
     static func matchingLineIndices(
         in document: FilesPanelTextDocument,
@@ -51,6 +66,13 @@ struct FilesPanelTextReaderView: View {
                 scrollableReader(axes: [.horizontal, .vertical], fixedWidth: true)
             }
         }
+        .task(id: document.text) {
+            highlightedLines = nil
+            highlightedLines = await FilesPanelSyntaxHighlighter.shared.highlightLines(
+                document.text,
+                language: Self.language(for: document.sourcePath)
+            )
+        }
     }
 
     private var verticalReader: some View {
@@ -69,6 +91,16 @@ struct FilesPanelTextReaderView: View {
                 selectedMatch = 0
                 scrollToCurrentMatch(proxy)
             }
+            // Restoring the top visible line is what makes a document tab keep
+            // its reading position across tab switches and live reloads.
+            .onChange(of: visibleLines.min()) { line in
+                guard let line else { return }
+                scrollLine = line
+            }
+            .onAppear {
+                guard scrollLine > 0, document.lines.indices.contains(scrollLine) else { return }
+                proxy.scrollTo(scrollLine, anchor: .top)
+            }
         }
     }
 
@@ -81,11 +113,13 @@ struct FilesPanelTextReaderView: View {
                         .foregroundStyle(.secondary)
                         .frame(minWidth: 42, alignment: .trailing)
                         .textSelection(.disabled)
-                    Text(String(line).isEmpty ? " " : String(line))
+                    Text(displayLine(index: index, line: line))
                         .frame(maxWidth: wrapsLines ? .infinity : nil, alignment: .leading)
                         .textSelection(.enabled)
                 }
                 .id(index)
+                .onAppear { visibleLines.insert(index) }
+                .onDisappear { visibleLines.remove(index) }
                 .background(highlightedLine == index ? Color.accentColor.opacity(0.18) : Color.clear)
                 .font(.system(.body, design: .monospaced))
                 .padding(.horizontal, 12)
@@ -93,6 +127,24 @@ struct FilesPanelTextReaderView: View {
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private func displayLine(index: Int, line: Substring) -> AttributedString {
+        if let highlightedLines, highlightedLines.indices.contains(index) {
+            return highlightedLines[index].characters.isEmpty ? AttributedString(" ") : highlightedLines[index]
+        }
+        return AttributedString(String(line).isEmpty ? " " : String(line))
+    }
+
+    private static func language(for path: String) -> String? {
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        if !ext.isEmpty { return ext }
+        switch url.lastPathComponent.lowercased() {
+        case "dockerfile": return "dockerfile"
+        case "makefile": return "makefile"
+        default: return nil
+        }
     }
 }
 

@@ -16,6 +16,9 @@
 		9351BE8E3D22937F003B3499 /* nvim in Resources */ = {isa = PBXBuildFile; fileRef = 9351BE8E2D22937F003B3499 /* nvim */; };
 		A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A51BFC262B30F1B800E92F16 /* Sparkle */; };
 		C0F11EAD31A0000000000001 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = C0F11EAD31A0000000000003 /* MarkdownUI */; };
+		C0F11EAD31B0000000000001 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C0F11EAD31B0000000000004 /* Highlighter */; };
+		C0F11EAD31B0000000000002 /* Yams in Frameworks */ = {isa = PBXBuildFile; productRef = C0F11EAD31B0000000000005 /* Yams */; };
+		C0F11EAD31B0000000000003 /* TOMLDecoder in Frameworks */ = {isa = PBXBuildFile; productRef = C0F11EAD31B0000000000006 /* TOMLDecoder */; };
 		A53D0C8E2B53B0EA00305CE6 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5D495A1299BEC7E00DD1313 /* GhosttyKit.xcframework */; };
 		A53D0C952B53B4D800305CE6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5B30538299BEAAB0047F10C /* Assets.xcassets */; };
 		A546F1142D7B68D7003B11A0 /* locale in Resources */ = {isa = PBXBuildFile; fileRef = A546F1132D7B68D7003B11A0 /* locale */; };
@@ -340,6 +343,9 @@
 			files = (
 				A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */,
 				C0F11EAD31A0000000000001 /* MarkdownUI in Frameworks */,
+				C0F11EAD31B0000000000001 /* Highlighter in Frameworks */,
+				C0F11EAD31B0000000000002 /* Yams in Frameworks */,
+				C0F11EAD31B0000000000003 /* TOMLDecoder in Frameworks */,
 				A56B880B2A840447007A0E29 /* Carbon.framework in Frameworks */,
 				A571AB1D2A206FCF00248498 /* GhosttyKit.xcframework in Frameworks */,
 			);
@@ -503,6 +509,9 @@
 			packageProductDependencies = (
 				A51BFC262B30F1B800E92F16 /* Sparkle */,
 				C0F11EAD31A0000000000003 /* MarkdownUI */,
+				C0F11EAD31B0000000000004 /* Highlighter */,
+				C0F11EAD31B0000000000005 /* Yams */,
+				C0F11EAD31B0000000000006 /* TOMLDecoder */,
 			);
 			productName = Ghostty;
 			productReference = A5B30531299BEAAA0047F10C /* Ghostty.app */;
@@ -570,6 +579,9 @@
 			packageReferences = (
 				A51BFC252B30F1B700E92F16 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				C0F11EAD31A0000000000002 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+				C0F11EAD31B0000000000007 /* XCRemoteSwiftPackageReference "HighlighterSwift" */,
+				C0F11EAD31B0000000000008 /* XCRemoteSwiftPackageReference "Yams" */,
+				C0F11EAD31B0000000000009 /* XCRemoteSwiftPackageReference "TOMLDecoder" */,
 			);
 			productRefGroup = A5B30532299BEAAA0047F10C /* Products */;
 			projectDirPath = "";
@@ -1488,6 +1500,30 @@
 				minimumVersion = 2.4.1;
 			};
 		};
+		C0F11EAD31B0000000000007 /* XCRemoteSwiftPackageReference "HighlighterSwift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/smittytone/HighlighterSwift";
+			requirement = {
+				kind = exactVersion;
+				version = 3.1.0;
+			};
+		};
+		C0F11EAD31B0000000000008 /* XCRemoteSwiftPackageReference "Yams" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jpsim/Yams";
+			requirement = {
+				kind = exactVersion;
+				version = 6.2.2;
+			};
+		};
+		C0F11EAD31B0000000000009 /* XCRemoteSwiftPackageReference "TOMLDecoder" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/dduan/TOMLDecoder";
+			requirement = {
+				kind = exactVersion;
+				version = 0.4.5;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1500,6 +1536,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C0F11EAD31A0000000000002 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		C0F11EAD31B0000000000004 /* Highlighter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0F11EAD31B0000000000007 /* XCRemoteSwiftPackageReference "HighlighterSwift" */;
+			productName = Highlighter;
+		};
+		C0F11EAD31B0000000000005 /* Yams */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0F11EAD31B0000000000008 /* XCRemoteSwiftPackageReference "Yams" */;
+			productName = Yams;
+		};
+		C0F11EAD31B0000000000006 /* TOMLDecoder */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0F11EAD31B0000000000009 /* XCRemoteSwiftPackageReference "TOMLDecoder" */;
+			productName = TOMLDecoder;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
