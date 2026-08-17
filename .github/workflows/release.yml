@@ -159,6 +159,71 @@ jobs:
             git push origin "$TAG"
           fi
 
+      # GitHub's generated notes only list merged PRs by title, which tells a
+      # reader nothing about what changed. Group the conventional-commit
+      # subjects since the previous release first; the generated "What's
+      # Changed" section still follows below it.
+      - name: Build release notes
+        if: github.event_name == 'workflow_run'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          # Nearest tag reachable from HEAD, not the highest version string:
+          # this repository also carries upstream's tags, and v1.x sorts above
+          # every fork release.
+          prev=$(git describe --tags --abbrev=0 --exclude "$TAG" HEAD 2>/dev/null || true)
+          if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
+          echo "collecting changes for $range"
+
+          subjects=$(git log --no-merges --pretty='%s' "$range")
+
+          section() {
+            heading=$1
+            filter=$2
+            body=$(printf '%s\n' "$subjects" \
+              | grep -E "$filter" \
+              | sed -E 's/^[a-z]+(\(([^)]+)\))?!?: /- /' || true)
+            [ -n "$body" ] || return 0
+            printf '### %s\n\n%s\n\n' "$heading" "$body" >> changes.md
+          }
+
+          : > changes.md
+          section 'Breaking' '^[a-z]+(\([^)]+\))?!: '
+          section 'Features' '^feat(\([^)]+\))?: '
+          section 'Fixes' '^fix(\([^)]+\))?: '
+          section 'Performance' '^perf(\([^)]+\))?: '
+          section 'Changes' '^(refactor|revert)(\([^)]+\))?: '
+          section 'Build and CI' '^(build|ci)(\([^)]+\))?: '
+
+          : > release-notes.md
+          if [ -s changes.md ]; then
+            printf '## Changes\n\n' >> release-notes.md
+            cat changes.md >> release-notes.md
+          fi
+
+          cat >> release-notes.md <<'NOTES'
+          ## Install
+
+          Open the DMG and drag Chostty to Applications, then run:
+
+          ```
+          xattr -cr /Applications/Chostty.app
+          ```
+
+          **That step is required, not a suggestion.** This fork has no Apple
+          Developer ID, so the app is ad-hoc signed and cannot be notarized.
+          macOS quarantines the download and reports it as damaged until the
+          attribute is cleared. Skipping it looks exactly like a broken build.
+
+          There is no auto-updater. Sparkle is compiled out because pointing
+          it at upstream's appcast would replace this fork with stock
+          Ghostty. Check back here for new versions.
+
+          Universal binary, macOS 13 and later.
+          NOTES
+
+          cat release-notes.md
+
       - name: Publish release
         if: github.event_name == 'workflow_run'
         uses: softprops/action-gh-release@v2
@@ -167,22 +232,5 @@ jobs:
           target_commitish: ${{ github.event.workflow_run.head_sha }}
           files: dist-release/*
           generate_release_notes: true
-          body: |
-            ## Install
+          body_path: release-notes.md
 
-            Open the DMG and drag Chostty to Applications, then run:
-
-            ```
-            xattr -cr /Applications/Chostty.app
-            ```
-
-            **That step is required, not a suggestion.** This fork has no Apple
-            Developer ID, so the app is ad-hoc signed and cannot be notarized.
-            macOS quarantines the download and reports it as damaged until the
-            attribute is cleared. Skipping it looks exactly like a broken build.
-
-            There is no auto-updater. Sparkle is compiled out because pointing
-            it at upstream's appcast would replace this fork with stock
-            Ghostty. Check back here for new versions.
-
-            Universal binary, macOS 13 and later.
