@@ -232,6 +232,10 @@ class BaseTerminalController: NSWindowController,
         sessionRosterCancellable = self.workspaceStore.$snapshot
             .sink { [weak self] _ in
                 self?.rebuildSessionMetadataSubscriptions()
+                // A tab created in the background owns a surface that is not
+                // in the presented tree, so it has to be told it is hidden
+                // even though the presented tree did not change.
+                self?.syncSurfaceTreeOcclusionState()
             }
 
         // Setup our bell state for the window
@@ -2356,13 +2360,36 @@ class BaseTerminalController: NSWindowController,
         syncSurfaceTreeOcclusionState()
     }
 
+    /// Tells libghostty which surfaces are actually on screen.
+    ///
+    /// A surface is visible only when the window is visible AND the surface
+    /// belongs to the presented session's tree. Upstream can equate the two,
+    /// because there a tab is its own window and window occlusion covers
+    /// everything it owns. Here one window owns every workspace and virtual
+    /// tab, so window occlusion says nothing about the tabs behind the
+    /// presented one: miss them and their renderer threads keep drawing and
+    /// keep their Metal drawables alive for the life of the process, which
+    /// makes CPU and graphics memory scale with the number of tabs ever
+    /// opened rather than with what is on screen.
     private func syncSurfaceTreeOcclusionState() {
-        let visible = self.window?.occlusionState.contains(.visible) ?? false
-        for view in surfaceTree {
-            if let surface = view.surface, view.isWindowVisible != visible {
-                ghostty_surface_set_occlusion(surface, visible)
-                view.isWindowVisible = visible
-            }
+        let visibility = surfaceVisibility(
+            windowVisible: window?.occlusionState.contains(.visible) ?? false)
+        for view in allWorkspaceSurfaces {
+            guard let visible = visibility[view.id],
+                  view.isSurfaceVisible != visible else { continue }
+            view.isSurfaceVisible = visible
+            guard let surface = view.surface else { continue }
+            ghostty_surface_set_occlusion(surface, visible)
+        }
+    }
+
+    /// The on-screen state this controller would report for each of its
+    /// surfaces. Split out from the sync so the rule can be checked without a
+    /// live window or a real libghostty surface.
+    func surfaceVisibility(windowVisible: Bool) -> [UUID: Bool] {
+        let presented = Set(surfaceTree.map(\.id))
+        return allWorkspaceSurfaces.reduce(into: [:]) { out, view in
+            out[view.id] = windowVisible && presented.contains(view.id)
         }
     }
 

@@ -92,11 +92,12 @@ extension Ghostty {
         // Whether the cursor is currently visible (not hidden by typing, etc.)
         @Published private(set) var cursorVisible: Bool = true
 
-        /// Whether the belonging window is visible
-        ///
-        /// We track this to restore surface occlusion state
-        /// after this surface is dragged to another window
-        var isWindowVisible = false
+        /// The occlusion state last reported to libghostty for this surface:
+        /// true only while the surface is both in a visible window and in the
+        /// presented virtual tab. Tracked so a surface dragged to another
+        /// window, or a tab switched away from and back, is not told the same
+        /// state twice.
+        var isSurfaceVisible = false
 
         /// The configuration derived from the Ghostty config so we don't need to rely on references.
         @Published private(set) var derivedConfig: DerivedConfig
