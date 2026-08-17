@@ -1,4 +1,3 @@
-import Foundation
 import GhosttyKit
 
 extension Ghostty {
@@ -11,43 +10,17 @@ extension Ghostty {
     ///
     /// Wraps a `ghostty_surface_t`
     final class Surface: Sendable {
-        /// The final launch intent resolved by libghostty from the complete
-        /// configuration. This is intentionally a value, never a persisted
-        /// launch recipe.
-        struct EffectiveLaunchIntent: Equatable, Sendable {
-            let hasCommand: Bool
-            let hasEnvironmentOverrides: Bool
-            let hasInitialInput: Bool
-
-            init(cValue: ghostty_surface_launch_intent_s) {
-                self.hasCommand = cValue.has_command
-                self.hasEnvironmentOverrides = cValue.has_environment_overrides
-                self.hasInitialInput = cValue.has_initial_input
-            }
-
-            var isDefaultShell: Bool {
-                !hasCommand && !hasEnvironmentOverrides && !hasInitialInput
-            }
-        }
-
-        private let surfaceLock = NSLock()
-        private var surface: ghostty_surface_t?
-        let effectiveLaunchIntent: EffectiveLaunchIntent
+        private let surface: ghostty_surface_t
 
         /// Read the underlying C value for this surface. This is unsafe because the value will be
         /// freed when the Surface class is deinitialized.
-        var unsafeCValue: ghostty_surface_t? {
-            surfaceLock.lock()
-            defer { surfaceLock.unlock() }
-            return surface
+        var unsafeCValue: ghostty_surface_t {
+            surface
         }
 
         /// Initialize from the C structure.
         init(cSurface: ghostty_surface_t) {
             self.surface = cSurface
-            self.effectiveLaunchIntent = EffectiveLaunchIntent(
-                cValue: ghostty_surface_effective_launch_intent(cSurface)
-            )
         }
 
         deinit {
@@ -56,33 +29,16 @@ extension Ghostty {
             // value so we don't capture `self` and then we detach it in a task.
             // We can't wait for the task to succeed so this will happen sometime
             // but that's okay.
-            guard let surface = takeSurface() else { return }
+            let surface = self.surface
             Task.detached { @MainActor in
                 ghostty_surface_free(surface)
             }
-        }
-
-        /// Frees the native surface synchronously. Repeated calls are no-ops.
-        @MainActor
-        @discardableResult
-        func close() -> Bool {
-            guard let surface = takeSurface() else { return false }
-            ghostty_surface_free(surface)
-            return true
-        }
-
-        private func takeSurface() -> ghostty_surface_t? {
-            surfaceLock.lock()
-            defer { surfaceLock.unlock() }
-            defer { surface = nil }
-            return surface
         }
 
         /// Send text to the terminal as if it was typed. This doesn't send the key events so keyboard
         /// shortcuts and other encodings do not take effect.
         @MainActor
         func sendText(_ text: String) {
-            guard let surface else { return }
             let len = text.utf8CString.count
             if len == 0 { return }
 
@@ -101,7 +57,6 @@ extension Ghostty {
         /// - Parameter event: The key event to send to the terminal
         @MainActor
         func sendKeyEvent(_ event: Input.KeyEvent) {
-            guard let surface else { return }
             event.withCValue { cEvent in
                 ghostty_surface_key(surface, cEvent)
             }
@@ -116,7 +71,6 @@ extension Ghostty {
         /// - Returns: The binding flags if a binding matches, or nil if no binding matches
         @MainActor
         func keyIsBinding(_ event: ghostty_input_key_s) -> Input.BindingFlags? {
-            guard let surface else { return nil }
             var flags = ghostty_binding_flags_e(0)
             guard ghostty_surface_key_is_binding(surface, event, &flags) else { return nil }
             return Input.BindingFlags(cFlags: flags)
@@ -135,14 +89,12 @@ extension Ghostty {
         /// a terminal application enables mouse reporting mode.
         @MainActor
         var mouseCaptured: Bool {
-            guard let surface else { return false }
-            return ghostty_surface_mouse_captured(surface)
+            ghostty_surface_mouse_captured(surface)
         }
 
         /// The PID of the foreground process group attached to the PTY.
         @MainActor
         var foregroundPID: Int? {
-            guard let surface else { return nil }
             let pid = ghostty_surface_foreground_pid(surface)
             guard pid != 0 else { return nil }
             return Int(exactly: pid)
@@ -151,7 +103,6 @@ extension Ghostty {
         /// The PTY device name for this surface.
         @MainActor
         var ttyName: String? {
-            guard let surface else { return nil }
             let ttyName = AllocatedString(ghostty_surface_tty_name(surface)).string
             return ttyName.isEmpty ? nil : ttyName
         }
@@ -165,7 +116,6 @@ extension Ghostty {
         /// - Parameter event: The mouse button event to send to the terminal
         @MainActor
         func sendMouseButton(_ event: Input.MouseButtonEvent) {
-            guard let surface else { return }
             ghostty_surface_mouse_button(
                 surface,
                 event.action.cMouseState,
@@ -182,7 +132,6 @@ extension Ghostty {
         /// - Parameter event: The mouse position event to send to the terminal
         @MainActor
         func sendMousePos(_ event: Input.MousePosEvent) {
-            guard let surface else { return }
             ghostty_surface_mouse_pos(
                 surface,
                 event.x,
@@ -199,7 +148,6 @@ extension Ghostty {
         /// - Parameter event: The mouse scroll event to send to the terminal
         @MainActor
         func sendMouseScroll(_ event: Input.MouseScrollEvent) {
-            guard let surface else { return }
             ghostty_surface_mouse_scroll(
                 surface,
                 event.x,
@@ -215,7 +163,6 @@ extension Ghostty {
         /// Returns true if the action was performed. Invalid actions return false.
         @MainActor
         func perform(action: String) -> Bool {
-            guard let surface else { return false }
             let len = action.utf8CString.count
             if len == 0 { return false }
             return action.withCString { cString in

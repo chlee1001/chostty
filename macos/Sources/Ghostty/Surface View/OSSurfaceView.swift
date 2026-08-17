@@ -6,15 +6,8 @@ extension Ghostty {
     class OSSurfaceView: OSView, ObservableObject {
         typealias ID = UUID
 
-        /// Unique ID for this live surface instance. This is only for runtime
-        /// routing and is never persisted.
+        /// Unique ID per surface
         let id: UUID
-
-        /// Stable identity for a pane across persistence and restoration.
-        ///
-        /// A restored surface adopts this value while always receiving a new
-        /// runtime ``id``.
-        let logicalPaneID: UUID
 
         // The current pwd of the surface as defined by the pty. This can be
         // changed with escape codes.
@@ -66,9 +59,8 @@ extension Ghostty {
             nil
         }
 
-        init(logicalPaneID: UUID? = nil, frame: CGRect) {
-            self.id = UUID()
-            self.logicalPaneID = logicalPaneID ?? UUID()
+        init(id: UUID?, frame: CGRect) {
+            self.id = id ?? UUID()
             super.init(frame: frame)
 
             // Before we initialize the surface we want to register our notifications

@@ -53,14 +53,9 @@ class TerminalWindow: NSWindow {
     /// The color assigned to this window's tab. Marks the window's restorable
     /// state as dirty; the tab color is not rendered anywhere in-window
     /// (`TabColorIndicatorView` render lived only in the deleted NSWindowTab
-    /// accessory) — it is read back for persistence (Command Palette,
-    /// window restoration) and to seed newly-duplicated/reopened tabs.
-    var tabColor: TerminalTabColor = .none {
-        didSet {
-            guard tabColor != oldValue else { return }
-            terminalController?.schedulePersistedProjectionComparison()
-        }
-    }
+    /// accessory) — it is read back by the Command Palette and to seed
+    /// newly-duplicated/reopened tabs.
+    var tabColor: TerminalTabColor = .none
 
     // MARK: NSWindow Overrides
 

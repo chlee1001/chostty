@@ -172,12 +172,6 @@ extension Ghostty {
         /// state so we're mixing this with direct surface access.
         private(set) var surfaceModel: Ghostty.Surface?
 
-        /// Final launch intent resolved by libghostty for this surface.
-        ///
-        /// This is a value-only eligibility input. It is neither a launch
-        /// recipe nor persisted terminal state.
-        private(set) var effectiveLaunchIntent: Ghostty.Surface.EffectiveLaunchIntent?
-
         /// Returns the underlying C value for the surface. See "note" on surfaceModel.
         override var surface: ghostty_surface_t? {
             surfaceModel?.unsafeCValue
@@ -215,15 +209,6 @@ extension Ghostty {
         // by the user, this is set to the prior value (which may be empty, but non-nil).
         private var titleFromTerminal: String?
 
-        var hasUserSetTitle: Bool {
-            titleFromTerminal != nil
-        }
-
-        func restoreTitleMetadata(_ savedTitle: String, isUserSet: Bool) {
-            title = savedTitle
-            titleFromTerminal = isUserSet ? savedTitle : nil
-        }
-
         // The cached contents of the screen.
         private(set) var cachedScreenContents: CachedValue<String>
         private(set) var cachedVisibleContents: CachedValue<String>
@@ -244,7 +229,7 @@ extension Ghostty {
         init(
             _ app: ghostty_app_t,
             baseConfig: SurfaceConfiguration? = nil,
-            logicalPaneID: UUID? = nil,
+            uuid: UUID? = nil,
             spawnsSurface: Bool = true
         ) {
             self.markedText = NSMutableAttributedString()
@@ -265,10 +250,7 @@ extension Ghostty {
             // Initialize with some default frame size. The important thing is that this
             // is non-zero so that our layer bounds are non-zero so that our renderer
             // can do SOMETHING.
-            super.init(
-                logicalPaneID: logicalPaneID,
-                frame: NSRect(x: 0, y: 0, width: 800, height: 600)
-            )
+            super.init(id: uuid, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 
             // Our cache of screen data
             cachedScreenContents = .init(duration: .milliseconds(500)) { [weak self] in
@@ -410,49 +392,12 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
-            self.effectiveLaunchIntent = self.surfaceModel?.effectiveLaunchIntent
 
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()
 
             // The UTTypes that can be dragged onto this view.
             registerForDraggedTypes(Array(Self.dropTypes))
-        }
-
-        enum ColdRestoreError: Swift.Error, Equatable {
-            case surfaceCreationFailed
-            case policyMismatch
-        }
-
-        /// Creates a restoration-only cold default-shell surface. The final
-        /// intent is queried from libghostty and must contain no command,
-        /// environment override, or initial input.
-        @MainActor
-        static func makeColdRestored(
-            _ app: ghostty_app_t,
-            logicalPaneID: UUID,
-            baseConfig: SurfaceConfiguration? = nil
-        ) throws -> SurfaceView {
-            var config = baseConfig ?? SurfaceConfiguration()
-            config.command = nil
-            config.environmentVariables = [:]
-            config.initialInput = nil
-            config.creationMode = GHOSTTY_SURFACE_CREATION_COLD_RESTORE_DEFAULT_SHELL
-
-            let view = SurfaceView(app, baseConfig: config, logicalPaneID: logicalPaneID)
-            guard view.error == nil, let intent = view.effectiveLaunchIntent else {
-                view.surfaceModel?.close()
-                throw ColdRestoreError.surfaceCreationFailed
-            }
-            guard acceptsColdRestore(intent) else {
-                view.surfaceModel?.close()
-                throw ColdRestoreError.policyMismatch
-            }
-            return view
-        }
-
-        static func acceptsColdRestore(_ intent: Ghostty.Surface.EffectiveLaunchIntent) -> Bool {
-            intent.isDefaultShell
         }
 
         required init?(coder: NSCoder) {
@@ -468,10 +413,6 @@ extension Ghostty {
             if let eventMonitor {
                 NSEvent.removeMonitor(eventMonitor)
             }
-
-            // Whenever the surface is removed, we need to note that our restorable
-            // state is invalid to prevent the surface from being restored.
-            invalidateRestorableState()
 
             trackingAreas.forEach { removeTrackingArea($0) }
 
@@ -1902,11 +1843,16 @@ extension Ghostty {
 
         // MARK: - Codable
 
+        /// `SplitTree` requires its view type to be `Codable`, so the
+        /// conformance stays even though Chostty never persists a surface.
+        enum SurfaceDecodeError: Swift.Error {
+            /// Decoding needs the running app to create a surface against.
+            case appUnavailable
+        }
+
         enum CodingKeys: String, CodingKey {
             case pwd
-            // Quick Terminal's established archive key carries the persisted
-            // pane identity, not a live runtime surface identity.
-            case logicalPaneID = "uuid"
+            case uuid
             case title
             case isUserSetTitle
         }
@@ -1916,30 +1862,32 @@ extension Ghostty {
             guard let del = NSApplication.shared.delegate,
                   let appDel = del as? AppDelegate,
                   let app = appDel.ghostty.app else {
-                throw TerminalRestoreError.delegateInvalid
+                throw SurfaceDecodeError.appUnavailable
             }
 
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            let logicalPaneID = UUID(
-                uuidString: try container.decode(String.self, forKey: .logicalPaneID)
-            )
+            let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
-            self.init(app, baseConfig: config, logicalPaneID: logicalPaneID)
+            self.init(app, baseConfig: config, uuid: uuid)
 
             // Restore the saved title after initialization
             if let title = savedTitle {
-                restoreTitleMetadata(title, isUserSet: isUserSetTitle)
+                self.title = title
+                // If this was a user-set title, we need to prevent it from being overwritten
+                if isUserSetTitle {
+                    self.titleFromTerminal = title
+                }
             }
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(pwd, forKey: .pwd)
-            try container.encode(logicalPaneID.uuidString, forKey: .logicalPaneID)
+            try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
         }
