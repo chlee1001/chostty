@@ -12,33 +12,46 @@ struct GhosttyFilesPanelRestorationPreflightTests {
             pinnedRoot: "/tmp/project",
             showHidden: true
         )
-        let state = makeState(filesPanel: persisted)
+        let state = makeWire(filesPanel: persisted)
         let decoded = try JSONDecoder().decode(
-            TerminalRestorableState.InternalState<MockView>.self,
+            TerminalRestoreWireSnapshot.self,
             from: JSONEncoder().encode(state)
         )
-        #expect(decoded.filesPanel == persisted)
+        #expect(decoded.filesPanel?.visible == persisted.visible)
+        #expect(decoded.filesPanel?.width == persisted.width)
+        #expect(decoded.filesPanel?.rootMode == persisted.rootMode.rawValue)
+        #expect(decoded.filesPanel?.pinnedRoot == persisted.pinnedRoot)
+        #expect(decoded.filesPanel?.showHidden == persisted.showHidden)
     }
 
     @Test func archiveWithoutPanelFieldDecodesAsNil() throws {
-        let data = try JSONEncoder().encode(makeState(filesPanel: nil))
+        let data = try JSONEncoder().encode(makeWire(filesPanel: nil))
         let decoded = try JSONDecoder().decode(
-            TerminalRestorableState.InternalState<MockView>.self,
+            TerminalRestoreWireSnapshot.self,
             from: data
         )
         #expect(decoded.filesPanel == nil)
     }
 
-    private func makeState(
+    private func makeWire(
         filesPanel: FilesPanelPresentationState.Persisted?
-    ) -> TerminalRestorableState.InternalState<MockView> {
+    ) -> TerminalRestoreWireSnapshot {
         .init(
-            focusedSurface: nil,
-            surfaceTree: .init(),
-            effectiveFullscreenMode: nil,
-            tabColor: nil,
+            physicalWindowID: UUID().uuidString,
+            workspaces: nil,
+            selectedWorkspaceID: nil,
+            selectedTabID: nil,
             titleOverride: nil,
-            filesPanel: filesPanel
+            fullscreenMode: nil,
+            filesPanel: filesPanel.map {
+                .init(
+                    visible: $0.visible,
+                    width: $0.width,
+                    rootMode: $0.rootMode.rawValue,
+                    pinnedRoot: $0.pinnedRoot,
+                    showHidden: $0.showHidden
+                )
+            }
         )
     }
 }

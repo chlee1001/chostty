@@ -3830,6 +3830,11 @@ term: []const u8 = "xterm-ghostty",
 /// This only works on macOS since only macOS has an auto-update feature.
 @"auto-update-channel": ?build_config.ReleaseChannel = null,
 
+/// Whether `command` was configured explicitly rather than resolved as the
+/// default login shell during finalization.
+_command_is_explicit: bool = false,
+_command_provenance_finalized: bool = false,
+
 /// This is set by the CLI parser for deinit.
 _arena: ?ArenaAllocator = null,
 
@@ -4568,6 +4573,14 @@ pub fn finalize(self: *Config) !void {
     // specific variable use sites for more details.
     const probable_cli = probableCliEnvironment();
 
+    // Finalization resolves a default login shell into `command`, so retain
+    // whether the value was supplied by configuration separately. Do this
+    // once: finalize is idempotent and later calls see the resolved shell.
+    if (!self._command_provenance_finalized) {
+        self._command_is_explicit = self.command != null;
+        self._command_provenance_finalized = true;
+    }
+
     // If we have a font-family set and don't set the others, default
     // the others to the font family. This way, if someone does
     // --font-family=foo, then we try to get the stylized versions of
@@ -4745,6 +4758,97 @@ pub fn finalize(self: *Config) !void {
 
     // Finalize key remapping set for efficient lookups
     self.@"key-remap".finalize();
+}
+
+/// Remove launch-specific configuration while retaining the resolved default
+/// login shell. This is fallible because resolving a configured command again
+/// may require the normal shell lookup.
+pub fn clearColdRestoreLaunchConfig(self: *Config) !void {
+    self.@"initial-command" = null;
+    if (self._command_is_explicit) {
+        self.command = null;
+        try self.resolveDefaultCommand(
+            self._arena.?.allocator(),
+            probableCliEnvironment(),
+        );
+    }
+    self._command_is_explicit = false;
+    self._command_provenance_finalized = true;
+    self.env = .{};
+    self.input = .{};
+}
+
+test "clearColdRestoreLaunchConfig does not mutate shallow clone source launch containers" {
+    const testing = std.testing;
+    var config: Config = .{
+        ._arena = .init(testing.allocator),
+    };
+    defer config.deinit();
+
+    const alloc = config.arenaAlloc();
+    config.@"initial-command" = .{ .shell = "initial-command" };
+    config.command = .{ .shell = "explicit-command" };
+    config._command_is_explicit = true;
+    try config.env.parseCLI(alloc, "KEY=value");
+    try config.input.parseCLI(alloc, "raw:input");
+
+    {
+        var cold = config.shallowClone(testing.allocator);
+        try cold.clearColdRestoreLaunchConfig();
+        try testing.expectEqual(@as(usize, 0), cold.env.count());
+        try testing.expectEqual(@as(usize, 0), cold.input.list.items.len);
+        cold.deinit();
+    }
+
+    try testing.expectEqual(@as(usize, 1), config.env.count());
+    try testing.expectEqual(@as(usize, 1), config.input.list.items.len);
+    try testing.expect(config._command_is_explicit);
+    switch (config.command.?) {
+        .shell => |command| try testing.expectEqualStrings("explicit-command", command),
+        .direct => unreachable,
+    }
+    switch (config.@"initial-command".?) {
+        .shell => |command| try testing.expectEqualStrings("initial-command", command),
+        .direct => unreachable,
+    }
+}
+
+fn resolveDefaultCommand(
+    self: *Config,
+    alloc: Allocator,
+    probable_cli: bool,
+) !void {
+    if ((comptime builtin.target.cpu.arch.isWasm()) or (comptime builtin.is_test)) return;
+    if (self.command != null) return;
+
+    if (!internal_os.isFlatpak() and probable_cli) {
+        const value = global.environ().getAlloc(alloc, "SHELL") catch |err| switch (err) {
+            error.EnvironmentVariableMissing => null,
+            else => return err,
+        };
+        if (value) |shell| {
+            defer alloc.free(shell);
+            log.info("default shell source=env value={s}", .{shell});
+            self.command = .{ .shell = try alloc.dupeZ(u8, shell) };
+            return;
+        }
+    }
+
+    switch (builtin.os.tag) {
+        .windows => {
+            log.warn("no default shell found, will default to using cmd", .{});
+            self.command = .{ .shell = "cmd.exe" };
+        },
+        else => {
+            const pw = try internal_os.passwd.get(alloc);
+            if (pw.shell) |shell| {
+                log.info("default shell src=passwd value={s}", .{shell});
+                self.command = .{ .shell = shell };
+            } else {
+                log.warn("no default shell found, will default to using sh", .{});
+            }
+        },
+    }
 }
 
 /// Callback for src/cli/args.zig to allow us to handle special cases
@@ -4991,6 +5095,8 @@ pub fn clone(
 
     // Copy our diagnostics
     result._diagnostics = try self._diagnostics.clone(alloc_arena);
+    result._command_is_explicit = self._command_is_explicit;
+    result._command_provenance_finalized = self._command_provenance_finalized;
 
     // Preserve our replay steps. We copy them exactly to also preserve
     // the exact conditionals required for some steps.

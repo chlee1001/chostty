@@ -17,12 +17,18 @@ extension Ghostty {
             _surface
         }
 
-        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
+        init(
+            _ app: ghostty_app_t,
+            baseConfig: SurfaceConfiguration? = nil,
+            logicalPaneID: UUID? = nil
+        ) {
 
             // Initialize with some default frame size. The important thing is that this
             // is non-zero so that our layer bounds are non-zero so that our renderer
             // can do SOMETHING.
-            super.init(id: uuid, frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+            super.init(
+                logicalPaneID: logicalPaneID,
+                frame: CGRect(x: 0, y: 0, width: 800, height: 600))
 
             // Setup our surface. This will also initialize all the terminal IO.
             let surface_cfg = baseConfig ?? SurfaceConfiguration()

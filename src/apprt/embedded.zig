@@ -463,9 +463,18 @@ pub const Surface = struct {
 
         /// Context for the new surface
         context: apprt.surface.NewSurfaceContext = .window,
+
+        /// Controls whether the final launch configuration is used normally
+        /// or reduced to a default shell launch.
+        creation_mode: i32 = @intFromEnum(CoreSurface.CreationMode.normal),
     };
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
+        const creation_mode = std.enums.fromInt(
+            CoreSurface.CreationMode,
+            opts.creation_mode,
+        ) orelse return error.InvalidSurfaceCreationMode;
+
         self.* = .{
             .app = app,
             .platform = try .init(opts.platform_tag, opts.platform),
@@ -533,6 +542,7 @@ pub const Surface = struct {
             const cmd = std.mem.sliceTo(c_command, 0);
             if (cmd.len > 0) {
                 config.command = .{ .shell = cmd };
+                config._command_is_explicit = true;
                 config.@"wait-after-command" = true;
             }
         }
@@ -584,8 +594,15 @@ pub const Surface = struct {
             app.core_app,
             app,
             self,
+            creation_mode,
         );
         errdefer self.core_surface.deinit();
+
+        if (creation_mode == .cold_restore_default_shell) {
+            assert(!self.core_surface.launch_intent.has_command);
+            assert(!self.core_surface.launch_intent.has_environment_overrides);
+            assert(!self.core_surface.launch_intent.has_initial_input);
+        }
 
         // If our options requested a specific font-size, set that.
         if (opts.font_size != 0) {
@@ -1282,6 +1299,13 @@ pub const CAPI = struct {
         cell_height_px: u32,
     };
 
+    // ghostty_surface_launch_intent_s
+    const SurfaceLaunchIntent = extern struct {
+        has_command: bool,
+        has_environment_overrides: bool,
+        has_initial_input: bool,
+    };
+
     // ghostty_clipboard_content_s
     const ClipboardContent = extern struct {
         mime: [*:0]const u8,
@@ -1562,6 +1586,16 @@ pub const CAPI = struct {
     /// Returns the app associated with a surface.
     export fn ghostty_surface_app(surface: *Surface) *App {
         return surface.app;
+    }
+
+    export fn ghostty_surface_effective_launch_intent(
+        surface: *Surface,
+    ) SurfaceLaunchIntent {
+        return .{
+            .has_command = surface.core_surface.launch_intent.has_command,
+            .has_environment_overrides = surface.core_surface.launch_intent.has_environment_overrides,
+            .has_initial_input = surface.core_surface.launch_intent.has_initial_input,
+        };
     }
 
     /// Returns the config to use for surfaces that inherit from this one.
@@ -2225,3 +2259,28 @@ pub const CAPI = struct {
         }
     };
 };
+
+test "cold restore preflight clears explicit launch content and retains default shell" {
+    var config: Config = .{
+        ._arena = .init(std.testing.allocator),
+    };
+    defer config.deinit();
+
+    const alloc = config.arenaAlloc();
+    config.@"initial-command" = .{ .shell = "initial-command" };
+    config.command = .{ .shell = "/bin/zsh" };
+    try config.env.parseCLI(alloc, "KEY=value");
+    try config.input.parseCLI(alloc, "raw:input");
+
+    config._command_is_explicit = false;
+    try config.clearColdRestoreLaunchConfig();
+
+    const intent = CoreSurface.effectiveLaunchIntent(&config, true);
+    try std.testing.expect(!intent.has_command);
+    try std.testing.expect(!intent.has_environment_overrides);
+    try std.testing.expect(!intent.has_initial_input);
+    switch (config.command.?) {
+        .shell => |command| try std.testing.expectEqualStrings("/bin/zsh", command),
+        .direct => unreachable,
+    }
+}

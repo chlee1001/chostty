@@ -58,7 +58,7 @@ class TerminalWindow: NSWindow {
     var tabColor: TerminalTabColor = .none {
         didSet {
             guard tabColor != oldValue else { return }
-            invalidateRestorableState()
+            terminalController?.schedulePersistedProjectionComparison()
         }
     }
 

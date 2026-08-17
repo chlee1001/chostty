@@ -42,7 +42,7 @@ struct ReservedShortcutRecognitionTests {
         guard let app = TerminalControllerTestHarness.sharedApp.app else {
             return TerminalSessionState(id: UUID(), surfaceTree: SplitTree<Ghostty.SurfaceView>())
         }
-        let view = Ghostty.SurfaceView(app, baseConfig: nil)
+        let view = Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)
         return TerminalSessionState(id: UUID(), surfaceTree: SplitTree<Ghostty.SurfaceView>(view: view))
     }
 
@@ -314,7 +314,7 @@ struct ReservedShortcutRecognitionTests {
 
     @Test func aTerminalSurfaceIsNotTreatedAsATextField() throws {
         let app = try #require(TerminalControllerTestHarness.sharedApp.app)
-        let surface = Ghostty.SurfaceView(app, baseConfig: nil)
+        let surface = Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)
 
         // A terminal surface conforms to NSTextInputClient for IME. Using that
         // conformance as the guard would make every reserved chord dead inside

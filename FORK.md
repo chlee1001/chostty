@@ -46,6 +46,16 @@ views; other formats use an embedded Quick Look preview. Static HTML runs with
 JavaScript and network resources disabled. Open document tabs are intentionally
 not restored after an app restart.
 
+**Session restoration v9.** Ordinary windows now save a bounded, passive
+Workspace → Tab → Pane description and validate the complete archive before
+creating any terminal surface. Restored panes always start fresh default-shell
+PTYs; saved processes and screen contents do not continue. A tab is omitted as
+a whole when any pane has a configured command, environment override, or
+initial input. The v9 cutover deliberately discards older v8 layouts rather
+than decoding their live-view payloads. When nothing can be restored, Chostty
+keeps the app process-free and offers one explicit action to open a fresh
+Workspace.
+
 ## Reserved shortcuts
 
 | Chord | Action |

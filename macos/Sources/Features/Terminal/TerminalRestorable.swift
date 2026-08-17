@@ -4,123 +4,70 @@ protocol TerminalRestorable: Codable {
     static var selfKey: String { get }
     static var versionKey: String { get }
     static var version: Int { get }
-    /// Minimum version that can be decoded safely
     static var minimumVersion: Int { get }
     init(copy other: Self)
-
-    /// Returns a base configuration to use when restoring terminal surfaces.
-    /// Override this to provide custom environment variables or other configuration.
     var baseConfig: Ghostty.SurfaceConfiguration? { get }
 }
 
 extension TerminalRestorable {
     static var minimumVersion: Int { version }
-}
-
-extension TerminalRestorable {
     static var selfKey: String { "state" }
     static var versionKey: String { "version" }
-
-    private var debugDescription: String {
-        withUnsafePointer(to: self) { ptr in
-            "<\(ptr)>[version: \(Self.version)]"
-        }
-    }
-
-    /// Default implementation returns nil (no custom base config).
     var baseConfig: Ghostty.SurfaceConfiguration? { nil }
 
-    init?(coder aDecoder: NSCoder) {
-        // Only versions this build actually understands may be decoded. Older
-        // archives are rejected before `decodeObject` so no legacy payload is
-        // ever materialized, and *newer* archives are rejected too: decoding a
-        // future schema with this decoder would silently drop or misread state.
-        let current = aDecoder.decodeInteger(forKey: Self.versionKey)
-        guard current >= Self.minimumVersion, current <= Self.version else {
-            AppDelegate.logger.error("error restoring terminal: version not supported: supported=\(Self.minimumVersion, privacy: .public)...\(Self.version, privacy: .public), got=\(current, privacy: .public)")
-            return nil
-        }
-
-        guard let v = aDecoder.decodeObject(of: CodableBridge<Self>.self, forKey: Self.selfKey) else {
-            AppDelegate.logger.error("error restoring terminal: decode failed")
-            return nil
-        }
-
-        self.init(copy: v.value)
+    init?(coder decoder: NSCoder) {
+        let version = decoder.decodeInteger(forKey: Self.versionKey)
+        guard version >= Self.minimumVersion, version <= Self.version else { return nil }
+        guard let bridge = decoder.decodeObject(of: CodableBridge<Self>.self, forKey: Self.selfKey) else { return nil }
+        self.init(copy: bridge.value)
     }
 
-    func encode(with coder: NSCoder) {
+    func encode(with coder: NSCoder) throws {
+        let bridge = try CodableBridge(self)
         coder.encode(Self.version, forKey: Self.versionKey)
-        coder.encode(CodableBridge(self), forKey: Self.selfKey)
-
-        AppDelegate.logger.debug("saved terminal state: \(debugDescription, privacy: .public)")
+        coder.encode(bridge, forKey: Self.selfKey)
+        if let error = coder.error {
+            throw error
+        }
     }
 }
 
-/// The state stored for terminal window restoration.
+/// The v9 ordinary-window archive contains only passive values. It never decodes a view.
 final class TerminalRestorableState: TerminalRestorable {
-    static var version: Int { 8 }
-    static var minimumVersion: Int { 8 }
+    static var version: Int { 9 }
+    static var minimumVersion: Int { 9 }
 
-    var focusedSurface: String? {
-        internalState.focusedSurface
-    }
-    var surfaceTree: SplitTree<Ghostty.SurfaceView> {
-        internalState.surfaceTree
-    }
-    var effectiveFullscreenMode: FullscreenMode? {
-        internalState.effectiveFullscreenMode
-    }
-    var workspaces: [WorkspaceState<Ghostty.SurfaceView>]? {
-        internalState.workspaces
-    }
-    var selectedWorkspaceID: UUID? {
-        internalState.selectedWorkspaceID
-    }
-    var selectedTabID: UUID? {
-        internalState.selectedTabID
-    }
-    var physicalID: UUID? {
-        internalState.physicalID
-    }
-    var tabColor: TerminalTabColor? {
-        internalState.tabColor
-    }
-    var titleOverride: String? {
-        internalState.titleOverride
-    }
-    var filesPanel: FilesPanelPresentationState.Persisted? {
-        internalState.filesPanel
+    let wire: TerminalRestoreWireSnapshot
+
+    init(wire: TerminalRestoreWireSnapshot) { self.wire = wire }
+
+    required init(copy other: TerminalRestorableState) { wire = other.wire }
+    init(from decoder: any Decoder) throws { wire = try TerminalRestoreWireSnapshot(from: decoder) }
+    func encode(to encoder: any Encoder) throws { try wire.encode(to: encoder) }
+
+    static func decodeV9(from decoder: NSCoder) throws -> TerminalRestorableState {
+        guard decoder.containsValue(forKey: selfKey) else {
+            throw CodableBridgeError.missingData
+        }
+        guard let bridge = decoder.decodeObject(
+            of: CodableBridge<TerminalRestorableState>.self,
+            forKey: selfKey)
+        else {
+            throw decoder.error ?? CodableBridgeError.corruptData
+        }
+        return .init(copy: bridge.value)
     }
 
-    /// Internal State we use to perform unit tests
-    ///
-    /// Since we can't really change the type of `TerminalRestorableState`
-    /// due to `CodableBridge<TerminalRestorableState>` supporting secure coding,
-    /// we use an internal type to perform migration and tests
-    private let internalState: InternalState<Ghostty.SurfaceView>
-
-    @MainActor
-    init(from controller: TerminalController) {
-        internalState = .init(from: controller)
+    func restorePlan() throws -> RestorePlan {
+        try wire.validateBounds()
+        return try TerminalRestoreValidator.validate(
+            TerminalRestoreSchemaDecoder.convert(wire))
     }
 
-    required init(copy other: TerminalRestorableState) {
-        self.internalState = other.internalState
-    }
-
-    /// This is just wrapper around internalState
-    ///
-    /// - Important: If you intend to add more things, go to `InternalState`.
-    init(from decoder: any Decoder) throws {
-        self.internalState = try InternalState<Ghostty.SurfaceView>(from: decoder)
-    }
-
-    /// This is just wrapper around internalState
-    ///
-    /// - Important: If you intend to add more things, go to `InternalState`.
-    func encode(to encoder: any Encoder) throws {
-        try internalState.encode(to: encoder)
+    func withValidatedPlan<Result>(
+        _ materialize: (RestorePlan) throws -> Result
+    ) throws -> Result {
+        try materialize(restorePlan())
     }
 }
 
@@ -128,150 +75,104 @@ enum TerminalRestoreError: Error {
     case delegateInvalid
     case identifierUnknown
     case stateDecodeFailed
+    case decode(RestoreDecodeFailure)
+    case materialization(RestoreMaterializationFailure)
     case windowDidNotLoad
 }
 
-/// The NSWindowRestoration implementation that is called when a terminal window needs to be restored.
-/// The encoding of a terminal window is handled elsewhere (usually NSWindowDelegate).
+/// AppKit entry point. Invalid archives have no fallback path and therefore create no surface.
+@MainActor
 class TerminalWindowRestoration: NSObject, NSWindowRestoration {
+    /// Injection point for the tests that must prove a rejected archive never
+    /// reaches a pane factory. Debug-only so the shipping entry point has no
+    /// substitutable factory at all.
+    #if DEBUG
+    static var paneFactoryOverride:
+        TerminalRestoreMaterializer.PaneFactory?
+    #endif
+
     static func restoreWindow(
         withIdentifier identifier: NSUserInterfaceItemIdentifier,
         state: NSCoder,
         completionHandler: @escaping (NSWindow?, Error?) -> Void
     ) {
-        // Verify the identifier is what we expect
-        guard identifier == .init(String(describing: Self.self)) else {
-            completionHandler(nil, TerminalRestoreError.identifierUnknown)
-            return
-        }
-
-        // The app delegate is definitely setup by now. If it isn't our AppDelegate
-        // then something is royally fucked up but protect against it anyhow.
-        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
-            completionHandler(nil, TerminalRestoreError.delegateInvalid)
-            return
-        }
-
-        // If our configuration is "never" then we never restore the state
-        // no matter what. Note its safe to use "ghostty.config" directly here
-        // because window restoration is only ever invoked on app start so we
-        // don't have to deal with config reloads.
-        if appDelegate.ghostty.config.windowSaveState == "never" {
-            AppDelegate.logger.warning("skip restoration: window-save-state=never")
-            completionHandler(nil, nil)
-            return
-        }
-
-        // Decode the state. If we can't decode the state, then we can't restore.
-        guard let state = TerminalRestorableState(coder: state) else {
-            completionHandler(nil, TerminalRestoreError.stateDecodeFailed)
-            return
-        }
-
-        // The window creation has to go through our terminalManager so that it
-        // can be found for events from libghostty. This uses the low-level
-        // createWindow so that AppKit can place the window wherever it should
-        // be.
-        // v8 stores the entire hierarchy in `workspaces`; the flat
-        // `surfaceTree` field is intentionally empty (see
-        // TerminalRestorableState+InteralState). A structurally invalid
-        // hierarchy must therefore produce a fresh normalized 1×1 graph rather
-        // than silently restoring an empty tree.
-        let c: TerminalController
-        if let workspaces = state.workspaces,
-           let graph = TerminalControllerGraphFactory.makeRestoredV8(
-               workspaces: workspaces,
-               selectedWorkspaceID: state.selectedWorkspaceID,
-               selectedTabID: state.selectedTabID) {
-            // Carry the persisted identity forward so an AppleScript `window
-            // id` saved before quit still addresses this window. Only on the
-            // hierarchy-restore path: the fallback below is a fresh window,
-            // not the restored one, and must not inherit its id.
-            c = TerminalController(
-                appDelegate.ghostty,
-                graph: graph,
-                restoredPhysicalUUID: state.physicalID)
-        } else {
-            AppDelegate.logger.warning(
-                "restoration: v8 hierarchy missing or invalid; starting a fresh workspace")
-            c = TerminalController(appDelegate.ghostty)
-        }
-        guard let window = c.window else {
-            completionHandler(nil, TerminalRestoreError.windowDidNotLoad)
-            return
-        }
-
-        // Restore our tab color and avoid unnecessary `invalidateRestorableState` calls
-        if let tabColor = state.tabColor {
-            (window as? TerminalWindow)?.tabColor = tabColor
-        }
-
-        // Restore the tab title override
-        c.titleOverride = state.titleOverride
-
-        // Setup our restored state on the controller
-        // Find the focused surface in surfaceTree
-        if let focusedStr = state.focusedSurface {
-            var foundView: Ghostty.SurfaceView?
-            for view in c.surfaceTree where view.id.uuidString == focusedStr {
-                foundView = view
-                break
-            }
-
-            if let view = foundView {
-                c.focusedSurface = view
-                restoreFocus(to: view, inWindow: window)
-            }
-        }
-
-        if let filesPanel = state.filesPanel {
-            c.filesPanelController?.hydrate(from: filesPanel)
-        }
-        completionHandler(window, nil)
-        guard let mode = state.effectiveFullscreenMode, mode != .native else {
-            // We let AppKit handle native fullscreen
-            return
-        }
-        // Give the window to AppKit first, then adjust its frame and style
-        // to minimise any visible frame changes.
-        c.toggleFullscreen(mode: mode)
-    }
-
-    /// This restores the focus state of the surfaceview within the given window. When restoring,
-    /// the view isn't immediately attached to the window since we have to wait for SwiftUI to
-    /// catch up. Therefore, we sit in an async loop waiting for the attachment to happen.
-    private static func restoreFocus(to: Ghostty.SurfaceView, inWindow: NSWindow, attempts: Int = 0) {
-        // For the first attempt, we schedule it immediately. Subsequent events wait a bit
-        // so we don't just spin the CPU at 100%. Give up after some period of time.
-        let after: DispatchTime
-        if attempts == 0 {
-            after = .now()
-        } else if attempts > 40 {
-            // 2 seconds, give up
-            return
-        } else {
-            after = .now() + .milliseconds(50)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: after) {
-            // If the view is not attached to a window yet then we repeat.
-            guard let viewWindow = to.window else {
-                restoreFocus(to: to, inWindow: inWindow, attempts: attempts + 1)
+        let appDelegate = NSApp.delegate as? AppDelegate
+        let token = appDelegate?.beginOrdinaryRestoreAttempt()
+        var completionSent = false
+        func finish(_ window: NSWindow?, _ error: Error?, _ outcome: RestoreAttemptCoordinator.Outcome) {
+            guard !completionSent else { return }
+            completionSent = true
+            guard let appDelegate, let token else {
+                completionHandler(window, error)
                 return
             }
-
-            // If the view is attached to some other window, we give up
-            guard viewWindow == inWindow else { return }
-
-            inWindow.makeFirstResponder(to)
-
-            // If the window is main, then we also make sure it comes forward. This
-            // prevents a bug found in #1177 where sometimes on restore the windows
-            // would be behind other applications.
-            if viewWindow.isMainWindow {
-                viewWindow.orderFront(nil)
+            if !appDelegate.completeOrdinaryRestoreAttempt(token, outcome: outcome) {
+                AppDelegate.logger.error("ordinary restoration completion diverged")
             }
+            completionHandler(window, error)
+        }
+        guard identifier == .init(String(describing: Self.self)) else {
+            finish(nil, TerminalRestoreError.identifierUnknown, .failure(.archiveRejected)); return
+        }
+        guard let appDelegate else {
+            completionHandler(nil, TerminalRestoreError.delegateInvalid); return
+        }
+        guard appDelegate.ghostty.config.windowSaveState != "never" else {
+            finish(nil, nil, .failure(.archiveRejected)); return
+        }
+        let version = state.decodeInteger(forKey: TerminalRestorableState.versionKey)
+        guard version == TerminalRestorableState.version else {
+            finish(nil, TerminalRestoreError.stateDecodeFailed,
+                   .failure(version == 8 ? .v8Discarded : .archiveRejected)); return
+        }
+        let archived: TerminalRestorableState
+        do {
+            archived = try TerminalRestorableState.decodeV9(from: state)
+        } catch {
+            finish(
+                nil,
+                TerminalRestoreError.stateDecodeFailed,
+                .failure(.decodeRejected))
+            return
+        }
+        do {
+            let transaction = try archived.withValidatedPlan {
+                #if DEBUG
+                if let factory = paneFactoryOverride {
+                    return try TerminalRestoreMaterializer.materialize(
+                        $0,
+                        ghostty: appDelegate.ghostty,
+                        factory: factory)
+                }
+                #endif
+                return try TerminalRestoreMaterializer.materialize(
+                    $0,
+                    ghostty: appDelegate.ghostty)
+            }
+            let controller = try transaction.commit()
+            guard let window = controller.window else { throw TerminalRestoreError.windowDidNotLoad }
+            finish(window, nil, .success(transaction.materializationWarnings))
+        } catch let error as TerminalRestoreError {
+            finish(nil, error, .failure(.archiveRejected))
+        } catch let error as RestoreDecodeFailure {
+            finish(
+                nil,
+                TerminalRestoreError.decode(error),
+                .failure(.decodeRejected))
+        } catch let error as RestoreSchemaFailure {
+            finish(nil, error, .failure(.schemaRejected))
+        } catch let error as RestoreValidationFailure {
+            finish(nil, error, .failure(.validationRejected))
+        } catch let error as RestoreMaterializationFailure {
+            let code: TerminalRestoreReportCode = switch error {
+            case .explicitClose: .cleanupFailed
+            case .publication: .publicationFailed
+            default: .materializationFailed
+            }
+            finish(nil, TerminalRestoreError.materialization(error), .failure(code))
+        } catch {
+            finish(nil, TerminalRestoreError.stateDecodeFailed, .failure(.archiveRejected))
         }
     }
-}
 
+}
