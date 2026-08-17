@@ -3467,7 +3467,6 @@ pub const Surface = extern struct {
 
         if (priv.overrides.command) |c| {
             config.command = try c.clone(config._arena.?.allocator());
-            config._command_is_explicit = true;
         }
         if (priv.overrides.working_directory) |wd| {
             const config_alloc = config.arenaAlloc();
@@ -3492,7 +3491,6 @@ pub const Surface = extern struct {
             app.core(),
             app.rt(),
             &priv.rt_surface,
-            .normal,
         ) catch |err| {
             log.warn("failed to initialize surface err={}", .{err});
             return error.SurfaceError;

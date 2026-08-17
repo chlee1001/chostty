@@ -107,17 +107,6 @@ class AppDelegate: NSObject,
     private(set) var terminalCommands: TerminalCommandRouter!
     private(set) var surfaceDispatcher: SurfaceEventDispatcher!
     let filesPanelWatchBroker = FilesPanelWatchBroker()
-    /// The sole ordinary-window source for restoration save participation.
-    @MainActor lazy var ordinaryWindowSaveRegistry = OrdinaryWindowSaveRegistry()
-    private static let ordinaryWindowMarkerKey = "chostty.ordinaryWindowRestoreMarker.v9"
-    private var restorationBatchResolved = false
-    private var didFinishLaunching = false
-    private var restoreReportPresented = false
-    @MainActor private lazy var ordinaryRestoreAttempts = RestoreAttemptCoordinator()
-    private var restoreReport = TerminalRestoreReport()
-    private var ordinaryWindowMarkerState: MarkerReadState = .unread
-    private var freshWorkspaceOpened = false
-    private var automaticInitialWindowAllowed = false
 
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
@@ -136,21 +125,10 @@ class AppDelegate: NSObject,
         case .initialized(let controller):
             return controller
 
-        case .pendingRestore(let state):
-            let controller = QuickTerminalController(
-                ghostty,
-                position: derivedConfig.quickTerminalPosition,
-                baseConfig: state.baseConfig,
-                restorationState: state
-            )
-            quickTerminalControllerState = .initialized(controller)
-            return controller
-
         case .uninitialized:
             let controller = QuickTerminalController(
                 ghostty,
-                position: derivedConfig.quickTerminalPosition,
-                restorationState: nil
+                position: derivedConfig.quickTerminalPosition
             )
             quickTerminalControllerState = .initialized(controller)
             return controller
@@ -195,11 +173,6 @@ class AppDelegate: NSObject,
     // MARK: - NSApplicationDelegate
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(didFinishRestoringWindows(_:)),
-            name: NSApplication.didFinishRestoringWindowsNotification,
-            object: nil)
         #if DEBUG
         if
             let suite = UserDefaults.ghosttySuite,
@@ -233,8 +206,6 @@ class AppDelegate: NSObject,
         surfaceDispatcher.registry = surfaceOwners
         terminalCommands = TerminalCommandRouter()
         terminalCommands.dispatcher = surfaceDispatcher
-        didFinishLaunching = true
-        flushOrdinaryRestoreResolutionIfReady()
 
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
@@ -379,117 +350,23 @@ class AppDelegate: NSObject,
         self.hiddenState = .init()
     }
 
-    @MainActor func applicationDidBecomeActive(_ notification: Notification) {
+    func applicationDidBecomeActive(_ notification: Notification) {
         // If we're back manually then clear the hidden state because macOS handles it.
         self.hiddenState = nil
 
         // First launch stuff
         if !applicationHasBecomeActive {
             applicationHasBecomeActive = true
-            // AppKit's restore batch is the only authority that can clear this
-            // gate. Activation must never race an unresolved invalid archive.
-            guard restorationBatchResolved else { return }
-            openAutomaticInitialWindowIfAllowed()
-        }
-    }
 
-    @MainActor @objc private func didFinishRestoringWindows(_ notification: Notification) {
-        guard !restorationBatchResolved else { return }
-        restorationBatchResolved = true
-        if ghostty.config.windowSaveState == "never" {
-            ordinaryRestoreAttempts.discard()
-            ordinaryWindowMarkerState = .consumed
-            restoreReport = .init()
-            automaticInitialWindowAllowed = true
-            flushOrdinaryRestoreResolutionIfReady()
-            return
-        }
-        let markerState: MarkerReadState = ordinaryWindowMarkerState == .unread ? .absent : ordinaryWindowMarkerState
-        restoreReport = ordinaryRestoreAttempts.finish(marker: markerState)
-        ordinaryWindowMarkerState = .consumed
-        automaticInitialWindowAllowed = markerState == .absent &&
-            ordinaryRestoreAttempts.attemptCount == 0 && restoreReport.items.isEmpty
-        flushOrdinaryRestoreResolutionIfReady()
-    }
-
-    @MainActor private func flushOrdinaryRestoreResolutionIfReady() {
-        guard restorationBatchResolved, didFinishLaunching else { return }
-        if !restoreReport.items.isEmpty, !restoreReportPresented {
-            restoreReportPresented = true
-            for item in restoreReport.items {
-                Self.logger.warning("ordinary restoration report \(item.code.rawValue, privacy: .public)")
+            // Let's launch our first window. We only do this if we have no other windows. It
+            // is possible to have other windows in a few scenarios:
+            //   - if we're opening a URL since `application(_:openFile:)` is called before this.
+            //   - if we're restoring from persisted state
+            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+                undoManager.disableUndoRegistration()
+                _ = TerminalController.newWindow(ghostty)
+                undoManager.enableUndoRegistration()
             }
-            presentOrdinaryRestoreReportIfNeeded()
-        }
-        if applicationHasBecomeActive { openAutomaticInitialWindowIfAllowed() }
-    }
-
-    @MainActor private func openAutomaticInitialWindowIfAllowed() {
-        guard automaticInitialWindowAllowed, !ordinaryWindowSaveRegistry.hasCommittedController,
-              derivedConfig.initialWindow else { return }
-        automaticInitialWindowAllowed = false
-        undoManager.disableUndoRegistration()
-        _ = TerminalController.newWindow(ghostty)
-        undoManager.enableUndoRegistration()
-    }
-
-    @MainActor func beginOrdinaryRestoreAttempt() -> RestoreAttemptCoordinator.Token {
-        ordinaryRestoreAttempts.begin()
-    }
-    @MainActor func completeOrdinaryRestoreAttempt(
-        _ token: RestoreAttemptCoordinator.Token,
-        outcome: RestoreAttemptCoordinator.Outcome
-    ) -> Bool {
-        ordinaryRestoreAttempts.complete(token, outcome: outcome)
-    }
-
-    @MainActor private func presentOrdinaryRestoreReportIfNeeded() {
-        let disclosureKey = "chostty.restore.v9.disclosureShown"
-        let alert = NSAlert()
-        alert.messageText = "Terminal restoration needs attention"
-        let codes = restoreReport.items.map(\.code)
-        let warningOnly = !codes.isEmpty && codes.allSatisfy {
-            $0 == .focusAttachmentWarning || $0 == .cwdFallback
-        }
-        if codes.contains(.cleanupFailed) {
-            alert.informativeText = "Saved terminal layouts could not be restored, and staged cleanup could not be verified. No new Workspace was opened. Open one explicitly to continue."
-        } else if codes.contains(.materializationFailed) ||
-                    codes.contains(.publicationFailed) {
-            alert.informativeText = "Saved terminal layouts could not be published. Any staged restore shells were closed before this report. Open a fresh Workspace explicitly to start one."
-        } else if codes.contains(.v8Discarded) &&
-            !UserDefaults.standard.bool(forKey: disclosureKey) {
-            alert.informativeText = "Saved v8 terminal layouts were discarded before decoding. No terminal process was started from them. Previous terminal processes did not continue. Open a fresh Workspace explicitly to start a new shell."
-            UserDefaults.standard.set(true, forKey: disclosureKey)
-        } else if codes.contains(.allIneligible) {
-            alert.informativeText = "Saved terminal windows contained no eligible default-shell workspace. No terminal process was started. Open a fresh Workspace explicitly to start one."
-        } else if warningOnly {
-            alert.messageText = "Terminal restoration completed with warnings"
-            alert.informativeText = codes.contains(.cwdFallback)
-                ? "At least one saved working directory was unavailable, so its new shell used the configured default directory."
-                : "The restored window could not confirm its initial keyboard focus."
-        } else if codes.contains(where: {
-            $0 == .archiveRejected ||
-            $0 == .decodeRejected ||
-            $0 == .schemaRejected ||
-            $0 == .validationRejected ||
-            $0 == .restoreAttemptMissing
-        }) {
-            alert.informativeText = "Saved terminal state was rejected before any terminal process started. Open a fresh Workspace explicitly to start one."
-        } else {
-            alert.informativeText = "Saved terminal windows could not be restored. Open a fresh Workspace explicitly to start a new shell."
-        }
-        if warningOnly {
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-        alert.addButton(withTitle: "Open Fresh Workspace")
-        alert.addButton(withTitle: "Keep Closed")
-        if alert.runModal() == .alertFirstButtonReturn, !freshWorkspaceOpened {
-            freshWorkspaceOpened = true
-            undoManager.disableUndoRegistration()
-            _ = TerminalController.newWindow(ghostty)
-            undoManager.enableUndoRegistration()
         }
     }
 
@@ -542,11 +419,7 @@ class AppDelegate: NSObject,
         return terminate()
     }
 
-    @MainActor func applicationWillTerminate(_ notification: Notification) {
-        ordinaryWindowSaveRegistry.finalizeOutstandingSaveResults()
-        for code in ordinaryWindowSaveRegistry.drainSaveReportCodes() {
-            Self.logger.warning("ordinary save report \(code.rawValue, privacy: .public)")
-        }
+    func applicationWillTerminate(_ notification: Notification) {
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
@@ -565,12 +438,11 @@ class AppDelegate: NSObject,
         // window is still initializing and is not visible but the user clicked
         // the dock icon.
         guard TerminalController.all.isEmpty else { return true }
-        guard restoreReport.items.isEmpty else { return true }
 
         // If the application isn't active yet then we don't want to process
         // this because we're not ready. This happens sometimes in Xcode runs
         // but I haven't seen it happen in releases. I'm unsure why.
-        guard applicationHasBecomeActive, restorationBatchResolved else { return true }
+        guard applicationHasBecomeActive else { return true }
 
         // No visible windows, open a new one.
         _ = TerminalController.newWindow(ghostty)
@@ -973,15 +845,11 @@ class AppDelegate: NSObject,
         // Update the config we need to store
         self.derivedConfig = DerivedConfig(config)
 
-        // Depending on the "window-save-state" setting we have to set the NSQuitAlwaysKeepsWindows
-        // configuration. This is the only way to carefully control whether macOS invokes the
-        // state restoration system.
-        switch config.windowSaveState {
-        case "never": UserDefaults.ghostty.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
-        case "always": UserDefaults.ghostty.setValue(true, forKey: "NSQuitAlwaysKeepsWindows")
-        case "default": fallthrough
-        default: UserDefaults.ghostty.removeObject(forKey: "NSQuitAlwaysKeepsWindows")
-        }
+        // Chostty restores nothing, so macOS must never invoke the state
+        // restoration system for us. `window-save-state` is inherited from
+        // upstream and still parses; the macOS app pins the behavior to
+        // `never` rather than letting the system setting turn it back on.
+        UserDefaults.ghostty.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
 
         // Sync our auto-update settings. If SUEnableAutomaticChecks (in our Info.plist) is
         // explicitly false (NO), auto-updates are disabled. Otherwise, we use the behavior
@@ -1083,66 +951,12 @@ class AppDelegate: NSObject,
 
     // MARK: - Restorable State
 
-    /// We support NSSecureCoding for restorable state. Required as of macOS Sonoma (14) but a good idea anyways.
+    /// Chostty does not restore windows across launches, so it declares no
+    /// restoration class and encodes nothing. Secure coding support is still
+    /// advertised because AppKit asks before it decides how to treat any state
+    /// macOS itself keeps for the app.
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         return true
-    }
-
-    func application(_ app: NSApplication, willEncodeRestorableState coder: NSCoder) {
-        guard ghostty.config.windowSaveState != "never" else { return }
-
-        let markerClaim =
-            ordinaryWindowSaveRegistry.beginApplicationSaveOpportunity()
-        for code in ordinaryWindowSaveRegistry.drainSaveReportCodes() {
-            Self.logger.warning("ordinary save report \(code.rawValue, privacy: .public)")
-        }
-        coder.encode(markerClaim.marker.encoded, forKey: Self.ordinaryWindowMarkerKey)
-        if let error = coder.error {
-            _ = ordinaryWindowSaveRegistry.sealMarker(
-                markerClaim.token,
-                result: .failure(.outerCoder))
-            coder.failWithError(error)
-        } else {
-            _ = ordinaryWindowSaveRegistry.sealMarker(
-                markerClaim.token,
-                result: .success(()))
-        }
-
-        // Encode our quick terminal state if we have it.
-        switch quickTerminalControllerState {
-        case .initialized(let controller) where controller.restorable:
-            let data = QuickTerminalRestorableState(from: controller)
-            do {
-                try data.encode(with: coder)
-            } catch {
-                coder.failWithError(error)
-            }
-
-        case .pendingRestore(let state):
-            do {
-                try state.encode(with: coder)
-            } catch {
-                coder.failWithError(error)
-            }
-
-        default:
-            break
-        }
-    }
-
-    func application(_ app: NSApplication, didDecodeRestorableState coder: NSCoder) {
-        Self.logger.debug("application will restore window state")
-
-        // Decode our quick terminal state.
-        let rawMarker = coder.decodeObject(of: NSString.self, forKey: Self.ordinaryWindowMarkerKey) as String?
-        ordinaryWindowMarkerState = OrdinaryWindowSaveMarker.decode(rawMarker)
-        if ghostty.config.windowSaveState != "never" {
-            if let state = QuickTerminalRestorableState(coder: coder) {
-                quickTerminalControllerState = .pendingRestore(state)
-            } else if coder.containsValue(forKey: QuickTerminalRestorableState.versionKey) {
-                Self.logger.warning("quick terminal restoration state rejected")
-            }
-        }
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -1901,10 +1715,8 @@ extension AppDelegate {
 
 /// Represents the state of the quick terminal controller.
 private enum QuickTerminalState {
-    /// Controller has not been initialized and has no pending restoration state.
+    /// Controller has not been initialized.
     case uninitialized
-    /// Restoration state is pending; controller will use this when first accessed.
-    case pendingRestore(QuickTerminalRestorableState)
     /// Controller has been initialized.
     case initialized(QuickTerminalController)
 }

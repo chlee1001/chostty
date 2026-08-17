@@ -43,17 +43,6 @@ const log = std.log.scoped(.surface);
 // The renderer implementation to use.
 const Renderer = rendererpkg.Renderer;
 
-pub const LaunchIntent = struct {
-    has_command: bool,
-    has_environment_overrides: bool,
-    has_initial_input: bool,
-};
-
-pub const CreationMode = enum(i32) {
-    normal = 0,
-    cold_restore_default_shell = 1,
-};
-
 /// Minimum window size in cells. This is used to prevent the window from
 /// being resized to a size that is too small to be useful. These defaults
 /// are chosen to match the default size of Mac's Terminal.app, but is
@@ -149,10 +138,6 @@ size: rendererpkg.Size,
 /// we don't have a shared pointer hanging around that we need to worry about
 /// the lifetime of. This makes updating config at runtime easier.
 config: DerivedConfig,
-
-/// Immutable launch intent from the final configuration used to start this
-/// surface.
-launch_intent: LaunchIntent,
 
 /// The conditional state of the configuration. This can affect
 /// how certain configurations take effect such as light/dark mode.
@@ -472,37 +457,6 @@ const DerivedConfig = struct {
 /// Create a new surface. This must be called from the main thread. The
 /// pointer to the memory for the surface must be provided and must be
 /// stable due to interfacing with various callbacks.
-pub fn effectiveLaunchIntent(
-    config: *const configpkg.Config,
-    is_first_surface: bool,
-) LaunchIntent {
-    return .{
-        .has_command = (is_first_surface and config.@"initial-command" != null) or
-            config._command_is_explicit,
-        .has_environment_overrides = config.env.count() != 0,
-        .has_initial_input = config.input.list.items.len != 0,
-    };
-}
-
-fn effectiveCommand(
-    config: *const configpkg.Config,
-    is_first_surface: bool,
-) ?configpkg.Command {
-    if (is_first_surface) {
-        if (config.@"initial-command") |command| return command;
-    }
-
-    return config.command;
-}
-
-fn isFirstSurface(creation_mode: CreationMode, app_first: bool) bool {
-    return creation_mode == .normal and app_first;
-}
-
-fn consumeFirstSurface(creation_mode: CreationMode, app_first: *bool) void {
-    if (creation_mode == .normal) app_first.* = false;
-}
-
 pub fn init(
     self: *Surface,
     alloc: Allocator,
@@ -510,7 +464,6 @@ pub fn init(
     app: *App,
     rt_app: *apprt.runtime.App,
     rt_surface: *apprt.runtime.Surface,
-    creation_mode: CreationMode,
 ) !void {
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
@@ -524,27 +477,13 @@ pub fn init(
 
     // We want a config pointer for everything so we get that either
     // based on our conditional state or the original config.
-    const selected_config: *const configpkg.Config = if (config_) |*c| config: {
+    const config: *const configpkg.Config = if (config_) |*c| config: {
         // We want to preserve our original working directory. We
         // don't need to dupe memory here because termio will derive
         // it. We preserve this so directory inheritance works.
         c.@"working-directory" = config_original.@"working-directory";
         break :config c;
     } else config_original;
-
-    // Cold restoration is authoritative at this core boundary: it runs after
-    // conditional selection but before any renderer, termio, or thread setup.
-    var cold_config: ?configpkg.Config = null;
-    defer if (cold_config) |*c| c.deinit();
-    const config: *const configpkg.Config = switch (creation_mode) {
-        .normal => selected_config,
-        .cold_restore_default_shell => config: {
-            cold_config = selected_config.shallowClone(alloc);
-            try cold_config.?.clearColdRestoreLaunchConfig();
-            break :config &cold_config.?;
-        },
-    };
-    const first_surface = isFirstSurface(creation_mode, app.first);
 
     // Get our configuration
     var derived_config = try DerivedConfig.init(alloc, config);
@@ -673,7 +612,6 @@ pub fn init(
         .io_thr = undefined,
         .size = size,
         .config = derived_config,
-        .launch_intent = effectiveLaunchIntent(config, first_surface),
 
         // Our conditional state is initialized to the app state. This
         // lets us get the most likely correct color theme and so on.
@@ -681,7 +619,14 @@ pub fn init(
     };
 
     // The command we're going to execute
-    const command = effectiveCommand(config, first_surface);
+    const command: ?configpkg.Command = command: {
+        if (app.first) {
+            if (config.@"initial-command") |command| {
+                break :command command;
+            }
+        }
+        break :command config.command;
+    };
 
     // Start our IO implementation
     // This separate block ({}) is important because our errdefers must
@@ -842,7 +787,7 @@ pub fn init(
     };
 
     // We are no longer the first surface
-    consumeFirstSurface(creation_mode, &app.first);
+    app.first = false;
 }
 
 pub fn deinit(self: *Surface) void {
@@ -6096,85 +6041,4 @@ fn presentSurface(self: *Surface) !void {
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
-}
-
-test "effective launch intent excludes finalized default shell and honors explicit command provenance" {
-    var config: configpkg.Config = .{};
-    defer config.deinit();
-
-    // Finalization stores a resolved login shell in command, but it is not an
-    // explicit launch request.
-    config.command = .{ .shell = "/bin/zsh" };
-    try std.testing.expect(!effectiveLaunchIntent(&config, false).has_command);
-
-    // An explicitly configured command is intent even when it equals the
-    // resolved login shell byte-for-byte.
-    config._command_is_explicit = true;
-    try std.testing.expect(effectiveLaunchIntent(&config, false).has_command);
-
-    config.command = null;
-    config._command_is_explicit = false;
-    config.@"initial-command" = .{ .shell = "initial-command" };
-
-    try std.testing.expect(effectiveLaunchIntent(&config, true).has_command);
-    try std.testing.expect(!effectiveLaunchIntent(&config, false).has_command);
-    switch (effectiveCommand(&config, true).?) {
-        .shell => |command| try std.testing.expectEqualStrings("initial-command", command),
-        .direct => unreachable,
-    }
-
-    config.@"initial-command" = null;
-    config.command = .{ .shell = "global-command" };
-    config._command_is_explicit = true;
-    try std.testing.expect(effectiveLaunchIntent(&config, true).has_command);
-    try std.testing.expect(effectiveLaunchIntent(&config, false).has_command);
-    switch (effectiveCommand(&config, false).?) {
-        .shell => |command| try std.testing.expectEqualStrings("global-command", command),
-        .direct => unreachable,
-    }
-}
-
-test "effective launch intent tracks configured environment and input" {
-    var config: configpkg.Config = .{
-        ._arena = .init(std.testing.allocator),
-    };
-    defer config.deinit();
-
-    const alloc = config.arenaAlloc();
-    try config.env.parseCLI(alloc, "KEY=value");
-    try config.input.parseCLI(alloc, "raw:input");
-
-    const intent = effectiveLaunchIntent(&config, false);
-    try std.testing.expect(intent.has_environment_overrides);
-    try std.testing.expect(intent.has_initial_input);
-}
-
-test "cold restore does not consume the first normal surface" {
-    var config: configpkg.Config = .{};
-    defer config.deinit();
-
-    config.@"initial-command" = .{ .shell = "initial-command" };
-
-    try std.testing.expect(!isFirstSurface(.cold_restore_default_shell, true));
-    try std.testing.expect(isFirstSurface(.normal, true));
-    try std.testing.expect(!isFirstSurface(.normal, false));
-    try std.testing.expect(!effectiveLaunchIntent(
-        &config,
-        isFirstSurface(.cold_restore_default_shell, true),
-    ).has_command);
-    try std.testing.expect(
-        effectiveCommand(&config, isFirstSurface(.cold_restore_default_shell, true)) == null,
-    );
-
-    switch (effectiveCommand(&config, isFirstSurface(.normal, true)).?) {
-        .shell => |command| try std.testing.expectEqualStrings("initial-command", command),
-        .direct => unreachable,
-    }
-    try std.testing.expect(effectiveCommand(&config, isFirstSurface(.normal, false)) == null);
-
-    var app_first = true;
-    consumeFirstSurface(.cold_restore_default_shell, &app_first);
-    try std.testing.expect(app_first);
-    consumeFirstSurface(.normal, &app_first);
-    try std.testing.expect(!app_first);
 }

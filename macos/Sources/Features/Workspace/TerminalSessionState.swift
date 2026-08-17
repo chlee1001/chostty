@@ -58,13 +58,6 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     /// A user-supplied title override; takes precedence over `title`.
     @Published var titleOverride: String?
 
-    /// Whether every pane has the effective default-shell launch intent
-    /// required for ordinary restoration.
-    var isRestorationEligible: Bool {
-        !surfaceTree.isEmpty && surfaceTree.allSatisfy {
-            $0.effectiveLaunchIntent?.isDefaultShell == true
-        }
-    }
     let readerStore = TerminalReaderStore()
 
     // MARK: - Telemetry / lifecycle

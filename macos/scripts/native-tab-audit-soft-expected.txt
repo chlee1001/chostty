@@ -5,12 +5,3 @@ macos/Sources/Features/Terminal/TerminalController.swift:guard tabIndex >= 1 els
 macos/Sources/Features/Terminal/TerminalController.swift:if tabIndex <= 0 {
 macos/Sources/Features/Terminal/TerminalController.swift:if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
 macos/Sources/Features/Terminal/TerminalController.swift:let tabIndex: Int32 = tabEnum.rawValue
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:case normalizedFocus(workspaceIndex: Int, tabIndex: Int)
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:for (tabIndex, tab) in tabs.enumerated() {
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:for tabIndex in workspace.tabs.indices {
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:let tabPath = "\(prefix).tabs[\(tabIndex)]"
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:let tabPath = "\(workspacePath).tabs[\(tabIndex)]"
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:var tab = workspace.tabs[tabIndex]
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:warnings.append(.normalizedFocus(workspaceIndex: workspaceIndex, tabIndex: tabIndex))
-macos/Sources/Features/Terminal/TerminalRestorePipeline.swift:workspace.tabs[tabIndex] = tab
-macos/Tests/Terminal/TerminalRestorePipelineTests.swift:#expect(plan.warnings.contains(.normalizedFocus(workspaceIndex: 0, tabIndex: 0)))

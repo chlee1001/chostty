@@ -33,26 +33,13 @@ class QuickTerminalController: BaseTerminalController {
     /// Tracks if we're currently handling a manual resize to prevent recursion
     private var isHandlingResize: Bool = false
 
-    /// This is set to false by init if the window managed by this controller should not be restorable.
-    /// For example, terminals executing custom scripts are not restorable.
-    let restorable: Bool
-    private var restorationState: QuickTerminalRestorableState?
-
     init(_ ghostty: Ghostty.App,
          position: QuickTerminalPosition = .top,
-         baseConfig base: Ghostty.SurfaceConfiguration? = nil,
-         restorationState: QuickTerminalRestorableState? = nil,
+         baseConfig base: Ghostty.SurfaceConfiguration? = nil
     ) {
         self.position = position
         self.derivedConfig = DerivedConfig(ghostty.config)
-        // The window we manage is not restorable if we've specified a command
-        // to execute. We do this because the restored window is meaningless at the
-        // time of writing this: it'd just restore to a shell in the same directory
-        // as the script. We may want to revisit this behavior when we have scrollback
-        // restoration.
-        restorable = (base?.command ?? "") == ""
-        self.restorationState = restorationState
-        self.screenStateCache = QuickTerminalScreenStateCache(stateByDisplay: restorationState?.screenStateEntries ?? [:])
+        self.screenStateCache = QuickTerminalScreenStateCache(stateByDisplay: [:])
         // Important detail here: we initialize with an empty surface tree so
         // that we don't start a terminal process. This gets started when the
         // first terminal is shown in `animateIn`. We use `makeEmpty` so the
@@ -368,33 +355,16 @@ class QuickTerminalController: BaseTerminalController {
         // animate out.
         if surfaceTree.isEmpty,
            let ghostty_app = ghostty.app {
-            if let tree = restorationState?.surfaceTree, !tree.isEmpty {
-                surfaceTree = tree
-                let view = tree.first(where: { $0.logicalPaneID.uuidString == restorationState?.focusedSurface }) ?? tree.first!
-                focusedSurface = view
-                // Add a short delay to check if the correct surface is focused.
-                // Each SurfaceWrapper defaults its FocusedValue to itself; without this delay,
-                // the tree often focuses the first surface instead of the intended one.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    if !view.focused {
-                        self.focusedSurface = view
-                        self.makeWindowKey(window)
-                    }
-                }
-            } else {
-                var config = Ghostty.SurfaceConfiguration()
-                config.environmentVariables["GHOSTTY_QUICK_TERMINAL"] = "1"
+            var config = Ghostty.SurfaceConfiguration()
+            config.environmentVariables["GHOSTTY_QUICK_TERMINAL"] = "1"
 
-                let view = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
-                surfaceTree = SplitTree(view: view)
-                focusedSurface = view
-            }
+            let view = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
+            surfaceTree = SplitTree(view: view)
+            focusedSurface = view
         }
 
         // Animate the window in
         animateWindowIn(window: window, from: position)
-        // Clear the restoration state after first use
-        restorationState = nil
     }
 
     func animateOut() {

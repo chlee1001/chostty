@@ -43,10 +43,7 @@ class BaseTerminalController: NSWindowController,
 
     /// The currently focused surface.
     var focusedSurface: Ghostty.SurfaceView? {
-        didSet {
-            syncFocusToSurfaceTree()
-            schedulePersistedProjectionComparison()
-        }
+        didSet { syncFocusToSurfaceTree() }
     }
 
     /// The tree of splits within this terminal window.
@@ -61,8 +58,6 @@ class BaseTerminalController: NSWindowController,
     /// no optional, lazy, IUO, or empty-bootstrap seam: a controller cannot
     /// exist without a fully initialized store and committed initial snapshot.
     let workspaceStore: WorkspaceSessionStore
-    /// Restoration staging deliberately withholds product-visible registry publication.
-    var restorationPublicationDeferred: Bool
     var filesPanelController: FilesPanelController? { nil }
 
     /// The session ID last **successfully presented** (mounted) on this
@@ -152,19 +147,11 @@ class BaseTerminalController: NSWindowController,
 
     /// Cancellable for aggregating bell state across all surfaces in this controller.
     private var bellStateCancellable: AnyCancellable?
-    private var persistedProjectionCancellable: AnyCancellable?
-    private var persistedFlushScheduled = false
-    private var pendingPersistedFlushResetsRetryBudget = false
-    private var persistedProjectionTracker = TerminalPersistedProjectionTracker()
-    private var persistedProjectionFailureOutstanding = false
 
     /// An override title for the tab/window set by the user via prompt_tab_title.
     /// When set, this takes precedence over the computed title from the terminal.
     var titleOverride: String? {
-        didSet {
-            applyTitleToWindow()
-            schedulePersistedProjectionComparison()
-        }
+        didSet { applyTitleToWindow() }
     }
 
     /// The last computed title from the focused surface (without the override).
@@ -208,21 +195,13 @@ class BaseTerminalController: NSWindowController,
     /// Subclasses must build the graph via ``TerminalControllerGraphFactory``
     /// before delegating. No surface, session, or store is created here; only
     /// observation/telemetry setup happens after `super.init`.
-    /// `restoredPhysicalUUID` rehydrates the identity persisted by a prior
-    /// run. AppleScript derives a window's `id` from this, so minting a fresh
-    /// one on restore silently invalidates every saved reference: a script
-    /// that stored an id before quit would address nothing after relaunch.
-    /// Pass nil for a genuinely new window.
     init(_ ghostty: Ghostty.App,
-         graph: TerminalControllerGraphFactory.InitialGraph,
-         restoredPhysicalUUID: UUID? = nil,
-         deferredPublication: Bool = false
+         graph: TerminalControllerGraphFactory.InitialGraph
     ) {
         self.ghostty = ghostty
-        self.physicalUUID = restoredPhysicalUUID ?? UUID()
+        self.physicalUUID = UUID()
         self.derivedConfig = DerivedConfig(ghostty.config)
         self.workspaceStore = graph.store
-        self.restorationPublicationDeferred = deferredPublication
 
         super.init(window: nil)
 
@@ -241,13 +220,9 @@ class BaseTerminalController: NSWindowController,
         // Register initial surfaces, then install the pre-commit hook so every
         // subsequent structural transaction replaces the registry index before
         // the store publishes its new snapshot.
-        if !deferredPublication {
-            syncRegistryToSnapshot()
-            self.workspaceStore.willCommit = { [weak self] workspaces, _ in
-                self?.replaceRegistryIndex(for: workspaces)
-                (self as? TerminalController)?
-                    .refreshRestorationEnrollment(for: workspaces)
-            }
+        syncRegistryToSnapshot()
+        self.workspaceStore.willCommit = { [weak self] workspaces, _ in
+            self?.replaceRegistryIndex(for: workspaces)
         }
 
         // Subscribe every session to its own surface metadata, and re-subscribe
@@ -256,24 +231,11 @@ class BaseTerminalController: NSWindowController,
         rebuildSessionMetadataSubscriptions()
         sessionRosterCancellable = self.workspaceStore.$snapshot
             .sink { [weak self] _ in
-                guard let self else { return }
-                self.rebuildSessionMetadataSubscriptions()
-
-                // Any structural or selection change alters what would be
-                // persisted, so tell AppKit the saved state is stale. Without
-                // this, adding or switching a workspace/tab never triggers a
-                // re-save and a relaunch restores whatever the last split
-                // change happened to leave behind.
-                if !self.restorationPublicationDeferred {
-                    self.schedulePersistedProjectionComparison()
-                }
+                self?.rebuildSessionMetadataSubscriptions()
             }
 
         // Setup our bell state for the window
         setupBellNotificationPublisher()
-        if !deferredPublication {
-            activatePersistedProjectionTracking()
-        }
 
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -350,129 +312,6 @@ class BaseTerminalController: NSWindowController,
         self.eventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .keyDown]
         ) { [weak self] event in self?.localEventHandler(event) }
-    }
-
-    /// Seeds restoration hydration and new-controller state without requesting an AppKit write.
-    func seedPersistedProjectionBaseline() {
-        do {
-            persistedProjectionTracker.seed(try persistedProjection())
-            persistedProjectionFailureOutstanding = false
-        } catch {
-            persistedProjectionFailureOutstanding = true
-            invalidateRestorableState()
-        }
-    }
-
-    private func activatePersistedProjectionTracking() {
-        guard self is TerminalController else { return }
-        persistedProjectionCancellable = filesPanelController?.persistedProjection
-            .sink { [weak self] _ in
-                self?.schedulePersistedProjectionComparison()
-            }
-        seedPersistedProjectionBaseline()
-    }
-
-    /// Coalesces all projected-source changes onto the next main-run-loop turn.
-    func schedulePersistedProjectionComparison(resetRetryBudget: Bool = true) {
-        guard !restorationPublicationDeferred else { return }
-        pendingPersistedFlushResetsRetryBudget = pendingPersistedFlushResetsRetryBudget || resetRetryBudget
-        guard !persistedFlushScheduled else { return }
-        persistedFlushScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.persistedFlushScheduled = false
-            let resetRetryBudget = self.pendingPersistedFlushResetsRetryBudget
-            self.pendingPersistedFlushResetsRetryBudget = false
-            do {
-                let projection = try self.persistedProjection()
-                self.persistedProjectionFailureOutstanding = false
-                if self.persistedProjectionTracker.observe(
-                    projection,
-                    resetRetryBudget: resetRetryBudget
-                ) {
-                    self.invalidateRestorableState()
-                }
-            } catch {
-                guard !self.persistedProjectionFailureOutstanding else { return }
-                self.persistedProjectionFailureOutstanding = true
-                self.invalidateRestorableState()
-            }
-        }
-    }
-
-    /// Call from the window encoder only after its captured projection was accepted by NSCoder.
-    func coderAcceptedPersistedProjection(_ projection: TerminalPersistedProjection) {
-        if persistedProjectionTracker.acceptedByCoder(projection) {
-            schedulePersistedProjectionComparison()
-        }
-    }
-
-    /// Call from the window encoder if NSCoder rejects the captured projection.
-    func coderFailedPersistedProjection() {
-        if persistedProjectionTracker.failedByCoder() {
-            schedulePersistedProjectionComparison(resetRetryBudget: false)
-        }
-    }
-
-    private func persistedProjection() throws -> TerminalPersistedProjection {
-        guard let terminal = self as? TerminalController else {
-            throw RestoreEncodingFailure.projection
-        }
-        return try TerminalRestoreProjection.makeWire(from: terminal)
-    }
-
-    /// Publishes a fully staged restoration graph exactly once.
-    func commitDeferredRestorationPublication() throws {
-        guard restorationPublicationDeferred else { throw RestoreMaterializationFailure.publication }
-        guard let terminal = self as? TerminalController else {
-            throw RestoreMaterializationFailure.publication
-        }
-        do {
-            try terminal.enableRestorationEnrollment()
-            try registerCommittedOrdinaryController()
-            try syncRegistryToSnapshotVerified()
-        } catch {
-            terminal.disableRestorationEnrollment()
-            (NSApp.delegate as? AppDelegate)?.ordinaryWindowSaveRegistry.remove(terminal)
-            throw error
-        }
-        workspaceStore.willCommit = { [weak self] workspaces, _ in
-            self?.replaceRegistryIndex(for: workspaces)
-            (self as? TerminalController)?
-                .refreshRestorationEnrollment(for: workspaces)
-        }
-        restorationPublicationDeferred = false
-        terminal.activateStagedFilesPanel()
-        activatePersistedProjectionTracking()
-    }
-
-    @discardableResult
-    func rollbackDeferredRestorationPublication() -> Bool {
-        restorationPublicationDeferred = true
-        workspaceStore.willCommit = nil
-        let controllerID = ObjectIdentifier(self)
-        let surfaceIDs = allWorkspaceSurfaces.map(\.id)
-        var ownerIndexClean = true
-        if let registry = (NSApp.delegate as? AppDelegate)?.surfaceOwners {
-            registry.unregister(controllerID)
-            ownerIndexClean = surfaceIDs.allSatisfy {
-                registry.location(forSurfaceID: $0)?.controllerID != controllerID
-            }
-        }
-        if let terminal = self as? TerminalController {
-            terminal.disableRestorationEnrollment()
-            (NSApp.delegate as? AppDelegate)?.ordinaryWindowSaveRegistry.remove(terminal)
-        }
-        return ownerIndexClean
-    }
-
-    /// The registry contains every committed ordinary controller, including ordered-out windows.
-    func registerCommittedOrdinaryController() throws {
-        guard let terminal = self as? TerminalController else { return }
-        guard let appDelegate = NSApp.delegate as? AppDelegate else {
-            throw RestoreMaterializationFailure.publication
-        }
-        try appDelegate.ordinaryWindowSaveRegistry.register(terminal)
     }
 
     /// Convenience initializer that builds the graph via
@@ -612,37 +451,6 @@ class BaseTerminalController: NSWindowController,
     /// directly rather than through a structural candidate.
     func syncRegistryToSnapshot() {
         replaceRegistryIndex(for: workspaceStore.snapshot.workspaces)
-    }
-
-    private func syncRegistryToSnapshotVerified() throws {
-        guard let registry = (NSApp.delegate as? AppDelegate)?.surfaceOwners else {
-            throw RestoreMaterializationFailure.publication
-        }
-        let controllerID = ObjectIdentifier(self)
-        let locations = workspaceStore.snapshot.workspaces.flatMap { workspace in
-            workspace.tabs.flatMap { session in
-                session.surfaceTree.map {
-                    SurfaceOwnerLocation(
-                        controllerID: controllerID,
-                        workspaceID: workspace.id,
-                        tabID: session.id,
-                        surfaceID: $0.id)
-                }
-            }
-        }
-        for location in locations {
-            if let existing = registry.location(forSurfaceID: location.surfaceID),
-               existing.controllerID != controllerID {
-                throw RestoreMaterializationFailure.publication
-            }
-        }
-        registry.replaceIndex(for: controllerID, locations: locations)
-        guard locations.allSatisfy({
-            registry.location(forSurfaceID: $0.surfaceID) == $0
-        }) else {
-            registry.unregister(controllerID)
-            throw RestoreMaterializationFailure.publication
-        }
     }
 
     /// Every live surface across every virtual tab in this physical window.
@@ -1380,8 +1188,8 @@ class BaseTerminalController: NSWindowController,
             // presented. During a tab switch this runs while `focusedSurface`
             // still points at the OUTGOING tab's surface, so an unconditional
             // write would stamp a foreign surface ID onto the incoming
-            // session — destroying its remembered pane before
-            // `selectSession` reads it back.
+            // session — destroying its remembered pane (and any focus restored
+            // from v8 state) before `selectSession` reads it back.
             if let focusedID = focusedSurface?.id,
                to.contains(where: { $0.id == focusedID }) {
                 session.focusedSurfaceID = focusedID
@@ -1390,7 +1198,6 @@ class BaseTerminalController: NSWindowController,
         syncRegistryToSnapshot()
 
         syncSurfaceTreeOcclusionState()
-        schedulePersistedProjectionComparison()
     }
 
     /// Update all surfaces with the focus state. This ensures that libghostty has an accurate view about
@@ -2021,14 +1828,10 @@ class BaseTerminalController: NSWindowController,
                     guard let self, let session else { return }
                     session.title = self.computeTitle(title: title, bell: bell)
                     session.bell = bell
-                    self.schedulePersistedProjectionComparison()
                 }
                 .store(in: &set)
             surface.$pwd
-                .sink { [weak self, weak session] pwd in
-                    session?.pwd = pwd
-                    self?.schedulePersistedProjectionComparison()
-                }
+                .sink { [weak session] pwd in session?.pwd = pwd }
                 .store(in: &set)
             sessionMetadataCancellables[session.id] = set
         }
@@ -2307,9 +2110,6 @@ class BaseTerminalController: NSWindowController,
 
         // Always resync our appearance
         syncAppearance()
-
-        // Fullscreen state is settled only after the style callback.
-        schedulePersistedProjectionComparison()
     }
 
     // MARK: Workspace Controls

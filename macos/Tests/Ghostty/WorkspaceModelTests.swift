@@ -28,7 +28,6 @@ struct TerminalSessionStateTests {
         #expect(state.progress == nil)
         #expect(state.tabColor == nil)
         #expect(state.titleOverride == nil)
-        #expect(state.isRestorationEligible == false)
         #expect(state.isTornDown == false)
         #expect(state.metadataGeneration == 0)
     }
@@ -94,7 +93,6 @@ struct TerminalSessionStateTests {
         #expect(state.progress == 42)
         #expect(state.tabColor == "#ff0000")
         #expect(state.titleOverride == "Custom")
-        #expect(state.isRestorationEligible == false)
         #expect(state.focusedSurfaceID != nil)
         #expect(state.rememberedSurfaceID != nil)
     }

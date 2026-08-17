@@ -11,33 +11,23 @@ import GhosttyKit
 /// `presentedSessionID`/`presentedMountGeneration` bookkeeping — without a
 /// run loop or a spawned process.
 ///
-/// Construction is NOT window-free: `BaseTerminalController.init` mounts the
-/// initial `surfaceTree`, whose `didSet` walks into window-facing code that
-/// reaches `self.window`,
+/// Construction is NOT window-free, despite what this doc previously
+/// claimed: `BaseTerminalController.init` mounts the initial `surfaceTree`,
+/// whose `didSet` walks into window-facing code that reaches `self.window`,
 /// and `TerminalController.windowNibName` is non-nil by default. That
 /// combination calls `loadWindow()` and instantiates a REAL `TerminalWindow`
 /// backed by the "Terminal" nib, which then registers itself in
 /// `NSApp.windows` -> `TerminalController.all` -> `preferredParent`. Left
 /// alone across many tests in the same process, those windows accumulate.
 ///
-/// The windows themselves are cheap. What is not cheap is a live
-/// `Ghostty.SurfaceView` under one: it owns a real PTY plus a renderer thread
-/// and three IO threads, and around forty of them starve the test host's main
-/// run loop. So a test that only needs the object graph must build its views
-/// with `Ghostty.SurfaceView(app, baseConfig:, spawnsSurface: false)`, which
-/// never asks libghostty for a surface. Only a test that genuinely exercises
-/// a terminal creates a real one, and it closes that surface itself.
-///
-/// The harness offers no teardown helper because a live surface cannot be
-/// released after the fact: `DetachedUndoLease` and `ClosedTabHistory` keep
-/// owning detached surfaces, so closing the window, freeing the surface, or
-/// dropping the last reference all reach freed state from the undo/redo paths
-/// and take the test host down. Releasing one would require those two types
-/// to own surface lifetime explicitly first.
-///
-/// A test must not depend on `TerminalController.all` or `preferredParent`
-/// being empty, since controllers from earlier tests are still in there.
-/// Resolve explicitly against the controller the harness returned instead.
+/// The harness deliberately does NOT close them. `NSWindow.close()` drives
+/// `windowWillClose`, which unregisters the controller and tears its sessions
+/// down — and a prior test's controller is often still held and asserted
+/// against, so closing here crashed the whole test host mid-suite. The
+/// accumulation is inert by comparison; what it costs is that a test must not
+/// depend on `TerminalController.all` or `preferredParent` being empty, since
+/// controllers from earlier tests are still in there. Resolve explicitly
+/// against the controller the harness returned instead.
 ///
 /// This is what lets tests assert what is actually PRESENTED on the
 /// controller rather than only the store's desired selection.
@@ -58,24 +48,16 @@ enum TerminalControllerTestHarness {
     /// Returns `nil` under the same conditions `makeFromWorkspaces` does: an
     /// empty `workspaces` array, or a selection that cannot be resolved to
     /// any tab in any workspace.
-    /// `restoredPhysicalUUID` mirrors what `TerminalWindowRestoration`
-    /// passes when rehydrating a saved window; nil builds a genuinely new
-    /// one.
     @MainActor
     static func make(
         workspaces: [WorkspaceSession],
-        selection: Selection,
-        restoredPhysicalUUID: UUID? = nil
+        selection: Selection
     ) -> TerminalController? {
         guard let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
             workspaces,
             selection: selection
         ) else { return nil }
 
-        return TerminalController(
-            sharedApp,
-            graph: graph,
-            restoredPhysicalUUID: restoredPhysicalUUID)
+        return TerminalController(sharedApp, graph: graph)
     }
-
 }

@@ -13,13 +13,6 @@ final class FilesPanelController: ObservableObject {
             refreshRoot()
         }
     }
-    /// Persisted-only stream: current root, reader state, and auto-collapse never appear here.
-    var persistedProjection: AnyPublisher<FilesPanelPresentationState.Persisted, Never> {
-        $presentation
-            .map(\.persisted)
-            .removeDuplicates()
-            .eraseToAnyPublisher()
-    }
 
     let treeViewModel: FilesPanelTreeViewModel
     let readerBudget: FilesPanelReaderMemoryBudget
