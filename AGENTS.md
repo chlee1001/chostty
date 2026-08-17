@@ -92,7 +92,7 @@ SwiftUI owns content (`TerminalView`, `SidebarView`, `SplitView`), hosted via
 | `src/build/` | `Config.zig` defines every `-D` flag; artifact constructors |
 | `src/lib/`, `src/datastruct/` | ABI helpers for C bindings; queues/caches/split trees |
 | `macos/Sources/Features/Workspace/` | Fork core: store, session state, surface-owner registry, undo leases, reserved shortcuts |
-| `macos/Sources/Features/Terminal/` | Window controllers, SwiftUI composition, restoration, window styles |
+| `macos/Sources/Features/Terminal/` | Window controllers, SwiftUI composition, window styles |
 | `macos/Sources/Features/Sidebar/` | Workspace/tab tree, workspace controls, `VirtualTabBar` |
 | `macos/Sources/Features/FilesPanel/` | Right-side file tree; `Reader/` = per-tab read-only document tabs |
 | `macos/Sources/Ghostty/` | Swift wrappers over GhosttyKit C types; `Surface View/` = AppKit pane |
@@ -323,7 +323,7 @@ resource exhaustion as the concurrent-suite crash above, reached serially.
 `Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)`: the object graph is
 identical and no PTY, renderer thread or IO thread is created. That is the only lever, since
 a live surface cannot be released afterwards (see the `TerminalControllerTestHarness` doc).
-Reserve real surfaces for tests that genuinely need one — restoration — and close them
+Reserve real surfaces for the few tests that genuinely drive a terminal, and close them
 explicitly there.
 
 Run the suite as `-only-testing:` batches of a few suites each, serially, with an execution
