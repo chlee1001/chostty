@@ -653,6 +653,10 @@ extension Ghostty {
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
+        /// Creation behavior applied by libghostty. Normal callers retain the
+        /// normal mode; cold restoration selects its dedicated safe mode.
+        var creationMode: ghostty_surface_creation_mode_t = GHOSTTY_SURFACE_CREATION_NORMAL
+
         init() {}
 
         init(from config: ghostty_surface_config_s) {
@@ -675,6 +679,7 @@ extension Ghostty {
                 }
             }
             self.context = config.context
+            self.creationMode = config.creation_mode
         }
 
         /// Provides a C-compatible ghostty configuration within a closure. The configuration
@@ -710,6 +715,7 @@ extension Ghostty {
 
             // Set context
             config.context = context
+            config.creation_mode = creationMode
 
             // Use withCString to ensure strings remain valid for the duration of the closure
             return try workingDirectory.withCString { cWorkingDir in

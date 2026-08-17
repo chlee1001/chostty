@@ -1,4 +1,5 @@
 import Foundation
+import GhosttyKit
 import Testing
 @testable import Ghostty
 
@@ -79,37 +80,52 @@ struct RestoredWindowIdentityTests {
         #expect(fresh.physicalUUID != restored.physicalUUID)
     }
 
-    // MARK: - The restore seam itself
+    // MARK: - Surface runtime and persisted identities
 
-    /// The invalid-hierarchy fallback in `restoreWindow` builds a plain
-    /// controller and must NOT receive the persisted id: that window is a
-    /// fresh workspace, not the one that failed to restore, so adopting the
-    /// saved id would hand scripts a window with different contents under the
-    /// id they saved.
-    ///
-    /// Source-pinned because driving `NSWindowRestoration` needs a real
-    /// restoration cycle this test host cannot run. Comments are stripped and
-    /// whitespace normalized so this matches code, not prose.
-    @Test func onlyTheHierarchyPathConsumesThePersistedIdentity() {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // .../macos/Tests/Ghostty
-            .deletingLastPathComponent() // .../macos/Tests
-            .deletingLastPathComponent() // .../macos
-            .appendingPathComponent("Sources/Features/Terminal/TerminalRestorable.swift")
-        let raw = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        #expect(!raw.isEmpty)
-        // `normalize` strips `//` but not `/* */`, so a block comment here
-        // would silently weaken the assertions below.
-        #expect(!raw.contains("/*"))
+    @Test func newSurfacesMintDistinctRuntimeAndLogicalIdentities() {
+        let first = Ghostty.OSSurfaceView(frame: .zero)
+        let second = Ghostty.OSSurfaceView(frame: .zero)
 
-        let source = VirtualTabBarScrollTests.normalize(raw)
+        #expect(first.id != second.id)
+        #expect(first.logicalPaneID != second.logicalPaneID)
+    }
 
-        // The hierarchy path threads it through...
-        #expect(source.contains("restoredPhysicalUUID: state.physicalID"))
-        // ...the fallback builds a bare controller...
-        #expect(source.contains("c = TerminalController(appDelegate.ghostty)"))
-        // ...and exactly one site consumes the persisted id.
-        let uses = source.components(separatedBy: "restoredPhysicalUUID: state.physicalID").count - 1
-        #expect(uses == 1)
+    @Test func restoredLogicalPaneIdentityNeverControlsRuntimeIdentity() {
+        let logicalPaneID = UUID()
+        let first = Ghostty.OSSurfaceView(logicalPaneID: logicalPaneID, frame: .zero)
+        let second = Ghostty.OSSurfaceView(logicalPaneID: logicalPaneID, frame: .zero)
+
+        #expect(first.logicalPaneID == logicalPaneID)
+        #expect(second.logicalPaneID == logicalPaneID)
+        #expect(first.id != logicalPaneID)
+        #expect(second.id != logicalPaneID)
+        #expect(first.id != second.id)
+    }
+
+    @Test func quickTerminalCodableKeepsItsEstablishedArchiveKey() {
+        #expect(Ghostty.SurfaceView.CodingKeys.logicalPaneID.rawValue == "uuid")
+    }
+
+    @Test func coldRestoreEligibilityRequiresNoEffectiveLaunchIntent() {
+        #expect(Ghostty.SurfaceView.acceptsColdRestore(.init(cValue: .init(
+            has_command: false,
+            has_environment_overrides: false,
+            has_initial_input: false
+        ))))
+        #expect(!Ghostty.SurfaceView.acceptsColdRestore(.init(cValue: .init(
+            has_command: true,
+            has_environment_overrides: false,
+            has_initial_input: false
+        ))))
+        #expect(!Ghostty.SurfaceView.acceptsColdRestore(.init(cValue: .init(
+            has_command: false,
+            has_environment_overrides: true,
+            has_initial_input: false
+        ))))
+        #expect(!Ghostty.SurfaceView.acceptsColdRestore(.init(cValue: .init(
+            has_command: false,
+            has_environment_overrides: false,
+            has_initial_input: true
+        ))))
     }
 }

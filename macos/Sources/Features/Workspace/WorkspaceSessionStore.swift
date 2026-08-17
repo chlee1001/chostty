@@ -54,12 +54,10 @@ struct TabProjection: Hashable, Identifiable {
 /// Carry-forward warning: the bare memberwise initializer resets every field
 /// to its default, so any rebuild site that constructs a `WorkspaceProjection`
 /// from an existing one MUST thread every field forward explicitly (or via
-/// `with(...)`). The four rebuild sites are: `WorkspaceSessionStore.commit(_:)`
-/// (session rebuild), the static `project(_ ws:)` projector,
-/// `TerminalRestorableState+InteralState`'s v8 encode/decode, and
-/// `TerminalController.makeRestoredV8` (plus the restore constructions it
-/// feeds). Only `addWorkspace` may use the bare initializer, because it is the
-/// one site that genuinely creates a brand-new workspace with no prior state.
+/// `with(...)`). Existing-workspace rebuilds include
+/// `WorkspaceSessionStore.commit(_:)` and the static `project(_:)` projector.
+/// Only `addWorkspace` may use the bare initializer, because it is the one
+/// site that genuinely creates a brand-new workspace with no prior state.
 /// `insertWorkspace` restores a workspace that ALREADY existed and therefore
 /// takes the presentation fields as parameters — treating it as "brand-new"
 /// is what silently reset directory/color/collapse on Close Workspace + Cmd+Z.
@@ -249,7 +247,7 @@ final class WorkspaceSessionStore: ObservableObject {
         )
     }
 
-    /// Creates a store from a fully-formed v8 restored hierarchy.
+    /// Creates a store from a fully formed hierarchy.
     ///
     /// `workspaces` must be non-empty and every workspace must have at least
     /// one tab; the caller (restoration) validates this before constructing.
@@ -425,7 +423,7 @@ final class WorkspaceSessionStore: ObservableObject {
     /// copy stale, which surfaces as: the wrong sidebar row highlighted, the
     /// presented tab's title/pwd written onto a different session (because
     /// `selectedSession` resolves through `selectedTabID`), the wrong tab
-    /// restored on workspace re-entry, and the wrong tab persisted to v8.
+    /// restored on workspace re-entry, and the wrong tab persisted.
     ///
     /// Every selection change goes through here so the two cannot drift.
     func candidateSelecting(

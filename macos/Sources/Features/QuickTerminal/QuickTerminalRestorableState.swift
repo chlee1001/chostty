@@ -41,6 +41,7 @@ extension QuickTerminalRestorableState {
     /// we use an internal type to perform migration and tests
     struct InternalState<ViewType: NSView & Codable & Identifiable>: Codable {
         // MARK: - Version 1 (1.3.0)
+        /// Persisted logical-pane UUID. The established v1 wire key remains `focusedSurface`.
         let focusedSurface: String?
         let surfaceTree: SplitTree<ViewType>
         let screenStateEntries: QuickTerminalScreenStateCache.Entries
@@ -50,7 +51,7 @@ extension QuickTerminalRestorableState {
 extension QuickTerminalRestorableState.InternalState where ViewType == Ghostty.SurfaceView {
     init(from controller: QuickTerminalController) {
         self.init(
-            focusedSurface: controller.focusedSurface?.id.uuidString,
+            focusedSurface: controller.focusedSurface?.logicalPaneID.uuidString,
             surfaceTree: controller.surfaceTree,
             screenStateEntries: controller.screenStateCache.stateByDisplay,
         )

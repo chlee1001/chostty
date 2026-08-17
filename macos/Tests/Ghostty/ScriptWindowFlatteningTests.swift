@@ -21,7 +21,7 @@ struct ScriptWindowFlatteningTests {
     private func makeSession() -> TerminalSessionState {
         let tree: SplitTree<Ghostty.SurfaceView>
         if let app = TerminalControllerTestHarness.sharedApp.app {
-            tree = SplitTree(view: Ghostty.SurfaceView(app, baseConfig: nil))
+            tree = SplitTree(view: Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false))
         } else {
             tree = SplitTree<Ghostty.SurfaceView>()
         }

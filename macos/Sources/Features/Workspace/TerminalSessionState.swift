@@ -7,7 +7,7 @@ import GhosttyKit
 ///
 /// `TerminalSessionState` owns only tab/session state: the stable tab UUID,
 /// the split tree of surfaces, focused/remembered surface UUIDs, title/PWD/bell/progress/
-/// color/config/restorability, telemetry subscriptions, a metadata generation counter, and
+/// color/config, telemetry subscriptions, a metadata generation counter, and
 /// an idempotent teardown. It deliberately does **not** retain a controller or window, and
 /// does not own palette, sheets, fullscreen, window frame/appearance, or the undo manager.
 ///
@@ -58,8 +58,13 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     /// A user-supplied title override; takes precedence over `title`.
     @Published var titleOverride: String?
 
-    /// Whether this session should participate in window restoration.
-    @Published var isRestorable: Bool
+    /// Whether every pane has the effective default-shell launch intent
+    /// required for ordinary restoration.
+    var isRestorationEligible: Bool {
+        !surfaceTree.isEmpty && surfaceTree.allSatisfy {
+            $0.effectiveLaunchIntent?.isDefaultShell == true
+        }
+    }
     let readerStore = TerminalReaderStore()
 
     // MARK: - Telemetry / lifecycle
@@ -98,7 +103,6 @@ final class TerminalSessionState: ObservableObject, Identifiable {
         self.progress = nil
         self.tabColor = nil
         self.titleOverride = nil
-        self.isRestorable = true
     }
 
 

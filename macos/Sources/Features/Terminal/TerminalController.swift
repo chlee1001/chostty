@@ -47,7 +47,7 @@ enum TerminalControllerGraphFactory {
     }
 
     /// Creates an ordinary graph that adopts an already-built surface tree
-    /// (e.g. for a dragged-split new window or a v8 restoration).
+    /// (e.g. for a dragged-split new window).
     static func makeFromTree(
         ghostty: Ghostty.App,
         tree: SplitTree<Ghostty.SurfaceView>
@@ -63,120 +63,12 @@ enum TerminalControllerGraphFactory {
         makeFromExistingTree(tree: SplitTree<Ghostty.SurfaceView>(), focusedSurface: nil)
     }
 
-    /// Creates an ordinary graph from a validated v8 restored hierarchy.
-    ///
-    /// Returns `nil` when the persisted hierarchy is structurally invalid
-    /// (no workspaces, an empty workspace, or a selection that does not
-    /// reference a live tab). The caller then falls back to a fresh 1×1 graph
-    /// rather than materializing a partial hierarchy.
-    static func makeRestoredV8(
-        workspaces persisted: [TerminalRestorableState.WorkspaceState<Ghostty.SurfaceView>],
-        selectedWorkspaceID: UUID?,
-        selectedTabID: UUID?
-    ) -> InitialGraph? {
-        guard !persisted.isEmpty else { return nil }
-
-        // Reject duplicate identifiers before constructing anything.
-        //
-        // Tab and workspace UUIDs key the store's live-session map and the
-        // owner registry, so a duplicate silently collapses two tabs into one.
-        // A duplicate *surface* UUID is worse: `Ghostty.SurfaceView`'s decoder
-        // spawns a live PTY, so a repeated surface ID materializes two live
-        // views sharing one identity — exactly the state the registry and the
-        // store's surface index cannot represent.
-        var seenWorkspaceIDs = Set<UUID>()
-        var seenTabIDs = Set<UUID>()
-        var seenSurfaceIDs = Set<UUID>()
-        for ws in persisted {
-            guard seenWorkspaceIDs.insert(ws.id).inserted else { return nil }
-            for tab in ws.tabs {
-                guard seenTabIDs.insert(tab.id).inserted else { return nil }
-                for surface in tab.surfaceTree {
-                    guard seenSurfaceIDs.insert(surface.id).inserted else { return nil }
-                }
-            }
-        }
-        var sessions: [WorkspaceSession] = []
-        for ws in persisted {
-            guard !ws.tabs.isEmpty else { return nil }
-            var tabs: [TerminalSessionState] = []
-            for tab in ws.tabs {
-                let session = TerminalSessionState(id: tab.id, surfaceTree: tab.surfaceTree)
-                session.title = tab.title
-                session.pwd = tab.pwd
-                session.tabColor = tab.tabColor
-                session.titleOverride = tab.titleOverride
-                session.isRestorable = tab.isRestorable
-                if let focusedStr = tab.focusedSurfaceID {
-                    session.focusedSurfaceID = UUID(uuidString: focusedStr)
-                }
-                tabs.append(session)
-            }
-            // Drop a persisted per-workspace selection that names a tab which
-            // is not in this workspace.
-            let persistedSelected = ws.selectedTabID.flatMap { id in
-                tabs.contains(where: { $0.id == id }) ? id : nil
-            }
-            sessions.append(WorkspaceSession(
-                id: ws.id,
-                name: ws.name,
-                tabs: tabs,
-                selectedTabID: persistedSelected ?? tabs.first?.id,
-                color: ws.color ?? .none,
-                isCollapsed: ws.isCollapsed ?? false,
-                defaultDirectory: ws.defaultDirectory
-            ))
-        }
-
-        // Resolve selection, falling back to the first workspace/tab.
-        let wsID = selectedWorkspaceID.flatMap { id in
-            sessions.contains(where: { $0.id == id }) ? id : nil
-        } ?? sessions[0].id
-        guard let wsIndex = sessions.firstIndex(where: { $0.id == wsID }) else { return nil }
-        let tabID = selectedTabID.flatMap { id in
-            sessions[wsIndex].tabs.contains(where: { $0.id == id }) ? id : nil
-        } ?? sessions[wsIndex].tabs[0].id
-        guard let selectedSession = sessions[wsIndex].tabs.first(where: { $0.id == tabID }) else {
-            return nil
-        }
-
-        // The store enforces "global selection agrees with the selected
-        // workspace's selectedTabID" in `validate`, but a restored snapshot is
-        // installed directly. Reconcile here so a stale archive cannot seed a
-        // state in which every later commit silently fails validation.
-        sessions[wsIndex] = WorkspaceSession(
-            id: sessions[wsIndex].id,
-            name: sessions[wsIndex].name,
-            tabs: sessions[wsIndex].tabs,
-            selectedTabID: tabID,
-            color: sessions[wsIndex].color,
-            isCollapsed: sessions[wsIndex].isCollapsed,
-            defaultDirectory: sessions[wsIndex].defaultDirectory
-        )
-
-        let store = WorkspaceSessionStore(
-            restoredWorkspaces: sessions,
-            selection: Selection(workspaceID: wsID, tabID: tabID)
-        )
-
-        let focused = selectedSession.surfaceTree.first(where: {
-            $0.id == selectedSession.focusedSurfaceID
-        }) ?? selectedSession.surfaceTree.first
-
-        return InitialGraph(
-            store: store,
-            initialSession: selectedSession,
-            initialSurfaceTree: selectedSession.surfaceTree,
-            focusedSurface: focused
-        )
-    }
 
     /// Rebuilds a graph from an already-live hierarchy.
     ///
     /// Used by window-close undo, where the sessions and their surfaces are
-    /// still alive and simply need a new controller to own them. Unlike
-    /// `makeRestoredV8` nothing is decoded and no surface is created, so no
-    /// process is spawned.
+    /// still alive and simply need a new controller to own them. Nothing is
+    /// decoded and no surface is created, so no process is spawned.
     static func makeFromWorkspaces(
         _ workspaces: [WorkspaceSession],
         selection: Selection
@@ -254,34 +146,60 @@ class TerminalController: BaseTerminalController {
     /// re-showing a tab that was already closed.
     private var pendingInitialPresentation: DispatchWorkItem?
 
-    /// This is set to false by init if the window managed by this controller should not be restorable.
-    /// For example, terminals executing custom scripts are not restorable.
-    private var restorable: Bool = true
-
     /// The configuration derived from the Ghostty config so we don't need to rely on references.
     private(set) var derivedConfig: DerivedConfig
 
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
     private lazy var ownedFilesPanelController: FilesPanelController = {
+        filesPanelWasActivated = true
         let broker = (NSApp.delegate as? AppDelegate)?.filesPanelWatchBroker ?? FilesPanelWatchBroker()
         let controller = FilesPanelController(watchBroker: broker)
         controller.attach(to: self)
         return controller
     }()
+    private var filesPanelWasActivated = false
+    private var stagedFilesPanelPersistence:
+        FilesPanelPresentationState.Persisted?
 
     override var filesPanelController: FilesPanelController? { ownedFilesPanelController }
 
-    /// Designated initializer that adopts an already-built normalized graph.
-    /// Used by v8 restoration to mount a full multi-workspace hierarchy.
-    init(_ ghostty: Ghostty.App,
-         graph: TerminalControllerGraphFactory.InitialGraph,
-         restorable: Bool = true,
-         restoredPhysicalUUID: UUID? = nil
+    func stageFilesPanel(
+        _ persistence: FilesPanelPresentationState.Persisted
     ) {
-        self.restorable = restorable
+        stagedFilesPanelPersistence = persistence
+    }
+
+    func activateStagedFilesPanel() {
+        if let persistence = stagedFilesPanelPersistence {
+            ownedFilesPanelController.hydrate(from: persistence)
+            stagedFilesPanelPersistence = nil
+        }
+        installWorkspaceControls()
+    }
+
+    private func installWorkspaceControls() {
+        guard let terminalWindow = window as? TerminalWindow else { return }
+        terminalWindow.installWorkspaceControls(WorkspaceControls(
+            store: workspaceStore,
+            onNewWorkspace: { [weak self] in
+                self?.performWorkspaceControlsCommand(.newWorkspace)
+            },
+            onReopenClosedTab: { [weak self] in
+                self?.performWorkspaceControlsCommand(.reopenClosedTab)
+            },
+            filesPanelController: filesPanelController))
+    }
+
+    /// Designated initializer that adopts an already-built normalized graph.
+    /// Used by validated cold restoration to mount a full hierarchy.
+    override init(_ ghostty: Ghostty.App,
+         graph: TerminalControllerGraphFactory.InitialGraph,
+         restoredPhysicalUUID: UUID? = nil,
+         deferredPublication: Bool = false
+    ) {
         self.derivedConfig = DerivedConfig(ghostty.config)
-        super.init(ghostty, graph: graph, restoredPhysicalUUID: restoredPhysicalUUID)
+        super.init(ghostty, graph: graph, restoredPhysicalUUID: restoredPhysicalUUID, deferredPublication: deferredPublication)
         registerCommonObservers(NotificationCenter.default)
     }
 
@@ -290,13 +208,6 @@ class TerminalController: BaseTerminalController {
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
          parent: NSWindow? = nil
     ) {
-        // The window we manage is not restorable if we've specified a command
-        // to execute. We do this because the restored window is meaningless at the
-        // time of writing this: it'd just restore to a shell in the same directory
-        // as the script. We may want to revisit this behavior when we have scrollback
-        // restoration.
-        self.restorable = (base?.command ?? "") == ""
-
         // Setup our initial derived config based on the current app config
         self.derivedConfig = DerivedConfig(ghostty.config)
 
@@ -315,8 +226,8 @@ class TerminalController: BaseTerminalController {
     }
 
     /// Registers the notification observers shared by every ordinary controller
-    /// initializer. Extracted so the graph-injecting v8 restoration initializer
-    /// and the ordinary initializer register exactly the same set.
+    /// initializer. Extracted so graph-injecting restoration and ordinary
+    /// initialization register exactly the same set.
     private func registerCommonObservers(_ center: NotificationCenter) {
         center.addObserver(
             self,
@@ -368,6 +279,52 @@ class TerminalController: BaseTerminalController {
         )
     }
 
+    func enableRestorationEnrollment() throws {
+        guard let window else { throw RestoreMaterializationFailure.publication }
+        let eligible = workspaceStore.snapshot.workspaces.contains {
+            $0.tabs.contains(where: \.isRestorationEligible)
+        }
+        guard eligible else {
+            disableRestorationEnrollment()
+            throw RestoreMaterializationFailure.publication
+        }
+        window.isRestorable = true
+        window.restorationClass = TerminalWindowRestoration.self
+        window.identifier = .init(String(describing: TerminalWindowRestoration.self))
+        guard window.isRestorable,
+              window.restorationClass === TerminalWindowRestoration.self,
+              window.identifier == .init(String(describing: TerminalWindowRestoration.self))
+        else {
+            throw RestoreMaterializationFailure.publication
+        }
+    }
+
+    func disableRestorationEnrollment() {
+        window?.isRestorable = false
+        window?.restorationClass = nil
+        window?.identifier = nil
+    }
+
+    func refreshRestorationEnrollment(
+        for workspaces: [WorkspaceSession]? = nil
+    ) {
+        guard !restorationPublicationDeferred, let window else {
+            disableRestorationEnrollment()
+            return
+        }
+        let eligible = (workspaces ?? workspaceStore.snapshot.workspaces)
+            .contains { workspace in
+                workspace.tabs.contains(where: \.isRestorationEligible)
+            }
+        guard eligible else {
+            disableRestorationEnrollment()
+            return
+        }
+        window.isRestorable = true
+        window.restorationClass = TerminalWindowRestoration.self
+        window.identifier = .init(String(describing: TerminalWindowRestoration.self))
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported for this view")
     }
@@ -406,7 +363,7 @@ class TerminalController: BaseTerminalController {
 
         // Whenever our surface tree changes in any way (new split, close split, etc.)
         // we want to invalidate our state.
-        invalidateRestorableState()
+        schedulePersistedProjectionComparison()
 
         // Update our zoom state
         if let window = window as? TerminalWindow {
@@ -445,7 +402,7 @@ class TerminalController: BaseTerminalController {
     static var all: [TerminalController] {
         return NSApplication.shared.windows.compactMap {
             $0.windowController as? TerminalController
-        }
+        }.filter { !$0.restorationPublicationDeferred }
     }
 
     // Keep track of the last point that our window was launched at so that new
@@ -926,12 +883,8 @@ class TerminalController: BaseTerminalController {
         // use whatever the latest app-level config is.
         let config = ghostty.config
 
-        // Setting all three of these is required for restoration to work.
-        window.isRestorable = restorable
-        if restorable {
-            window.restorationClass = TerminalWindowRestoration.self
-            window.identifier = .init(String(describing: TerminalWindowRestoration.self))
-        }
+        // AppKit enrollment is derived from final core launch intent.
+        refreshRestorationEnrollment()
 
         // If we have only a single surface (no splits) and there is a default size then
         // we should resize to that default size.
@@ -957,16 +910,8 @@ class TerminalController: BaseTerminalController {
         // Workspace controls next to the traffic lights. Installed from here,
         // not `TerminalWindow.awakeFromNib`, because the view needs this
         // controller's workspace store.
-        if let terminalWindow = window as? TerminalWindow {
-            terminalWindow.installWorkspaceControls(WorkspaceControls(
-                store: workspaceStore,
-                onNewWorkspace: { [weak self] in
-                    self?.performWorkspaceControlsCommand(.newWorkspace)
-                },
-                onReopenClosedTab: { [weak self] in
-                    self?.performWorkspaceControlsCommand(.reopenClosedTab)
-                },
-                filesPanelController: filesPanelController))
+        if !restorationPublicationDeferred {
+            installWorkspaceControls()
         }
         syncWorkspaceControlsPlacement()
 
@@ -987,6 +932,15 @@ class TerminalController: BaseTerminalController {
         // apply this based on the root config but change it later based on surface
         // config (see focused surface change callback).
         syncAppearance(.init(config))
+        if !restorationPublicationDeferred {
+            do {
+                try registerCommittedOrdinaryController()
+            } catch {
+                AppDelegate.logger.error(
+                    "ordinary window registry publication failed")
+                window.close()
+            }
+        }
     }
 
     /// Standalone terminal windows put the controls in the titlebar; see
@@ -1052,9 +1006,12 @@ class TerminalController: BaseTerminalController {
     }
 
     override func windowWillClose(_ notification: Notification) {
+        (NSApp.delegate as? AppDelegate)?.ordinaryWindowSaveRegistry.remove(self)
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
-        filesPanelController?.teardown()
+        if filesPanelWasActivated {
+            ownedFilesPanelController.teardown()
+        }
 
         // If we remove a window, we reset the cascade point to the key window so that
         // the next window cascade's from that one.
@@ -1124,8 +1081,45 @@ class TerminalController: BaseTerminalController {
     // Called when the window will be encoded. We handle the data encoding here in the
     // window controller.
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
-        let data = TerminalRestorableState(from: self)
-        data.encode(with: state)
+        schedulePersistedProjectionComparison(resetRetryBudget: false)
+        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+            coderFailedPersistedProjection()
+            state.failWithError(TerminalRestoreError.delegateInvalid)
+            return
+        }
+        _ = appDelegate.ordinaryWindowSaveRegistry.ensureSaveOpportunity()
+        guard let claim = appDelegate.ordinaryWindowSaveRegistry.claimArchive(for: self) else {
+            // Marker-only ineligible windows deliberately have no ordinary archive.
+            return
+        }
+        guard case let .archive(archive) = claim else {
+            // A stale callback carries no frozen archive. Writing nothing
+            // leaves this window marker-only for the cycle; failing the coder
+            // here would raise inside AppKit's save path instead.
+            AppDelegate.logger.warning("ordinary window save callback diverged")
+            return
+        }
+        let data = TerminalRestorableState(wire: archive.wire)
+        do {
+            try data.encode(with: state)
+            if !appDelegate.ordinaryWindowSaveRegistry.seal(
+                archive.token,
+                result: .success(())) {
+                AppDelegate.logger.warning("ordinary window save result diverged")
+            }
+            coderAcceptedPersistedProjection(archive.wire)
+        } catch {
+            let failure: RestoreEncodingFailure = switch error {
+            case CodableBridgeError.innerEncodingFailed: .innerPayload
+            case CodableBridgeError.payloadTooLarge: .payloadSize
+            default: .outerCoder
+            }
+            _ = appDelegate.ordinaryWindowSaveRegistry.seal(
+                archive.token,
+                result: .failure(failure))
+            coderFailedPersistedProjection()
+            state.failWithError(error)
+        }
     }
 
     // MARK: First Responder
