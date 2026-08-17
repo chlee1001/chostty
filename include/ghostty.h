@@ -464,12 +464,6 @@ typedef enum {
   GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
 } ghostty_surface_context_e;
 
-typedef int32_t ghostty_surface_creation_mode_t;
-
-static const ghostty_surface_creation_mode_t GHOSTTY_SURFACE_CREATION_NORMAL = 0;
-static const ghostty_surface_creation_mode_t
-    GHOSTTY_SURFACE_CREATION_COLD_RESTORE_DEFAULT_SHELL = 1;
-
 typedef struct {
   ghostty_platform_e platform_tag;
   ghostty_platform_u platform;
@@ -483,14 +477,7 @@ typedef struct {
   const char* initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
-  ghostty_surface_creation_mode_t creation_mode;
 } ghostty_surface_config_s;
-
-typedef struct {
-  bool has_command;
-  bool has_environment_overrides;
-  bool has_initial_input;
-} ghostty_surface_launch_intent_s;
 
 typedef struct {
   uint16_t columns;
@@ -1119,7 +1106,6 @@ GHOSTTY_API void ghostty_surface_free(ghostty_surface_t);
 GHOSTTY_API void* ghostty_surface_userdata(ghostty_surface_t);
 GHOSTTY_API ghostty_app_t ghostty_surface_app(ghostty_surface_t);
 GHOSTTY_API ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_surface_t, ghostty_surface_context_e);
-GHOSTTY_API ghostty_surface_launch_intent_s ghostty_surface_effective_launch_intent(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
 GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
