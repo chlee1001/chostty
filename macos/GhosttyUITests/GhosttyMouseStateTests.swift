@@ -10,7 +10,11 @@ import XCTest
 final class GhosttyMouseStateTests: GhosttyCustomConfigCase {
     // https://github.com/ghostty-org/ghostty/pull/11276
     @MainActor func testSelectionFocusChange() async throws {
-        let app = XCUIApplication()
+        // Built through the case helper, not a bare `XCUIApplication()`: the
+        // helper is what injects the config path, the defaults suite and the
+        // session-persistence kill switch into the app under test. A bare
+        // instance launches the real app with the developer's own session file.
+        let app = try ghosttyApplication()
         app.activate()
         // Write dummy text to a temp file, cat it into the terminal, then clean up
         let lines = (1...200).map { "Line \($0): The quick brown fox jumps over the lazy dog. Lorem ipsum dolor sit amet, consectetur adipiscing elit." }

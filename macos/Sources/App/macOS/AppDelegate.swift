@@ -104,6 +104,12 @@ class AppDelegate: NSObject,
     /// AppDelegate owns the weak surface-owner registry and command router.
     /// These are the single app-level integration points for workspace routing.
     private(set) var surfaceOwners: SurfaceOwnerRegistry!
+
+    /// Owned here rather than by a window controller so it survives the
+    /// rebuild that closing a window and undoing it performs.
+    private(set) var pendingHydration: PendingHydrationRegistry!
+
+    private(set) var sessionPersistence: SessionPersistenceController!
     private(set) var terminalCommands: TerminalCommandRouter!
     private(set) var surfaceDispatcher: SurfaceEventDispatcher!
     let filesPanelWatchBroker = FilesPanelWatchBroker()
@@ -206,6 +212,16 @@ class AppDelegate: NSObject,
         surfaceDispatcher.registry = surfaceOwners
         terminalCommands = TerminalCommandRouter()
         terminalCommands.dispatcher = surfaceDispatcher
+
+        // The gate closes itself in test hosts, under the kill switch, and for
+        // launches with an explicit open intent.
+        pendingHydration = PendingHydrationRegistry()
+        sessionPersistence = SessionPersistenceController(
+            repository: SessionSnapshotRepository(),
+            gate: SessionPersistenceGate(configEnabled: ghostty.config.macosSessionPersistence),
+            registry: pendingHydration
+        )
+        sessionPersistence.start()
 
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
@@ -362,12 +378,94 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
+            // Anything that already opened a window (a URL, a file) wins: this
+            // branch is skipped and no snapshot is applied over what the user
+            // asked for. `initial-window = false` still means no window.
             if TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                if !restoreSessionWindows() {
+                    _ = TerminalController.newWindow(ghostty)
+                }
                 undoManager.enableUndoRegistration()
             }
         }
+    }
+
+    /// - Returns: `true` when at least one window was created. `false` means
+    ///   the caller should open an ordinary window.
+    @MainActor
+    private func restoreSessionWindows() -> Bool {
+        let gate = SessionPersistenceGate(configEnabled: ghostty.config.macosSessionPersistence)
+        guard gate.shouldApplyOnBoot else {
+            Self.logger.info("session.restore.skipped reason=gateClosed")
+            return false
+        }
+
+        let repository = SessionSnapshotRepository()
+        let outcome = repository.load()
+        guard case .loaded(let snapshot, let source) = outcome else {
+            switch outcome {
+            case .absent:
+                Self.logger.info("session.restore.skipped reason=noSnapshot")
+            case .unusable(let reason):
+                Self.logger.warning("session.restore.skipped reason=unusable detail=\(reason, privacy: .public)")
+            case .loaded:
+                break
+            }
+            return false
+        }
+
+        // One ownership decision per launch. A file left behind by a process
+        // that has since exited is not an ownership claim.
+        sessionPersistence?.adoptOwnership(of: snapshot)
+
+        // The previous launch died while applying; skip this time rather than
+        // reproduce the crash. Clearing the marker lets the next launch retry.
+        if gate.crashLoopMarkerIsSet() {
+            gate.setCrashLoopMarker(false)
+            Self.logger.warning("session.restore.skipped reason=previousLaunchDiedApplying")
+            return false
+        }
+
+        gate.setCrashLoopMarker(true)
+        defer { gate.setCrashLoopMarker(false) }
+
+        var created = false
+        for window in snapshot.windows {
+            guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
+                ghostty: ghostty,
+                window: window,
+                registry: pendingHydration
+            ) else { continue }
+
+            let controller = TerminalController(ghostty, graph: graph)
+            controller.showWindow(self)
+            created = true
+        }
+
+        guard created else {
+            Self.logger.warning("session.restore.skipped reason=noWindowBuilt windows=\(snapshot.windows.count)")
+            return false
+        }
+
+        Self.logger.notice(
+            "session.restore.applied windows=\(snapshot.windows.count) source=\(String(describing: source), privacy: .public) pendingTabs=\(self.pendingHydration.count)"
+        )
+
+        // The backup slot is only meaningful once a file has actually booted
+        // this app, so promotion happens here rather than at save time.
+        if source == .primary {
+            do {
+                try repository.promotePrimaryToBackup()
+            } catch {
+                // Not fatal, but this launch leaves no fallback behind.
+                Self.logger.warning(
+                    "session.restore.backupPromotionFailed error=\(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -420,6 +518,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Synchronous: an ordinary quit must lose nothing. The timer interval
+        // only bounds a crash or SIGKILL, where this never runs.
+        sessionPersistence?.persistNow()
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
