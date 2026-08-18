@@ -46,16 +46,41 @@ views; other formats use an embedded Quick Look preview. Static HTML runs with
 JavaScript and network resources disabled. Open document tabs are intentionally
 not restored after an app restart.
 
-**No window restoration.** Chostty does not bring windows, workspaces, tabs or
-panes back after a relaunch, and registers no `NSWindowRestoration` class at
-all. Restoration can only ever rebuild the shape of a layout — the previous
-processes, screens and scrollback are gone either way — while the machinery
-that keeps a saved archive in sync has to run while you work. Chostty trades
-layout recall for a terminal that does no persistence work during use. Every
-launch starts with one fresh window.
+**Structure persistence, not window restoration.** Chostty still registers no
+`NSWindowRestoration` class and still pins `NSQuitAlwaysKeepsWindows` to false,
+so AppKit's window archive plays no part here. Instead the app keeps a single
+JSON file of its own — `~/Library/Application Support/<bundle id>/session.json`,
+plus a `session-previous.json` promoted after a successful launch — describing
+workspaces, virtual tabs and panes: names, colors, order, collapsed state, tab
+titles, each tab's split layout, and each pane's working directory. On the next
+launch that structure comes back.
+
+After a restart each pane is a **new shell** started in the recorded working
+directory. The previous processes, their screens and the scrollback are gone,
+and no terminal contents are ever written to disk. A recorded directory that no
+longer exists is dropped rather than silently swapped for your home directory,
+matching every other tab-creating path in this fork.
+
+Saving is driven by an eight-second timer, never by terminal output: a save
+happens only when a generation counter shows something actually changed, and it
+is skipped entirely when the encoded bytes match the file already on disk, so an
+idle window writes nothing. Quitting normally writes once more, synchronously, so
+an ordinary quit loses nothing; a crash or a force quit can lose at most eight
+seconds of structural change. The file is written atomically with owner-only
+(`0600`) permissions.
+
+Only the selected tab of the selected workspace starts a shell at launch. The
+rest are rebuilt as values and materialize the first time you select them, which
+is what keeps restoring twenty tabs from starting twenty terminals at once.
+
+Set `macos-session-persistence = false` to turn all of this off, or export
+`GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also
+disables itself for test hosts and for launches that carry an explicit open
+intent (`ghostty -e …`, `open --args`).
 
 `window-save-state` is inherited from upstream and still parses, but the macOS
-app ignores it and always behaves as `never`.
+app ignores it and always behaves as `never`; `macos-session-persistence` is the
+key that controls the behavior described above.
 
 ## Reserved shortcuts
 
