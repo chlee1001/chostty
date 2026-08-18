@@ -617,12 +617,16 @@ final class WorkspaceSessionStore: ObservableObject {
         guard let session = session(forTabID: tabID) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         session.titleOverride = trimmed.isEmpty ? nil : trimmed
+        // Metadata edits skip `commit`, so `mountGeneration` stays put and the
+        // periodic save would otherwise never see the new name.
+        session.bumpMetadataGeneration()
     }
 
     /// Sets a tab's background tint. Metadata only, as above.
     func setTabColor(_ tabID: UUID, to color: TerminalTabColor) {
         guard let session = session(forTabID: tabID) else { return }
         session.tabColor = color == .none ? nil : String(color.rawValue)
+        session.bumpMetadataGeneration()
     }
 
     /// Commits a reordered/renamed candidate, repairing the selection pair

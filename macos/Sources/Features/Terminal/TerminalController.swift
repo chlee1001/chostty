@@ -30,6 +30,23 @@ enum TerminalControllerGraphFactory {
         let initialSurfaceTree: SplitTree<Ghostty.SurfaceView>
         /// Surface to focus on initial mount, if any.
         let focusedSurface: Ghostty.SurfaceView?
+        /// Window identity to adopt, when this graph was restored from a
+        /// snapshot. `nil` mints a fresh one.
+        let physicalUUID: UUID?
+
+        init(
+            store: WorkspaceSessionStore,
+            initialSession: TerminalSessionState,
+            initialSurfaceTree: SplitTree<Ghostty.SurfaceView>,
+            focusedSurface: Ghostty.SurfaceView?,
+            physicalUUID: UUID? = nil
+        ) {
+            self.store = store
+            self.initialSession = initialSession
+            self.initialSurfaceTree = initialSurfaceTree
+            self.focusedSurface = focusedSurface
+            self.physicalUUID = physicalUUID
+        }
     }
 
     /// Creates a 1×1 ordinary graph: one workspace, one tab, one surface built
@@ -97,6 +114,166 @@ enum TerminalControllerGraphFactory {
             focusedSurface: focused
         )
     }
+    /// Rebuilds a graph from a stored snapshot.
+    ///
+    /// Only the selected tab of the selected workspace becomes live; the rest
+    /// get an empty tree and hand their stored layout to `registry`. Hydrating
+    /// everything up front would start a PTY, a renderer thread and three IO
+    /// threads per pane at launch, which is the resource wall this fork already
+    /// measured. Surface creation is injected so tests can build the same graph
+    /// without starting a terminal.
+    @MainActor
+    static func makeFromSnapshot(
+        ghostty: Ghostty.App,
+        window: WindowSnapshot,
+        registry: PendingHydrationRegistry,
+        makeSurface: ((PaneLeafSnapshot, WorkspaceSnapshot) -> Ghostty.SurfaceView?)? = nil
+    ) -> InitialGraph? {
+        guard !window.workspaces.isEmpty else { return nil }
+
+        // Resolve which tab actually comes up live, falling back inside the
+        // snapshot exactly like `makeFromWorkspaces` does for a live graph.
+        let selectedWorkspace = window.selection
+            .flatMap { selection in window.workspaces.first { $0.id == selection.workspaceID } }
+            ?? window.workspaces[0]
+        let selectedTab = window.selection
+            .flatMap { selection in selectedWorkspace.tabs.first { $0.id == selection.tabID } }
+            ?? selectedWorkspace.selectedTabID.flatMap { id in selectedWorkspace.tabs.first { $0.id == id } }
+            ?? selectedWorkspace.tabs.first
+        guard let selectedTab else { return nil }
+
+        let factory = makeSurface ?? { leaf, workspace in
+            guard let app = ghostty.app else { return nil }
+            return Ghostty.SurfaceView(
+                app,
+                baseConfig: surfaceConfiguration(forLeaf: leaf, in: workspace),
+                uuid: leaf.uuid
+            )
+        }
+
+        var liveSession: TerminalSessionState?
+        var liveTree = SplitTree<Ghostty.SurfaceView>()
+
+        let workspaces: [WorkspaceSession] = window.workspaces.map { workspaceSnapshot in
+            let tabs: [TerminalSessionState] = workspaceSnapshot.tabs.map { tabSnapshot in
+                let isSelected = workspaceSnapshot.id == selectedWorkspace.id
+                    && tabSnapshot.id == selectedTab.id
+
+                let tree: SplitTree<Ghostty.SurfaceView>
+                if isSelected {
+                    tree = SessionSnapshotProjection.surfaceTree(
+                        from: tabSnapshot.paneTree,
+                        zoomedPaneID: tabSnapshot.zoomedPaneID,
+                        makeSurface: { factory($0, workspaceSnapshot) }
+                    )
+                    liveTree = tree
+                } else {
+                    tree = SplitTree<Ghostty.SurfaceView>()
+                    registry.store(tabSnapshot, for: tabSnapshot.id)
+                }
+
+                // Tab identity is reused, not minted: the sidebar, AppleScript
+                // and the pending registry key off it.
+                let session = TerminalSessionState(id: tabSnapshot.id, surfaceTree: tree)
+                session.titleOverride = tabSnapshot.titleOverride
+                session.tabColor = tabSnapshot.tabColor
+                seedDisplayMetadata(of: session, from: tabSnapshot)
+                if let focusedPaneID = tabSnapshot.focusedPaneID,
+                   tree.contains(where: { $0.id == focusedPaneID }) {
+                    session.focusedSurfaceID = focusedPaneID
+                    session.rememberedSurfaceID = focusedPaneID
+                }
+                if isSelected { liveSession = session }
+                return session
+            }
+
+            var workspace = WorkspaceSession(
+                id: workspaceSnapshot.id,
+                name: workspaceSnapshot.name,
+                tabs: tabs,
+                selectedTabID: workspaceSnapshot.selectedTabID ?? tabs.first?.id
+            )
+            workspace.color = workspaceSnapshot.color
+            workspace.isCollapsed = workspaceSnapshot.isCollapsed
+            workspace.defaultDirectory = workspaceSnapshot.defaultDirectory
+            return workspace
+        }
+
+        guard let liveSession else { return nil }
+
+        let store = WorkspaceSessionStore(
+            restoredWorkspaces: workspaces,
+            selection: Selection(workspaceID: selectedWorkspace.id, tabID: liveSession.id)
+        )
+
+        let focused = liveTree.first(where: { $0.id == liveSession.focusedSurfaceID }) ?? liveTree.first
+
+        return InitialGraph(
+            store: store,
+            initialSession: liveSession,
+            initialSurfaceTree: liveTree,
+            focusedSurface: focused,
+            physicalUUID: window.physicalUUID
+        )
+    }
+
+    /// Working directory a restored pane should start in: its own recorded
+    /// directory, else the workspace default, else nothing.
+    ///
+    /// Pure, so it can be asserted without creating a surface. A directory that
+    /// is gone is dropped, never replaced with the home directory - every other
+    /// tab-creating path in this fork behaves that way
+    /// (`BaseTerminalController.reopenConfig`), and a silent jump to `~` would
+    /// be the only path that lies about where it landed.
+    /// Gives a session the title and directory the sidebar shows before any
+    /// surface exists.
+    ///
+    /// A session starts at the placeholder title, and a tab restored from disk
+    /// keeps it until something hydrates its panes and the live subscription
+    /// starts reporting. Without this the sidebar lists every unopened tab as
+    /// the placeholder even though the stored snapshot holds its title and
+    /// directory.
+    ///
+    /// The values come from the same pane the live subscription would treat as
+    /// representative - the focused one, else the first - so hydration replaces
+    /// them with the identical field rather than a different pane's.
+    @MainActor
+    private static func seedDisplayMetadata(
+        of session: TerminalSessionState,
+        from tab: TabSnapshot
+    ) {
+        guard let leaves = tab.paneTree?.leaves, !leaves.isEmpty else { return }
+        let representative = leaves.first { $0.uuid == tab.focusedPaneID } ?? leaves[0]
+
+        if let title = representative.title, !title.isEmpty {
+            session.title = title
+        }
+        session.pwd = representative.cwd
+    }
+
+    @MainActor
+    static func surfaceConfiguration(
+        forLeaf leaf: PaneLeafSnapshot,
+        workspaceDefaultDirectory: String?
+    ) -> Ghostty.SurfaceConfiguration {
+        var config = Ghostty.SurfaceConfiguration()
+        if let cwd = leaf.cwd, TerminalCommandRouter.directoryExists(cwd) {
+            config.workingDirectory = cwd
+        } else if let fallback = workspaceDefaultDirectory,
+                  TerminalCommandRouter.directoryExists(fallback) {
+            config.workingDirectory = fallback
+        }
+        return config
+    }
+
+    @MainActor
+    static func surfaceConfiguration(
+        forLeaf leaf: PaneLeafSnapshot,
+        in workspace: WorkspaceSnapshot
+    ) -> Ghostty.SurfaceConfiguration {
+        surfaceConfiguration(forLeaf: leaf, workspaceDefaultDirectory: workspace.defaultDirectory)
+    }
+
     /// Shared builder that constructs the session and committed store from a
     /// tree. Surfaces are never created here — the caller supplies the tree.
     private static func makeFromExistingTree(

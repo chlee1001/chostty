@@ -142,6 +142,13 @@ class BaseTerminalController: NSWindowController,
     /// each session needs its own subscription regardless of what is mounted.
     private var sessionMetadataCancellables: [UUID: Set<AnyCancellable>] = [:]
 
+    /// Pane UUIDs each session's subscriptions currently cover, so a rebuild
+    /// can be skipped when the pane set did not actually change.
+    private var sessionSubscribedLeafIDs: [UUID: Set<UUID>] = [:]
+
+    /// Test seam for ``pendingHydration``.
+    var pendingHydrationOverride: PendingHydrationRegistry?
+
     /// Rebuilds the per-session subscriptions when the roster changes.
     private var sessionRosterCancellable: AnyCancellable?
 
@@ -199,7 +206,10 @@ class BaseTerminalController: NSWindowController,
          graph: TerminalControllerGraphFactory.InitialGraph
     ) {
         self.ghostty = ghostty
-        self.physicalUUID = UUID()
+        // A window restored from a snapshot keeps its recorded identity rather
+        // than minting a new one: this value is the window's stable id, and
+        // AppleScript addresses windows through it.
+        self.physicalUUID = graph.physicalUUID ?? UUID()
         self.derivedConfig = DerivedConfig(ghostty.config)
         self.workspaceStore = graph.store
 
@@ -365,6 +375,15 @@ class BaseTerminalController: NSWindowController,
            store.snapshot.mountGeneration <= presentedMountGeneration {
             return
         }
+
+        // Materialize a tab that was restored from disk but never opened.
+        //
+        // Unconditional, and before the selection-commit block below, because
+        // several callers arrive with the selection ALREADY committed:
+        // `ReservedShortcutDispatcher.select(workspace:on:)` commits through
+        // `selectWorkspace` first, so a hydration placed inside that block
+        // would mount an empty tab for the workspace-switch shortcuts.
+        hydratePendingSessionIfNeeded(session)
 
         // Save the currently presented tree/focus back into the previously
         // presented session so re-selecting it restores exactly this state.
@@ -591,7 +610,8 @@ class BaseTerminalController: NSWindowController,
             title: removedSession.titleOverride ?? removedSession.title,
             titleOverride: removedSession.titleOverride,
             pwd: removedSession.pwd,
-            tabColor: TerminalTabColor.fromStored(removedSession.tabColor)
+            tabColor: TerminalTabColor.fromStored(removedSession.tabColor),
+            tabID: removedSession.id
         )
 
         // A destructive close takes exclusive ownership of the detached
@@ -708,7 +728,8 @@ class BaseTerminalController: NSWindowController,
                     title: session.titleOverride ?? session.title,
                     titleOverride: session.titleOverride,
                     pwd: session.pwd,
-                    tabColor: TerminalTabColor.fromStored(session.tabColor)
+                    tabColor: TerminalTabColor.fromStored(session.tabColor),
+                    tabID: session.id
                 )
                 return (record, lease)
             }
@@ -1039,6 +1060,15 @@ class BaseTerminalController: NSWindowController,
                     session.tabColor = String(record.tabColor.rawValue)
                 }
 
+                // This path mints a new tab identity, so a pending pane layout
+                // recorded under the old one would be stranded. The fresh
+                // single-pane tree above is replaced on first selection.
+                if let pending = pendingHydration,
+                   let closedTabID = record.tabID,
+                   pending.contains(closedTabID) {
+                    pending.rekey(from: closedTabID, to: session.id)
+                }
+
                 let wsID = targetWorkspace(for: record)
                 store.insertTab(session, intoWorkspace: wsID, at: record.index)
                 lastWorkspaceID = wsID
@@ -1187,6 +1217,15 @@ class BaseTerminalController: NSWindowController,
         if let presentedID = presentedSessionID,
            let session = workspaceStore.session(forTabID: presentedID) {
             session.surfaceTree = to
+
+            // Splits, pane closes, divider drags and zoom land here rather than
+            // in `commit`, so `mountGeneration` does not move for them and the
+            // periodic save would otherwise never see the pane layout.
+            session.bumpMetadataGeneration()
+
+            // A split created a pane nothing is subscribed to yet; a close
+            // removed one.
+            refreshMetadataSubscriptions(for: session, panes: Array(to))
 
             // Only record focus that actually belongs to the tree being
             // presented. During a tab switch this runs while `focusedSurface`
@@ -1817,28 +1856,115 @@ class BaseTerminalController: NSWindowController,
         // Drop subscriptions for sessions that no longer exist.
         for id in sessionMetadataCancellables.keys where !liveIDs.contains(id) {
             sessionMetadataCancellables.removeValue(forKey: id)
+            sessionSubscribedLeafIDs.removeValue(forKey: id)
         }
 
         for session in sessions {
             guard sessionMetadataCancellables[session.id] == nil else { continue }
             let tree = session.id == presentedSessionID ? surfaceTree : session.surfaceTree
-            guard let surface = tree.first(where: { $0.id == session.focusedSurfaceID })
-                ?? tree.first else { continue }
+            let panes = Array(tree)
+            guard let representative = panes.first(where: { $0.id == session.focusedSurfaceID })
+                ?? panes.first else { continue }
 
             var set: Set<AnyCancellable> = []
-            surface.$title
-                .combineLatest(surface.$bell)
+            representative.$title
+                .combineLatest(representative.$bell)
                 .sink { [weak self, weak session] title, bell in
                     guard let self, let session else { return }
                     session.title = self.computeTitle(title: title, bell: bell)
                     session.bell = bell
+                    session.bumpMetadataGeneration()
                 }
                 .store(in: &set)
-            surface.$pwd
-                .sink { [weak session] pwd in session?.pwd = pwd }
-                .store(in: &set)
+
+            // Every pane is watched so a background directory change still
+            // moves `metadataGeneration` and reaches the next save. Only the
+            // representative pane writes `session.pwd`: that field means "the
+            // session's directory" and is read by the sidebar folder name and
+            // git branch, the sidebar filter, and the directory a new or
+            // reopened tab inherits, so letting every pane write it would make
+            // those last-writer-wins.
+            for pane in panes {
+                let isRepresentative = pane.id == representative.id
+                pane.$pwd
+                    .sink { [weak session] pwd in
+                        guard let session else { return }
+                        if isRepresentative { session.pwd = pwd }
+                        session.bumpMetadataGeneration()
+                    }
+                    .store(in: &set)
+            }
+
             sessionMetadataCancellables[session.id] = set
+            sessionSubscribedLeafIDs[session.id] = Set(panes.map(\.id))
         }
+    }
+
+    // MARK: - Lazy hydration
+
+    /// Tabs restored from disk that have not been materialized yet.
+    /// Application-owned; tests assign ``pendingHydrationOverride``.
+    var pendingHydration: PendingHydrationRegistry? {
+        pendingHydrationOverride ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
+    }
+
+    /// Idempotent: the registry entry is consumed either way, so a tab is only
+    /// ever hydrated once.
+    func hydratePendingSessionIfNeeded(_ session: TerminalSessionState) {
+        guard let registry = pendingHydration,
+              let stored = registry.take(session.id) else { return }
+
+        // Something already gave this session a live tree; the stored value is
+        // stale by definition.
+        guard session.surfaceTree.isEmpty else { return }
+
+        let defaultDirectory = workspaceStore.snapshot.workspaces
+            .first { $0.tabs.contains { $0.id == session.id } }?
+            .defaultDirectory
+
+        let tree = SessionSnapshotProjection.surfaceTree(
+            from: stored.paneTree,
+            zoomedPaneID: stored.zoomedPaneID
+        ) { [weak self] leaf in
+            guard let app = self?.ghostty.app else { return nil }
+            return Ghostty.SurfaceView(
+                app,
+                baseConfig: TerminalControllerGraphFactory.surfaceConfiguration(
+                    forLeaf: leaf,
+                    workspaceDefaultDirectory: defaultDirectory
+                ),
+                uuid: leaf.uuid
+            )
+        }
+
+        guard !tree.isEmpty else { return }
+
+        session.surfaceTree = tree
+        if let focusedPaneID = stored.focusedPaneID,
+           tree.contains(where: { $0.id == focusedPaneID }) {
+            session.focusedSurfaceID = focusedPaneID
+            session.rememberedSurfaceID = focusedPaneID
+        } else {
+            session.focusedSurfaceID = tree.first?.id
+        }
+
+        // The panes are new objects, so the owner index and the subscriptions
+        // both have to learn about them.
+        syncRegistryToSnapshot()
+        refreshMetadataSubscriptions(for: session, panes: Array(tree))
+        session.bumpMetadataGeneration()
+    }
+
+    /// ``rebuildSessionMetadataSubscriptions()`` skips sessions that already
+    /// have an entry, so the entry is dropped first; otherwise panes created by
+    /// a split are never watched. Skipping when the leaf set is unchanged keeps
+    /// a divider drag from rebuilding every subscription per mouse event.
+    func refreshMetadataSubscriptions(for session: TerminalSessionState, panes: [Ghostty.SurfaceView]) {
+        let leafIDs = Set(panes.map(\.id))
+        guard sessionSubscribedLeafIDs[session.id] != leafIDs else { return }
+        sessionMetadataCancellables.removeValue(forKey: session.id)
+        sessionSubscribedLeafIDs.removeValue(forKey: session.id)
+        rebuildSessionMetadataSubscriptions()
     }
 
     private func computeTitle(title: String, bell: Bool) -> String {

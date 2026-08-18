@@ -3299,6 +3299,31 @@ keybind: Keybinds = .{},
 /// editor, etc.
 @"macos-titlebar-proxy-icon": MacTitlebarProxyIcon = .visible,
 
+/// Whether Chostty remembers the structure of your workspaces, virtual tabs
+/// and panes across a restart. macOS only.
+///
+/// When enabled, the app keeps a single JSON file describing the sidebar
+/// structure -- workspace names, colors, order, collapsed state, tab titles
+/// and the split layout of each tab, along with each pane's working
+/// directory. On the next launch that structure is rebuilt.
+///
+/// This is not process or screen restoration. Each pane comes back as a
+/// **new shell** started in the recorded working directory; the previous
+/// processes, their output and the scrollback are gone. No terminal contents
+/// are ever written to disk.
+///
+/// The file lives in `~/Library/Application Support/<bundle id>/session.json`
+/// with owner-only permissions, is rewritten at most once every eight
+/// seconds and only when something actually changed, and is written once more
+/// when the app quits normally. A crash or a force quit can therefore lose at
+/// most eight seconds of structural change.
+///
+/// This is unrelated to `window-save-state`, which is inherited from upstream
+/// and remains ignored on macOS.
+///
+/// The default value is `true`.
+@"macos-session-persistence": bool = true,
+
 /// Controls the windowing behavior when dropping a file or folder
 /// onto the Ghostty icon in the macOS dock.
 ///

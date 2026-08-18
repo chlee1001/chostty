@@ -91,7 +91,7 @@ SwiftUI owns content (`TerminalView`, `SidebarView`, `SplitView`), hosted via
 | `src/config/` | `Config.zig` is the authoritative user-config struct + docs |
 | `src/build/` | `Config.zig` defines every `-D` flag; artifact constructors |
 | `src/lib/`, `src/datastruct/` | ABI helpers for C bindings; queues/caches/split trees |
-| `macos/Sources/Features/Workspace/` | Fork core: store, session state, surface-owner registry, undo leases, reserved shortcuts |
+|`macos/Sources/Features/Workspace/`|Fork core: store, session state, surface-owner registry, undo leases, reserved shortcuts, session snapshot persistence (schema, repository, validator, gate, save trigger, pending-hydration registry)|
 | `macos/Sources/Features/Terminal/` | Window controllers, SwiftUI composition, window styles |
 | `macos/Sources/Features/Sidebar/` | Workspace/tab tree, workspace controls, `VirtualTabBar` |
 | `macos/Sources/Features/FilesPanel/` | Right-side file tree; `Reader/` = per-tab read-only document tabs |
@@ -325,6 +325,13 @@ identical and no PTY, renderer thread or IO thread is created. That is the only 
 a live surface cannot be released afterwards (see the `TerminalControllerTestHarness` doc).
 Reserve real surfaces for the few tests that genuinely drive a terminal, and close them
 explicitly there.
+
+The session-persistence suites are the worked example: they build every graph with
+`spawnsSurface: false`, inject the surface factory where a snapshot would otherwise create
+real panes, and point the repository at a temporary directory so nothing touches
+`~/Library/Application Support`. They also always inject the controller list rather than
+reading `TerminalController.all`, because the harness leaves earlier suites' controllers in
+`NSApp.windows` for the life of the test host.
 
 Run the suite as `-only-testing:` batches of a few suites each, serially, with an execution
 allowance so a wedged batch fails instead of hanging:

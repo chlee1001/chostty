@@ -45,6 +45,11 @@ class GhosttyCustomConfigCase: XCTestCase {
         app.launchArguments.append(contentsOf: ["-ApplePersistenceIgnoreState", "YES"])
         app.launchEnvironment["GHOSTTY_CONFIG_PATH"] = configFile.path
         app.launchEnvironment["GHOSTTY_USER_DEFAULTS_SUITE"] = defaultsSuite
+        // The app under test does not inherit the runner's environment, so the
+        // session-persistence kill switch has to be injected explicitly. Without
+        // it a UI test would drive the real app against the developer's own
+        // `~/Library/Application Support/<bundle id>/session.json`.
+        app.launchEnvironment["GHOSTTY_MAC_DISABLE_SESSION_RESTORE"] = "1"
         return app
     }
 }

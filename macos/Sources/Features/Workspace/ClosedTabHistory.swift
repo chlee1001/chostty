@@ -36,6 +36,11 @@ final class ClosedTabHistory {
         let pwd: String?
         let tabColor: TerminalTabColor
 
+        /// The fallback reopen path mints a new session, so this lets a pane
+        /// layout still waiting to be hydrated follow the tab to its new
+        /// identity instead of being stranded under the old key.
+        var tabID: UUID?
+
         /// Returns a copy with `index` replaced. Used to normalize a
         /// multi-close batch's per-tab records to their ORIGINAL absolute
         /// index (captured before any removal in the batch), so grouped
@@ -51,7 +56,8 @@ final class ClosedTabHistory {
                 title: title,
                 titleOverride: titleOverride,
                 pwd: pwd,
-                tabColor: tabColor)
+                tabColor: tabColor,
+                tabID: tabID)
         }
     }
 

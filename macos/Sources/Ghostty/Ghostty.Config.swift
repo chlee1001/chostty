@@ -386,6 +386,17 @@ extension Ghostty {
             return MacOSTitlebarProxyIcon(rawValue: str) ?? defaultValue
         }
 
+        /// Whether workspace, tab and pane structure is remembered across
+        /// restarts. Read through the config rather than a global so the
+        /// persistence gate stays injectable.
+        var macosSessionPersistence: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "macos-session-persistence"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var macosDockDropBehavior: MacDockDropBehavior {
             let defaultValue = MacDockDropBehavior.new_tab
             guard let config = self.config else { return defaultValue }
