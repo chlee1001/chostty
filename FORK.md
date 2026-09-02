@@ -139,16 +139,32 @@ attributes that fail the test host's codesign step.
 
 ## Releasing
 
-Tagging `v<semver>` runs `.github/workflows/release.yml`: Zig builds
-GhosttyKit, Xcode builds the app, and `macos/scripts/package-release.sh` stamps,
-signs and packages it. The script refuses to publish a bundle that carries
-`SUPublicEDKey` or that is not a universal binary — a runner that quietly
-produced a single-architecture build would otherwise package and ship fine.
+Releases are built locally so the private repository does not spend hosted
+macOS minutes rebuilding code that already passed pull-request CI:
 
-A tag on a commit whose message asks GitHub to skip CI publishes nothing:
-GitHub drops every workflow for that push, tag pushes included. The token
-matches anywhere in the message — including a message that only talks about it —
-so tag a commit whose message does not contain it at all.
+```sh
+./scripts/release-local.sh --version <semver>
+```
+
+The command builds a ReleaseFast universal GhosttyKit, builds Chostty with the
+Release configuration, and asks `macos/scripts/package-release.sh` to stamp,
+ad-hoc sign and package the app into `dist-local/`. It then verifies the bundle
+signature and DMG and writes SHA-256 checksums.
+
+To tag the current `origin/main` commit and upload the DMG and zip to GitHub
+Releases in the same command:
+
+```sh
+./scripts/release-local.sh --version <semver> --publish
+```
+
+Publishing refuses a dirty tracked tree, a commit other than `origin/main`, or
+an existing tag/release. The packaging script refuses a bundle carrying
+`SUPublicEDKey` or a non-universal binary.
+
+`.github/workflows/release.yml` remains as a manual, no-publish fallback. It can
+build downloadable workflow artifacts, but it never tags or creates a GitHub
+release and is not triggered after CI.
 
 Signing is ad-hoc because this fork has no Developer ID. That is a distribution
 consequence, not a build shortcut: every download is quarantined until the user

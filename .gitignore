@@ -38,6 +38,7 @@ vgcore.*
 artifacts/
 macos/build/
 dist-release/
+dist-local/
 
 # Local-only build history extracted from .gjc/. Kept on disk so it can be read
 # from this folder, deliberately not tracked.
