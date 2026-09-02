@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -12,16 +10,46 @@ concurrency:
 
 jobs:
   # shellcheck is preinstalled on the Ubuntu image and absent from the macOS
-  # one. Linting shell here costs seconds instead of a brew install inside the
-  # long macOS job.
+  # one. The native-tab audit is pure text too, so both gates run here before
+  # deciding whether this PR changed anything that needs the hosted Mac.
   scripts:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.changes.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: shellcheck macos/scripts/*.sh scripts/*.sh
+      - name: Native tab audit
+        run: ./macos/scripts/native-tab-audit.sh
+
+      - name: Detect macOS build inputs
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            changed=yes
+          elif git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \
+            build.zig build.zig.zon include pkg src vendor \
+            macos/Sources macos/Tests macos/GhosttyUITests \
+            macos/Ghostty.xcodeproj macos/Ghostty-Info.plist \
+            macos/Ghostty.sdef macos/Ghostty.xctestplan \
+            macos/build.nu macos/*.entitlements \
+            THIRD-PARTY-NOTICES.md; then
+            changed=no
+          else
+            changed=yes
+          fi
+          echo "macos=$changed" >> "$GITHUB_OUTPUT"
 
   macos:
+    needs: scripts
+    if: needs.scripts.outputs.macos == 'yes'
     runs-on: macos-26
     timeout-minutes: 90
 
@@ -48,12 +76,6 @@ jobs:
             macos/GhosttyKit.xcframework
             zig-out/share
           key: ghosttykit-debug-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
-
-      # The native-tab audit is pure text analysis, so run it before the long
-      # build. It is the gate that keeps AppKit's window tabbing from creeping
-      # back in, and it fails in seconds when it fails.
-      - name: Native tab audit
-        run: ./macos/scripts/native-tab-audit.sh
 
       - name: Build GhosttyKit
         if: steps.ghosttykit.outputs.cache-hit != 'true'

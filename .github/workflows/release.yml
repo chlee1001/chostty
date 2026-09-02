@@ -1,29 +1,22 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       version:
         description: "Semantic version for a test build (no release is published)"
-        required: false
+        required: true
         default: "0.0.0-dev"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   macos:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     # Matches the Xcode this fork is developed against. The project builds
     # against the macOS 26 SDK; an older image fails at compile time rather
     # than producing a working older-SDK build.
@@ -32,57 +25,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # zig build derives a version from git when one is not passed, and
-          # the packaging step records the commit.
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve version
         id: v
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            existing=$(git tag --points-at HEAD --list 'v*' \
-              --sort=-version:refname |
-              awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')
-            if [ -n "$existing" ]; then
-              tag="$existing"
-              v="${tag#v}"
-            else
-              # This fork retains upstream Ghostty tags, so the local tag list
-              # cannot identify Chostty's latest version. Published releases
-              # are the authoritative sequence.
-              latest=$(gh release list --limit 100 \
-                --json tagName,isDraft,isPrerelease,publishedAt \
-                --jq '[.[] | select(
-                  .isDraft == false and
-                  .isPrerelease == false and
-                  (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
-                )] | sort_by(.publishedAt) | last | .tagName // empty')
-              if [ -n "$latest" ]; then
-                current="${latest#v}"
-                major="${current%%.*}"
-                remainder="${current#*.}"
-                minor="${remainder%%.*}"
-                patch="${remainder#*.}"
-                v="$major.$minor.$((patch + 1))"
-              else
-                v="0.1.0"
-              fi
-              tag="v$v"
-            fi
-          else
-            v="${{ inputs.version }}"
-            tag=""
-          fi
+          v="${{ inputs.version }}"
           # zig parses this as a semantic version and the build fails late if
           # it does not; reject it here where the error is readable.
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' || {
             echo "not a semantic version: $v" >&2; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: mlugg/setup-zig@v2
@@ -143,94 +95,4 @@ jobs:
           path: dist-release/*
           if-no-files-found: error
           retention-days: 14
-
-      - name: Create release tag
-        if: github.event_name == 'workflow_run'
-        env:
-          TAG: ${{ steps.v.outputs.tag }}
-        run: |
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            test "$(git rev-list -n 1 "$TAG")" = "$(git rev-parse HEAD)" || {
-              echo "$TAG already points at another commit" >&2
-              exit 1
-            }
-          else
-            git tag -a "$TAG" -m "Chostty ${{ steps.v.outputs.version }}"
-            git push origin "$TAG"
-          fi
-
-      # GitHub's generated notes only list merged PRs by title, which tells a
-      # reader nothing about what changed. Group the conventional-commit
-      # subjects since the previous release first; the generated "What's
-      # Changed" section still follows below it.
-      - name: Build release notes
-        if: github.event_name == 'workflow_run'
-        env:
-          TAG: ${{ steps.v.outputs.tag }}
-        run: |
-          # Nearest tag reachable from HEAD, not the highest version string:
-          # this repository also carries upstream's tags, and v1.x sorts above
-          # every fork release.
-          prev=$(git describe --tags --abbrev=0 --exclude "$TAG" HEAD 2>/dev/null || true)
-          if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
-          echo "collecting changes for $range"
-
-          subjects=$(git log --no-merges --pretty='%s' "$range")
-
-          section() {
-            heading=$1
-            filter=$2
-            body=$(printf '%s\n' "$subjects" \
-              | grep -E "$filter" \
-              | sed -E 's/^[a-z]+(\(([^)]+)\))?!?: /- /' || true)
-            [ -n "$body" ] || return 0
-            printf '### %s\n\n%s\n\n' "$heading" "$body" >> changes.md
-          }
-
-          : > changes.md
-          section 'Breaking' '^[a-z]+(\([^)]+\))?!: '
-          section 'Features' '^feat(\([^)]+\))?: '
-          section 'Fixes' '^fix(\([^)]+\))?: '
-          section 'Performance' '^perf(\([^)]+\))?: '
-          section 'Changes' '^(refactor|revert)(\([^)]+\))?: '
-          section 'Build and CI' '^(build|ci)(\([^)]+\))?: '
-
-          : > release-notes.md
-          if [ -s changes.md ]; then
-            printf '## Changes\n\n' >> release-notes.md
-            cat changes.md >> release-notes.md
-          fi
-
-          cat >> release-notes.md <<'NOTES'
-          ## Install
-
-          Open the DMG and drag Chostty to Applications, then run:
-
-          ```
-          xattr -cr /Applications/Chostty.app
-          ```
-
-          **That step is required, not a suggestion.** This fork has no Apple
-          Developer ID, so the app is ad-hoc signed and cannot be notarized.
-          macOS quarantines the download and reports it as damaged until the
-          attribute is cleared. Skipping it looks exactly like a broken build.
-
-          There is no auto-updater. Sparkle is compiled out because pointing
-          it at upstream's appcast would replace this fork with stock
-          Ghostty. Check back here for new versions.
-
-          Universal binary, macOS 13 and later.
-          NOTES
-
-          cat release-notes.md
-
-      - name: Publish release
-        if: github.event_name == 'workflow_run'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.v.outputs.tag }}
-          target_commitish: ${{ github.event.workflow_run.head_sha }}
-          files: dist-release/*
-          generate_release_notes: true
-          body_path: release-notes.md
 

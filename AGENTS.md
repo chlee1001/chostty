@@ -98,7 +98,7 @@ SwiftUI owns content (`TerminalView`, `SidebarView`, `SplitView`), hosted via
 | `macos/Sources/Ghostty/` | Swift wrappers over GhosttyKit C types; `Surface View/` = AppKit pane |
 | `macos/Sources/Helpers/` | Shared utilities; `Extensions/` and private CGS/Dock wrappers |
 | `macos/scripts/` | Fork-authored gates: `native-tab-audit.sh`, `verify-third-party-notices.sh`, `package-release.sh` |
-| `scripts/` | `upstream-sync.sh` (drift report, never merges by default) |
+| `scripts/` | `upstream-sync.sh` (drift report) and `release-local.sh` (local release/package/publish) |
 | `pkg/`, `vendor/`, `po/`, `dist/`, `nix/` | Upstream-inherited; not fork-authored |
 | `docs/` | **Not product docs** — only `docs/history/`, gitignored agent scratch |
 
@@ -161,6 +161,8 @@ swiftlint lint --strict --fix              # Swift
 prettier -w .                              # JSON/YAML/TOML/MD — never touches macos/
 shellcheck macos/scripts/*.sh scripts/*.sh # what CI's `scripts` job runs
 ./scripts/upstream-sync.sh [--markdown]    # upstream drift report; does not merge
+./scripts/release-local.sh --version <v>   # local universal DMG + zip
+./scripts/release-local.sh --version <v> --publish  # also tag and publish
 ```
 
 `make` and `cmake` are **not** entry points for this product. `Makefile` has only `glad`
@@ -297,11 +299,14 @@ DerivedData, or an explicit `--checkouts` path.
 
 ### CI
 
-- `.github/workflows/ci.yml` — push to main / PR / dispatch. `scripts` job: shellcheck on
-  `macos/scripts/*.sh` and `scripts/*.sh`. `macos` job (macos-26): native-tab-audit first
-  (cheap, pure text), then Zig core build, then `xcodebuild … -configuration Debug` tests.
-- `.github/workflows/release.yml` — fires on successful CI on main, or manual dispatch for a
-  no-publish test build. Builds, packages via `package-release.sh`, tags, publishes.
+- `.github/workflows/ci.yml` — PR / manual dispatch only. The Ubuntu `scripts` job runs
+  shellcheck and native-tab-audit, then reports whether the PR changed a macOS build input.
+  The `macos-26` job runs Zig core build and `xcodebuild … -configuration Debug` tests only
+  when that output is true. Main is not rebuilt after a green PR merges; that duplicate
+  macOS run consumed hosted minutes without testing new code.
+- `.github/workflows/release.yml` — manual no-publish fallback. It builds and uploads the
+  packaged artifacts but never tags or creates a GitHub release. Normal releases use
+  `scripts/release-local.sh`; `--publish` uploads from the local Mac without hosted minutes.
 - `.github/workflows/upstream-check.yml` — weekly cron; runs `upstream-sync.sh --markdown`
   and maintains one rolling issue on `origin`.
 
@@ -388,9 +393,6 @@ nothing to do with the change under test. Check `system_profiler SPDisplaysDataT
   `build.zig.zon.*` mirrors are all machine-produced. Fix the generator, not the output.
 - **Ad-hoc signing.** No Developer ID, so every release is quarantined until the user runs
   `xattr -cr /Applications/Chostty.app`. That is a distribution consequence, not a build bug.
-- **A release tag on a commit whose message contains GitHub's skip-CI token publishes
-  nothing** — the token matches anywhere in the message, including a message that only
-  discusses it.
 - **LaunchServices ambiguity:** build copies register under the same bundle id, so
   `tell application "Chostty"` can target a non-running copy and block in `AESendMessage`
   forever. Target AppleScript by absolute path, or
