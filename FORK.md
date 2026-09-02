@@ -158,6 +158,19 @@ Releases in the same command:
 ./scripts/release-local.sh --version <semver> --publish
 ```
 
+The normal post-merge path is shorter:
+
+```sh
+./scripts/release-local.sh --publish-next
+```
+
+It requires a clean tracked tree, switches to `main`, fast-forwards it to
+`origin/main`, increments the patch component of the latest stable GitHub
+release, then runs the same verified build and publish path. It refuses to
+publish when `origin/main` has no commits or no app/package input changes after
+the latest release, so documentation and release-tool-only merges do not create
+an empty app version.
+
 Publishing refuses a dirty tracked tree, a commit other than `origin/main`, or
 an existing tag/release. The packaging script refuses a bundle carrying
 `SUPublicEDKey` or a non-universal binary.

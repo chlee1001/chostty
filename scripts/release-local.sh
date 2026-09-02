@@ -6,6 +6,7 @@
 # Usage:
 #   scripts/release-local.sh --version <semver> [--build <n>] [--out <dir>]
 #                            [--publish]
+#   scripts/release-local.sh --publish-next
 
 set -euo pipefail
 
@@ -16,6 +17,7 @@ VERSION=""
 BUILD="1"
 OUT="dist-local"
 PUBLISH="no"
+PUBLISH_NEXT="no"
 
 usage() {
   sed -n '2,9p' "$0"
@@ -27,10 +29,57 @@ while [ $# -gt 0 ]; do
     --build) BUILD="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --publish) PUBLISH="yes"; shift ;;
+    --publish-next) PUBLISH="yes"; PUBLISH_NEXT="yes"; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+cd "$REPO_ROOT"
+
+# Untracked files do not affect the release commit, but tracked edits would make
+# the bundle impossible to reproduce from its stamped SHA.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "tracked changes present; commit or discard them before releasing" >&2
+  exit 1
+fi
+
+latest_release_tag() {
+  gh release list --limit 100 \
+    --json tagName,isDraft,isPrerelease,publishedAt \
+    --jq '[.[] | select(
+      .isDraft == false and
+      .isPrerelease == false and
+      (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+    )] | sort_by(.publishedAt) | last | .tagName // empty'
+}
+
+LATEST_RELEASE_TAG=""
+if [ "$PUBLISH" = yes ]; then
+  command -v gh >/dev/null || { echo "missing command: gh" >&2; exit 1; }
+  gh auth status >/dev/null
+  git fetch --quiet origin main --tags
+
+  if [ "$PUBLISH_NEXT" = yes ]; then
+    [ -z "$VERSION" ] || {
+      echo "--publish-next cannot be combined with --version" >&2
+      exit 2
+    }
+    git switch main
+    git merge --ff-only origin/main
+    LATEST_RELEASE_TAG="$(latest_release_tag)"
+    if [ -n "$LATEST_RELEASE_TAG" ]; then
+      current="${LATEST_RELEASE_TAG#v}"
+      major="${current%%.*}"
+      remainder="${current#*.}"
+      minor="${remainder%%.*}"
+      patch="${remainder#*.}"
+      VERSION="$major.$minor.$((patch + 1))"
+    else
+      VERSION="0.1.0"
+    fi
+  fi
+fi
 
 [ -n "$VERSION" ] || { echo "--version is required" >&2; exit 2; }
 printf '%s\n' "$VERSION" | grep -Eq \
@@ -42,15 +91,6 @@ printf '%s\n' "$BUILD" | grep -Eq '^[0-9]+([.][0-9]+){0,2}$' || {
   echo "not a valid CFBundleVersion: $BUILD" >&2
   exit 2
 }
-
-cd "$REPO_ROOT"
-
-# Untracked files do not affect the release commit, but tracked edits would make
-# the bundle impossible to reproduce from its stamped SHA.
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "tracked changes present; commit or discard them before releasing" >&2
-  exit 1
-fi
 
 for command in zig xcodebuild codesign hdiutil shasum; do
   command -v "$command" >/dev/null || {
@@ -64,9 +104,6 @@ SHORT_COMMIT="$(git rev-parse --short HEAD)"
 TAG="v$VERSION"
 
 if [ "$PUBLISH" = yes ]; then
-  command -v gh >/dev/null || { echo "missing command: gh" >&2; exit 1; }
-  gh auth status >/dev/null
-  git fetch --quiet origin main --tags
   [ "$COMMIT" = "$(git rev-parse origin/main)" ] || {
     echo "--publish requires HEAD to equal origin/main" >&2
     exit 1
@@ -74,6 +111,29 @@ if [ "$PUBLISH" = yes ]; then
   if gh release view "$TAG" >/dev/null 2>&1; then
     echo "GitHub release $TAG already exists" >&2
     exit 1
+  fi
+  [ -n "$LATEST_RELEASE_TAG" ] || LATEST_RELEASE_TAG="$(latest_release_tag)"
+  if [ -n "$LATEST_RELEASE_TAG" ]; then
+    git fetch --quiet origin \
+      "refs/tags/$LATEST_RELEASE_TAG:refs/tags/$LATEST_RELEASE_TAG"
+    git merge-base --is-ancestor "$LATEST_RELEASE_TAG^{commit}" "$COMMIT" || {
+      echo "$LATEST_RELEASE_TAG is not an ancestor of origin/main" >&2
+      exit 1
+    }
+    [ "$(git rev-list --count "$LATEST_RELEASE_TAG..$COMMIT")" -gt 0 ] || {
+      echo "no commits since $LATEST_RELEASE_TAG" >&2
+      exit 1
+    }
+    if [ "$PUBLISH_NEXT" = yes ] && git diff --quiet \
+      "$LATEST_RELEASE_TAG" "$COMMIT" -- \
+      build.zig build.zig.zon include pkg src vendor \
+      macos/Sources macos/GhosttyUITests macos/Ghostty.xcodeproj \
+      macos/Ghostty-Info.plist macos/Ghostty.sdef macos/build.nu \
+      macos/*.entitlements macos/scripts/package-release.sh \
+      LICENSE THIRD-PARTY-NOTICES.md; then
+      echo "no release inputs changed since $LATEST_RELEASE_TAG" >&2
+      exit 1
+    fi
   fi
 fi
 

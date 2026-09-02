@@ -163,6 +163,7 @@ shellcheck macos/scripts/*.sh scripts/*.sh # what CI's `scripts` job runs
 ./scripts/upstream-sync.sh [--markdown]    # upstream drift report; does not merge
 ./scripts/release-local.sh --version <v>   # local universal DMG + zip
 ./scripts/release-local.sh --version <v> --publish  # also tag and publish
+./scripts/release-local.sh --publish-next  # sync main, bump patch, build and publish
 ```
 
 `make` and `cmake` are **not** entry points for this product. `Makefile` has only `glad`
