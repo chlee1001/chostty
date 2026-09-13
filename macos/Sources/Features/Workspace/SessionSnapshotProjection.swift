@@ -41,12 +41,30 @@ enum SessionSnapshotProjection {
     }
 
     /// An empty title is stored as `nil` so a hydrated pane never shows blank.
+    /// Shell-controlled metadata is bounded before reaching file validation.
     static func leaf(from view: Ghostty.SurfaceView) -> PaneLeafSnapshot {
-        PaneLeafSnapshot(
+        let title = truncatedToStringLimit(view.title)
+        return PaneLeafSnapshot(
             uuid: view.id,
-            cwd: view.pwd,
-            title: view.title.isEmpty ? nil : view.title
+            cwd: view.pwd.map(truncatedToStringLimit),
+            title: title.isEmpty ? nil : title
         )
+    }
+
+    private static func truncatedToStringLimit(_ value: String) -> String {
+        guard value.utf8.count > SessionSnapshotValidator.Limits.stringLength else {
+            return value
+        }
+        var remaining = SessionSnapshotValidator.Limits.stringLength
+        var end = value.startIndex
+        while end < value.endIndex {
+            let next = value.index(after: end)
+            let byteCount = value[end..<next].utf8.count
+            guard byteCount <= remaining else { break }
+            remaining -= byteCount
+            end = next
+        }
+        return String(value[..<end])
     }
 
     /// `SplitTree.zoomed` is a node, and every zoom the app performs targets a
@@ -63,8 +81,8 @@ enum SessionSnapshotProjection {
     static func tab(from session: TerminalSessionState) -> TabSnapshot {
         TabSnapshot(
             id: session.id,
-            titleOverride: session.titleOverride,
-            tabColor: session.tabColor,
+            titleOverride: session.titleOverride.map(truncatedToStringLimit),
+            tabColor: session.tabColor.map(truncatedToStringLimit),
             paneTree: paneTree(from: session.surfaceTree),
             focusedPaneID: session.focusedSurfaceID,
             zoomedPaneID: zoomedPaneID(in: session.surfaceTree)
@@ -73,20 +91,30 @@ enum SessionSnapshotProjection {
 
     /// `pendingTabs` covers tabs that have not been hydrated yet. Their live
     /// `surfaceTree` is empty by construction, so projecting them from the live
-    /// graph would erase their structure on the next save; the stored value is
-    /// republished verbatim instead.
+    /// graph would erase their structure. Keep the stored tree and focus while
+    /// taking title and color from the live metadata edited by the sidebar.
     static func workspace(
         from workspace: WorkspaceSession,
         pendingTabs: [UUID: TabSnapshot] = [:]
     ) -> WorkspaceSnapshot {
         WorkspaceSnapshot(
             id: workspace.id,
-            name: workspace.name,
+            name: truncatedToStringLimit(workspace.name),
             color: workspace.color,
             isCollapsed: workspace.isCollapsed,
-            defaultDirectory: workspace.defaultDirectory,
+            defaultDirectory: workspace.defaultDirectory.map(truncatedToStringLimit),
             tabs: workspace.tabs.map { session in
-                pendingTabs[session.id] ?? tab(from: session)
+                guard let pending = pendingTabs[session.id] else {
+                    return tab(from: session)
+                }
+                return TabSnapshot(
+                    id: pending.id,
+                    titleOverride: session.titleOverride.map(truncatedToStringLimit),
+                    tabColor: session.tabColor.map(truncatedToStringLimit),
+                    paneTree: pending.paneTree,
+                    focusedPaneID: pending.focusedPaneID,
+                    zoomedPaneID: pending.zoomedPaneID
+                )
             },
             selectedTabID: workspace.selectedTabID
         )

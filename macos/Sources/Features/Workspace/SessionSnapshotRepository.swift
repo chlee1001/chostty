@@ -58,23 +58,38 @@ struct SessionSnapshotRepository: Sendable {
         /// The encoded bytes matched the file on disk. This is what keeps an
         /// idle app from touching the disk on every tick.
         case skippedIdentical
-        /// Over a resource bound; the previous valid file is left untouched.
-        case refusedOverLimit(SessionSnapshotValidator.Rejection)
+        /// Not loadable; the previous valid file is left untouched.
+        case refusedInvalid(SessionSnapshotValidator.Rejection)
     }
 
     @discardableResult
     func save(_ snapshot: AppSessionSnapshot) throws -> SaveOutcome {
-        if let rejection = SessionSnapshotValidator.isWithinSaveLimits(snapshot) {
-            Self.logger.warning("session.persist.refusedOverLimit \(rejection.description, privacy: .public)")
-            return .refusedOverLimit(rejection)
+        let validated: AppSessionSnapshot
+        switch SessionSnapshotValidator.validate(snapshot) {
+        case .success(let snapshot):
+            validated = snapshot
+        case .failure(let rejection):
+            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            return .refusedInvalid(rejection)
         }
 
-        let encoded = try Self.encoder.encode(snapshot)
-        if let existing = try? Data(contentsOf: primaryURL), existing == encoded {
+        let encoded = try Self.encoder.encode(validated)
+        if let rejection = Self.resourceRejection(for: encoded) {
+            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            return .refusedInvalid(rejection)
+        }
+        let existing = try? Data(contentsOf: primaryURL)
+        if existing == encoded {
             return .skippedIdentical
         }
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let existing, case .success = Self.validate(existing) {
+            // Secure the previous valid bytes before replacing the primary.
+            // A backup write failure must leave the primary intact for retry.
+            try existing.write(to: backupURL, options: [.atomic])
+            restrictPermissions(of: backupURL)
+        }
         try encoded.write(to: primaryURL, options: [.atomic])
         // `.atomic` replaces the file, so permissions are reapplied after every
         // write rather than once at creation.
@@ -84,16 +99,17 @@ struct SessionSnapshotRepository: Sendable {
 
     /// Promotes the primary file to the backup slot.
     ///
-    /// Called once, right after a boot successfully applied the snapshot. That
-    /// timing is what makes the backup meaningful: it has always booted this
-    /// app at least once, so falling back to it cannot resurrect a file that
-    /// was never usable. A missing primary is not an error.
+    /// Seeds the backup right after a boot successfully applied the primary.
+    /// Changed saves then roll it forward to the immediately preceding valid
+    /// primary, so recovery is not limited to the starting state of that boot.
+    /// A missing primary is not an error; invalid bytes are never promoted.
     func promotePrimaryToBackup() throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: primaryURL.path) else { return }
 
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try Data(contentsOf: primaryURL)
+        _ = try Self.validate(data).get()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: backupURL, options: [.atomic])
         restrictPermissions(of: backupURL)
     }
@@ -125,7 +141,7 @@ struct SessionSnapshotRepository: Sendable {
         case unusable(reason: String)
     }
 
-    /// Prefers the primary, falling back to the promoted backup.
+    /// Prefers the primary, falling back to the previous validated snapshot.
     func load() -> LoadOutcome {
         var primaryFailure: String?
 
@@ -152,24 +168,20 @@ struct SessionSnapshotRepository: Sendable {
 
     private enum ReadFailure: Error, CustomStringConvertible {
         case missing
-        case oversized(Int)
-        case tooDeeplyNested
         case decode(String)
         case rejected(SessionSnapshotValidator.Rejection)
 
         var description: String {
             switch self {
             case .missing: return "missing"
-            case .oversized(let bytes): return "reason=oversized bytes=\(bytes) limit=\(SessionSnapshotRepository.maxFileBytes)"
-            case .tooDeeplyNested: return "reason=tooDeeplyNested limit=\(SessionSnapshotRepository.maxNestingDepth)"
             case .decode(let message): return "reason=decodeError detail=\(message)"
             case .rejected(let rejection): return "reason=\(rejection.description)"
             }
         }
     }
 
-    /// A real snapshot of the documented limits sits far below this; anything
-    /// larger was not written by this app.
+    /// An encoded-byte bound shared by saving and loading. Character limits
+    /// alone do not bound UTF-8 size, especially for combining characters.
     static let maxFileBytes = 4 * 1024 * 1024
 
     /// `JSONDecoder` recurses per level, so a file nested a few thousand deep
@@ -214,9 +226,13 @@ struct SessionSnapshotRepository: Sendable {
 
     private func read(_ url: URL) -> Result<AppSessionSnapshot, ReadFailure> {
         guard let data = try? Data(contentsOf: url) else { return .failure(.missing) }
-        guard data.count <= Self.maxFileBytes else { return .failure(.oversized(data.count)) }
-        guard Self.nestingDepth(of: data) <= Self.maxNestingDepth else {
-            return .failure(.tooDeeplyNested)
+        return Self.validate(data)
+    }
+
+    /// Loading and backup rotation must accept exactly the same bytes.
+    private static func validate(_ data: Data) -> Result<AppSessionSnapshot, ReadFailure> {
+        if let rejection = Self.resourceRejection(for: data) {
+            return .failure(.rejected(rejection))
         }
 
         let decoded: AppSessionSnapshot
@@ -232,6 +248,17 @@ struct SessionSnapshotRepository: Sendable {
         case .failure(let rejection):
             return .failure(.rejected(rejection))
         }
+    }
+
+    private static func resourceRejection(for data: Data) -> SessionSnapshotValidator.Rejection? {
+        guard data.count <= maxFileBytes else {
+            return .limitExceeded(kind: "fileBytes", count: data.count, limit: maxFileBytes)
+        }
+        let depth = nestingDepth(of: data)
+        guard depth <= maxNestingDepth else {
+            return .limitExceeded(kind: "jsonNestingDepth", count: depth, limit: maxNestingDepth)
+        }
+        return nil
     }
 
     // MARK: - Encoding

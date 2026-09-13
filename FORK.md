@@ -49,11 +49,12 @@ not restored after an app restart.
 **Structure persistence, not window restoration.** Chostty still registers no
 `NSWindowRestoration` class and still pins `NSQuitAlwaysKeepsWindows` to false,
 so AppKit's window archive plays no part here. Instead the app keeps a single
-JSON file of its own — `~/Library/Application Support/<bundle id>/session.json`,
-plus a `session-previous.json` promoted after a successful launch — describing
-workspaces, virtual tabs and panes: names, colors, order, collapsed state, tab
-titles, each tab's split layout, and each pane's working directory. On the next
-launch that structure comes back.
+JSON file of its own —
+`~/Library/Application Support/<bundle id>/session.json`, plus a
+`session-previous.json` holding the previous validated snapshot — describing
+workspaces, virtual tabs and panes: names, colors, order, collapsed state,
+tab titles, each tab's split layout, and each pane's working directory. On the
+next launch that structure comes back.
 
 After a restart each pane is a **new shell** started in the recorded working
 directory. The previous processes, their screens and the scrollback are gone,
@@ -68,6 +69,18 @@ idle window writes nothing. Quitting normally writes once more, synchronously, s
 an ordinary quit loses nothing; a crash or a force quit can lose at most eight
 seconds of structural change. The file is written atomically with owner-only
 (`0600`) permissions.
+
+The backup is seeded after a successful launch, then refreshed before each
+changed save with the existing primary only if it passes the same checks as
+loading. Recovery from a damaged primary therefore falls back by one successful
+save, not to an arbitrarily old boot state. Invalid primary bytes never replace
+the backup. If writing the backup fails, the primary is preserved and the save
+fails for retry. Both slots use atomic writes and owner-only permissions;
+identical saves leave both untouched.
+
+Closing every physical window does not replace the last valid snapshot with an
+empty one. If the app later quits without opening another window, the next
+launch restores that last non-empty layout.
 
 Only the selected tab of the selected workspace starts a shell at launch. The
 rest are rebuilt as values and materialize the first time you select them, which
