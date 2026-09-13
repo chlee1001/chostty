@@ -10,6 +10,22 @@ import Testing
 @Suite struct SessionSnapshotProjectionTests {
     // MARK: - Helpers
 
+    private enum TestError: Error {
+        case timedOut
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        _ condition: () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else { throw TestError.timedOut }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     /// `nil` when the shared headless app is unavailable, so a test skips
     /// rather than crashes.
     private func makeView(id: UUID = UUID(), pwd: String? = nil, title: String? = nil) -> Ghostty.SurfaceView? {
@@ -64,6 +80,77 @@ import Testing
         // A freshly built surface has no title yet.
         let leaf = SessionSnapshotProjection.leaf(from: view)
         #expect(leaf.title == nil)
+    }
+
+    @Test(arguments: [
+        (nil, nil), ("", ""), ("short", "short"), ("é👨‍👩‍👧‍👦", "é👨‍👩‍👧‍👦"),
+        (
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength),
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength)
+        ),
+        (
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength + 1),
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength)
+        ),
+        (
+            String(repeating: "é", count: SessionSnapshotValidator.Limits.stringLength / 2),
+            String(repeating: "é", count: SessionSnapshotValidator.Limits.stringLength / 2)
+        ),
+        (
+            String(repeating: "é", count: SessionSnapshotValidator.Limits.stringLength / 2 + 1),
+            String(repeating: "é", count: SessionSnapshotValidator.Limits.stringLength / 2)
+        ),
+        (
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength - 1) + "👨‍👩‍👧‍👦z",
+            String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength - 1)
+        ),
+        (
+            String(repeating: "e\u{301}", count: SessionSnapshotValidator.Limits.stringLength),
+            String(repeating: "e\u{301}", count: SessionSnapshotValidator.Limits.stringLength / 3)
+        ),
+        (
+            "safe e" + String(repeating: "\u{301}", count: SessionSnapshotValidator.Limits.stringLength) + "z",
+            "safe "
+        )
+    ] as [(String?, String?)])
+    func liveMetadataIsBoundedWithoutLosingOptionalOrEmptyValues(
+        value: String?, expected: String?
+    ) async throws {
+        let view = try #require(makeView(pwd: value))
+        if let value, !value.isEmpty {
+            view.setTitle(value)
+            try await waitUntil { view.title == value }
+        }
+        let session = TerminalSessionState(id: UUID(), surfaceTree: SplitTree(view: view))
+        session.titleOverride = value
+        session.tabColor = value
+        var workspace = WorkspaceSession(
+            id: UUID(), name: value ?? "", tabs: [session], selectedTabID: session.id
+        )
+        workspace.defaultDirectory = value
+
+        let snapshot = SessionSnapshotProjection.workspace(from: workspace)
+        let tab = try #require(snapshot.tabs.first)
+        let leaf = try #require(tab.paneTree?.leaves.first)
+        #expect(leaf.cwd == expected)
+        #expect(leaf.title == (value == "" ? nil : expected))
+        #expect(tab.titleOverride == expected)
+        #expect(tab.tabColor == expected)
+        #expect(snapshot.name == (expected ?? ""))
+        #expect(snapshot.defaultDirectory == expected)
+        // Bounding must not mutate the live model.
+        #expect(view.pwd == value)
+        #expect(session.titleOverride == value)
+        #expect(workspace.defaultDirectory == value)
+
+        let appSnapshot = AppSessionSnapshot(
+            ownerInstanceID: UUID(), ownerPID: 1,
+            windows: [WindowSnapshot(physicalUUID: UUID(), selection: nil, workspaces: [snapshot])]
+        )
+        guard case .success = SessionSnapshotValidator.validate(appSnapshot) else {
+            Issue.record("bounded live metadata must pass the shared validator")
+            return
+        }
     }
 
     @Test(arguments: [SplitTree<Ghostty.SurfaceView>.Direction.horizontal, .vertical])
@@ -145,10 +232,8 @@ import Testing
         #expect(snapshot.selectedTabID == b.id)
     }
 
-    /// A tab whose live tree is empty because it is not hydrated must be
-    /// republished from its stored value. Getting this wrong erases the user's
-    /// structure on the next save.
-    @Test func pendingTabIsRepublishedFromStoredSnapshotNotLiveEmptyTree() throws {
+    /// An unhydrated tab keeps its stored tree while live sidebar metadata wins.
+    @Test func pendingTabKeepsStoredTreeAndCurrentMetadata() throws {
         let hydrated = TerminalSessionState(id: UUID(), surfaceTree: SplitTree(view: try #require(makeView())))
         let pending = TerminalSessionState(id: UUID(), surfaceTree: SplitTree<Ghostty.SurfaceView>())
 
@@ -166,6 +251,8 @@ import Testing
             focusedPaneID: nil,
             zoomedPaneID: nil
         )
+        pending.titleOverride = "renamed"
+        pending.tabColor = "2"
 
         let workspace = WorkspaceSession(
             id: UUID(),
@@ -180,9 +267,10 @@ import Testing
         )
 
         #expect(snapshot.tabs[0].paneTree?.paneCount == 1)
-        #expect(snapshot.tabs[1] == storedTab)
         #expect(snapshot.tabs[1].paneTree?.paneCount == 2)
-        #expect(snapshot.tabs[1].titleOverride == "kept")
+        #expect(snapshot.tabs[1].paneTree == storedTree)
+        #expect(snapshot.tabs[1].titleOverride == "renamed")
+        #expect(snapshot.tabs[1].tabColor == "2")
     }
 
     // MARK: - Value → live

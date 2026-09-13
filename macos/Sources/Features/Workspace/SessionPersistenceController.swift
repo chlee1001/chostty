@@ -17,13 +17,12 @@ import OSLog
 /// tab color, and the direct tree assignments (split create, close, resize,
 /// zoom) that bypass `commit` entirely through `surfaceTree`'s `didSet`.
 ///
-/// When neither counter moved and the window set is unchanged, a tick does no
-/// projection at all.
+/// When neither counter moved since the last successful save and the window
+/// set is unchanged, a tick does no projection at all.
 @MainActor
 final class SessionPersistenceController {
-    /// Also the upper bound on what a crash or SIGKILL can lose. An ordinary
-    /// quit loses nothing, because `applicationWillTerminate` saves
-    /// synchronously.
+    /// Target save cadence, not a durability guarantee: refused or failed
+    /// writes keep the last valid snapshot and retry on later ticks.
     static let interval: TimeInterval = 8.0
 
     private let repository: SessionSnapshotRepository
@@ -39,14 +38,60 @@ final class SessionPersistenceController {
     )
 
     /// Keeps the timer path and the terminate path from interleaving on the
-    /// same file.
-    private let queue = DispatchQueue(label: "com.chostty.session-persistence", qos: .utility)
+    /// same file. Tests may inject another serial utility queue.
+    private let queue: DispatchQueue
 
     private var timer: Timer?
-    private var lastMountGenerations: [UUID: UInt64] = [:]
-    private var lastMetadataGenerations: [UUID: UInt64] = [:]
-    private var lastWindowIDs: Set<UUID> = []
-    private var hasProjectedOnce = false
+
+    private struct SaveCursor: Equatable, Sendable {
+        var mountGenerations: [UUID: UInt64] = [:]
+        var metadataGenerations: [UUID: UInt64] = [:]
+        var windowIDs: Set<UUID> = []
+    }
+
+    /// The main actor reserves cursors without waiting for filesystem I/O.
+    /// Queue completions acknowledge only their own cursor, under the same lock.
+    private final class SaveState: @unchecked Sendable {
+        enum Result {
+            case saved
+            case rejected
+            case failed
+        }
+
+        private let lock = NSLock()
+        /// `nil` forces the first successful write to record this process's
+        /// fresh owner ID even when the graph has not changed.
+        private var savedCursor: SaveCursor?
+        private var rejectedCursor: SaveCursor?
+        private var inFlightCursors: [SaveCursor] = []
+
+        func reserve(_ cursor: SaveCursor) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard savedCursor != cursor,
+                  rejectedCursor != cursor,
+                  !inFlightCursors.contains(cursor) else { return false }
+            inFlightCursors.append(cursor)
+            return true
+        }
+
+        func finish(_ cursor: SaveCursor, result: Result) {
+            lock.lock()
+            defer { lock.unlock() }
+            switch result {
+            case .saved:
+                savedCursor = cursor
+                rejectedCursor = nil
+            case .rejected:
+                rejectedCursor = cursor
+            case .failed:
+                break
+            }
+            inFlightCursors.removeAll { $0 == cursor }
+        }
+    }
+
+    private let saveState = SaveState()
 
     /// Set when boot found another live instance owning the file.
     private(set) var isDisabledBySecondInstance = false
@@ -57,6 +102,7 @@ final class SessionPersistenceController {
         registry: PendingHydrationRegistry,
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
+        queue: DispatchQueue = DispatchQueue(label: "com.chostty.session-persistence", qos: .utility),
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.all }
     ) {
         self.repository = repository
@@ -64,6 +110,7 @@ final class SessionPersistenceController {
         self.registry = registry
         self.ownerInstanceID = ownerInstanceID
         self.ownerPID = ownerPID
+        self.queue = queue
         self.controllersProvider = controllersProvider
     }
 
@@ -135,18 +182,24 @@ final class SessionPersistenceController {
         guard canPersist else { return false }
 
         let controllers = controllersProvider()
-        guard hasChanges(controllers) else { return false }
+        // Closing every window is a normal macOS state, not a new restorable
+        // layout. Keep the last valid snapshot without retrying an invalid
+        // zero-window projection on every timer tick.
+        guard !controllers.isEmpty else { return false }
+        let cursor = saveCursor(from: controllers)
+        guard saveState.reserve(cursor) else { return false }
 
-        write(snapshot(from: controllers), synchronously: false)
+        write(snapshot(from: controllers), cursor: cursor, synchronously: false)
         return true
     }
 
-    /// Blocks until the bytes are on disk. `applicationWillTerminate` has to
-    /// finish before it returns, and the snapshot is a few UUIDs and path
-    /// strings.
+    /// Blocks until the save attempt finishes. Invalid projections and I/O
+    /// failures leave the previous valid snapshot in place.
     func persistNow() {
         guard canPersist else { return }
-        write(snapshot(from: controllersProvider()), synchronously: true)
+        let controllers = controllersProvider()
+        guard !controllers.isEmpty else { return }
+        write(snapshot(from: controllers), cursor: saveCursor(from: controllers), synchronously: true)
     }
 
     /// For tests; production does not need it, since the terminate path is
@@ -159,11 +212,19 @@ final class SessionPersistenceController {
         gate.shouldPersist && !isDisabledBySecondInstance
     }
 
-    private func write(_ snapshot: AppSessionSnapshot, synchronously: Bool) {
+    private func write(_ snapshot: AppSessionSnapshot, cursor: SaveCursor, synchronously: Bool) {
         let repository = self.repository
+        let saveState = self.saveState
         let work = {
+            var result = SaveState.Result.failed
+            defer { saveState.finish(cursor, result: result) }
             do {
-                _ = try repository.save(snapshot)
+                switch try repository.save(snapshot) {
+                case .written, .skippedIdentical:
+                    result = .saved
+                case .refusedInvalid:
+                    result = .rejected
+                }
             } catch {
                 // A failed write is retried on the next tick; the previous file
                 // is still on disk and still usable.
@@ -180,42 +241,17 @@ final class SessionPersistenceController {
 
     // MARK: - Change detection
 
-    private func hasChanges(_ controllers: [TerminalController]) -> Bool {
-        var changed = false
-
-        let windowIDs = Set(controllers.map(\.physicalUUID))
-        if windowIDs != lastWindowIDs {
-            lastWindowIDs = windowIDs
-            changed = true
-        }
-
-        var mountGenerations: [UUID: UInt64] = [:]
-        var metadataGenerations: [UUID: UInt64] = [:]
+    private func saveCursor(from controllers: [TerminalController]) -> SaveCursor {
+        var cursor = SaveCursor()
+        cursor.windowIDs = Set(controllers.map(\.physicalUUID))
         for controller in controllers {
             let store = controller.workspaceStore
-            mountGenerations[controller.physicalUUID] = store.snapshot.mountGeneration
+            cursor.mountGenerations[controller.physicalUUID] = store.snapshot.mountGeneration
             for session in store.allSessions {
-                metadataGenerations[session.id] = session.metadataGeneration
+                cursor.metadataGenerations[session.id] = session.metadataGeneration
             }
         }
-
-        if mountGenerations != lastMountGenerations {
-            lastMountGenerations = mountGenerations
-            changed = true
-        }
-        if metadataGenerations != lastMetadataGenerations {
-            lastMetadataGenerations = metadataGenerations
-            changed = true
-        }
-
-        // The first tick always projects: this process has a fresh owner id,
-        // so the file has to record who owns it now.
-        if !hasProjectedOnce {
-            hasProjectedOnce = true
-            changed = true
-        }
-
-        return changed
+        return cursor
     }
 
     // MARK: - Projection

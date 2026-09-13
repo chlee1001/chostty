@@ -93,21 +93,29 @@ import Testing
         #expect(permissions.int16Value == 0o600)
     }
 
-    @Test func identicalSnapshotIsSkippedAndLeavesMtimeUntouched() throws {
+    @Test func identicalSnapshotLeavesBothSlotsUntouched() throws {
         let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let snapshot = makeSnapshot()
 
+        #expect(try repository.save(makeSnapshot()) == .written)
         #expect(try repository.save(snapshot) == .written)
-        let firstWrite = try modificationDate(repository.primaryURL)
-
-        // Filesystem timestamps are coarse; long enough that a second write
-        // would be observable.
-        Thread.sleep(forTimeInterval: 1.1)
+        let primary = try Data(contentsOf: repository.primaryURL)
+        let backup = try Data(contentsOf: repository.backupURL)
+        let oldDate = Date(timeIntervalSince1970: 1_000)
+        for url in [repository.primaryURL, repository.backupURL] {
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+        let primaryDate = try modificationDate(repository.primaryURL)
+        let backupDate = try modificationDate(repository.backupURL)
 
         #expect(try repository.save(snapshot) == .skippedIdentical)
         #expect(try repository.save(snapshot) == .skippedIdentical)
-        #expect(try modificationDate(repository.primaryURL) == firstWrite)
+        #expect(try Data(contentsOf: repository.primaryURL) == primary)
+        #expect(try Data(contentsOf: repository.backupURL) == backup)
+        #expect(try modificationDate(repository.primaryURL) == primaryDate)
+        #expect(try modificationDate(repository.backupURL) == backupDate)
     }
 
     @Test func changedSnapshotIsWritten() throws {
@@ -137,7 +145,7 @@ import Testing
         let tooMany = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 9, windows: windows)
 
         let outcome = try repository.save(tooMany)
-        #expect(outcome == .refusedOverLimit(.limitExceeded(
+        #expect(outcome == .refusedInvalid(.limitExceeded(
             kind: "window",
             count: SessionSnapshotValidator.Limits.windows + 1,
             limit: SessionSnapshotValidator.Limits.windows
@@ -153,6 +161,77 @@ import Testing
     }
 
     // MARK: - Loading and fallback
+
+    @Test func emptySavePreservesValidPrimaryBytes() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let good = makeSnapshot()
+        #expect(try repository.save(good) == .written)
+        let original = try Data(contentsOf: repository.primaryURL)
+
+        let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 1, windows: [])
+        #expect(try repository.save(empty) == .refusedInvalid(.noWindows))
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+        #expect(repository.load() == .loaded(good, source: .primary))
+    }
+
+    @Test func successfulSavesLoadTheirValidatedValue() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let ordinary = makeSnapshot()
+        let danglingSelection = makeSnapshot(workspaces: [
+            makeWorkspace(tabs: [makeTab(panes: 3)], selectedTabID: UUID())
+        ])
+        let emptyTree = TabSnapshot(
+            id: UUID(), titleOverride: "", tabColor: nil, paneTree: nil,
+            focusedPaneID: UUID(), zoomedPaneID: UUID()
+        )
+        let emptyTreeSnapshot = makeSnapshot(workspaces: [makeWorkspace(tabs: [emptyTree])])
+
+        for snapshot in [ordinary, danglingSelection, emptyTreeSnapshot] {
+            guard case .success(let validated) = SessionSnapshotValidator.validate(snapshot) else {
+                Issue.record("fixture must be valid after selection repair")
+                return
+            }
+            #expect(try repository.save(snapshot) == .written)
+            #expect(repository.load() == .loaded(validated, source: .primary))
+            #expect(try repository.save(snapshot) == .skippedIdentical)
+            #expect(repository.load() == .loaded(validated, source: .primary))
+        }
+    }
+
+    @Test func encodedResourceLimitRefusesOtherwiseValidSnapshot() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let good = makeSnapshot()
+        #expect(try repository.save(good) == .written)
+        let original = try Data(contentsOf: repository.primaryURL)
+        let text = String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength)
+        let workspaces = (0..<SessionSnapshotValidator.Limits.workspacesPerWindow).map { _ in
+            makeWorkspace(tabs: (0..<4).map { _ in
+                TabSnapshot(
+                    id: UUID(), titleOverride: text, tabColor: nil,
+                    paneTree: .leaf(makeLeaf(cwd: text)),
+                    focusedPaneID: nil, zoomedPaneID: nil
+                )
+            })
+        }
+        let snapshot = makeSnapshot(workspaces: workspaces)
+        guard case .success(let validated) = SessionSnapshotValidator.validate(snapshot) else {
+            Issue.record("fixture must pass value validation")
+            return
+        }
+        let byteCount = try SessionSnapshotRepository.encoder.encode(validated).count
+        #expect(byteCount > SessionSnapshotRepository.maxFileBytes)
+        #expect(try repository.save(snapshot) == .refusedInvalid(.limitExceeded(
+            kind: "fileBytes", count: byteCount, limit: SessionSnapshotRepository.maxFileBytes
+        )))
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+        #expect(repository.load() == .loaded(good, source: .primary))
+    }
 
     @Test func absentFilesLoadAsAbsent() throws {
         let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
@@ -220,12 +299,93 @@ import Testing
 
     // MARK: - Backup rotation
 
-    @Test func noBackupExistsBeforePromotion() throws {
+    @Test func firstSaveDoesNotRequireBackup() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         #expect(try repository.save(makeSnapshot()) == .written)
 
         #expect(!FileManager.default.fileExists(atPath: repository.backupURL.path))
+    }
+
+    @Test func changedSavesRotateTheImmediatelyPreviousValidPrimary() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let first = makeSnapshot(ownerPID: 1)
+        let second = makeSnapshot(ownerPID: 2)
+        let third = makeSnapshot(ownerPID: 3)
+
+        #expect(try repository.save(first) == .written)
+        let firstBytes = try Data(contentsOf: repository.primaryURL)
+        #expect(try repository.save(second) == .written)
+        #expect(try Data(contentsOf: repository.backupURL) == firstBytes)
+        #expect(repository.load() == .loaded(second, source: .primary))
+
+        let secondBytes = try Data(contentsOf: repository.primaryURL)
+        #expect(try repository.save(third) == .written)
+        #expect(try Data(contentsOf: repository.backupURL) == secondBytes)
+        #expect(repository.load() == .loaded(third, source: .primary))
+        let attributes = try FileManager.default.attributesOfItem(atPath: repository.backupURL.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.int16Value == 0o600)
+
+        try Data("corrupt".utf8).write(to: repository.primaryURL)
+        #expect(repository.load() == .loaded(second, source: .backup))
+    }
+
+    @Test func invalidPrimaryNeverOverwritesValidBackup() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let good = makeSnapshot()
+        #expect(try repository.save(good) == .written)
+        try repository.promotePrimaryToBackup()
+        let backup = try Data(contentsOf: repository.backupURL)
+        let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 1, windows: [])
+        let depth = SessionSnapshotRepository.maxNestingDepth + 1
+        let invalidFiles = [
+            Data("corrupt".utf8),
+            try SessionSnapshotRepository.encoder.encode(empty),
+            Data(repeating: UInt8(ascii: " "), count: SessionSnapshotRepository.maxFileBytes + 1),
+            Data((String(repeating: "[", count: depth) + String(repeating: "]", count: depth)).utf8)
+        ]
+
+        for invalid in invalidFiles {
+            try invalid.write(to: repository.primaryURL)
+            #expect(repository.load() == .loaded(good, source: .backup))
+            #expect(throws: (any Error).self) { try repository.promotePrimaryToBackup() }
+            #expect(try Data(contentsOf: repository.backupURL) == backup)
+            let next = makeSnapshot()
+            #expect(try repository.save(next) == .written)
+            #expect(repository.load() == .loaded(next, source: .primary))
+            #expect(try Data(contentsOf: repository.backupURL) == backup)
+        }
+    }
+
+    @Test func backupWriteFailurePreservesPrimaryAndAllowsRetry() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let first = makeSnapshot()
+        let next = makeSnapshot()
+        #expect(try repository.save(first) == .written)
+        let primary = try Data(contentsOf: repository.primaryURL)
+        let primaryDate = try modificationDate(repository.primaryURL)
+
+        // A nonempty directory cannot be atomically replaced by backup bytes,
+        // independent of the test process's filesystem permissions.
+        try FileManager.default.createDirectory(at: repository.backupURL, withIntermediateDirectories: false)
+        let blocker = repository.backupURL.appendingPathComponent("blocker")
+        try Data("keep".utf8).write(to: blocker)
+        #expect(throws: (any Error).self) { try repository.save(next) }
+        #expect(try Data(contentsOf: repository.primaryURL) == primary)
+        #expect(try modificationDate(repository.primaryURL) == primaryDate)
+        #expect(repository.load() == .loaded(first, source: .primary))
+        #expect(try Data(contentsOf: blocker) == Data("keep".utf8))
+
+        try FileManager.default.removeItem(at: repository.backupURL)
+        #expect(try repository.save(next) == .written)
+        #expect(try Data(contentsOf: repository.backupURL) == primary)
+        #expect(repository.load() == .loaded(next, source: .primary))
     }
 
     @Test func promotedBackupIsLoadedWhenPrimaryIsLaterCorrupted() throws {
@@ -268,6 +428,24 @@ import Testing
             return
         }
         #expect(reason.contains("workspaceWithoutTabs"))
+    }
+
+    @Test func windowWithoutWorkspacesIsUnusable() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let window = WindowSnapshot(physicalUUID: UUID(), selection: nil, workspaces: [])
+        let snapshot = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 1,
+            windows: [window]
+        )
+        try SessionSnapshotRepository.encoder.encode(snapshot).write(to: repository.primaryURL)
+
+        guard case .unusable(let reason) = repository.load() else {
+            Issue.record("expected a workspace-free window to be rejected")
+            return
+        }
+        #expect(reason.contains("windowWithoutWorkspaces"))
     }
 
     @Test func duplicateTabIdentifiersAreUnusable() {
@@ -416,7 +594,12 @@ import Testing
     }
 
     @Test func absurdlyLongStringsAreUnusable() {
-        let huge = String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength + 1)
+        // Character count alone is insufficient: this remains below the
+        // character limit while exceeding the UTF-8 byte limit.
+        let huge = String(
+            repeating: "é",
+            count: SessionSnapshotValidator.Limits.stringLength / 2 + 1
+        )
         let tab = TabSnapshot(
             id: UUID(),
             titleOverride: nil,
@@ -438,6 +621,23 @@ import Testing
         #expect(field == "pane.cwd")
     }
 
+    @Test func absurdlyLongStoredTabColorIsUnusable() {
+        let huge = String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength + 1)
+        let tab = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: huge,
+            paneTree: .leaf(makeLeaf()),
+            focusedPaneID: nil,
+            zoomedPaneID: nil
+        )
+        let snapshot = makeSnapshot(workspaces: [makeWorkspace(tabs: [tab])])
+
+        #expect(SessionSnapshotValidator.validate(snapshot) == .failure(
+            .stringTooLong(field: "tab.tabColor", length: huge.utf8.count)
+        ))
+    }
+
     /// `JSONDecoder` recurses per level, so the value-level depth check never
     /// runs for a deeply nested file - the stack goes first. The byte scan has
     /// to reject it before decoding.
@@ -453,7 +653,7 @@ import Testing
             Issue.record("a nesting bomb must be rejected")
             return
         }
-        #expect(reason.contains("tooDeeplyNested"))
+        #expect(reason.contains("limitExceeded kind=jsonNestingDepth count=\(depth)"))
     }
 
     @Test func nestingDepthIgnoresBracketsInsideStrings() {
@@ -478,7 +678,9 @@ import Testing
             Issue.record("an oversized file must be rejected")
             return
         }
-        #expect(reason.contains("oversized"))
+        #expect(reason.contains(
+            "limitExceeded kind=fileBytes count=\(SessionSnapshotRepository.maxFileBytes + 1)"
+        ))
     }
 
     @Test func missingVersionStillFailsClosed() throws {

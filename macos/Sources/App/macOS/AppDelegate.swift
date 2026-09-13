@@ -452,13 +452,13 @@ class AppDelegate: NSObject,
             "session.restore.applied windows=\(snapshot.windows.count) source=\(String(describing: source), privacy: .public) pendingTabs=\(self.pendingHydration.count)"
         )
 
-        // The backup slot is only meaningful once a file has actually booted
-        // this app, so promotion happens here rather than at save time.
+        // Seed the backup after a successful boot. Changed saves then replace
+        // it with the immediately preceding validated primary.
         if source == .primary {
             do {
                 try repository.promotePrimaryToBackup()
             } catch {
-                // Not fatal, but this launch leaves no fallback behind.
+                // Not fatal; any existing backup remains the fallback.
                 Self.logger.warning(
                     "session.restore.backupPromotionFailed error=\(String(describing: error), privacy: .public)"
                 )

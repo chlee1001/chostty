@@ -1,7 +1,7 @@
 import Foundation
 
-/// Value checks applied to a decoded snapshot before any of it reaches the live
-/// graph.
+/// Shared value checks applied before saving and before a decoded snapshot
+/// reaches the live graph.
 ///
 /// This exists because `WorkspaceSessionStore.init(restoredWorkspaces:selection:)`
 /// defends its invariants with `precondition`, not optionals. The session file
@@ -14,8 +14,7 @@ import Foundation
 /// at something that no longer exists is clamped, because losing which tab was
 /// focused is not a reason to throw away the layout.
 enum SessionSnapshotValidator {
-    /// The save side refuses to create a file past these, so the load side is
-    /// purely hand-edit defence.
+    /// Shared resource bounds for live projections and decoded files.
     enum Limits {
         static let windows = 12
         static let workspacesPerWindow = 128
@@ -29,6 +28,7 @@ enum SessionSnapshotValidator {
     enum Rejection: Error, Equatable, CustomStringConvertible {
         case schemaVersion(found: Int, expected: Int)
         case noWindows
+        case windowWithoutWorkspaces(windowID: UUID)
         case workspaceWithoutTabs(workspaceID: UUID)
         case duplicateIdentifier(UUID)
         case paneTreeTooDeep(tabID: UUID, depth: Int)
@@ -42,6 +42,8 @@ enum SessionSnapshotValidator {
                 return "schemaVersion got=\(found) want=\(expected)"
             case .noWindows:
                 return "noWindows"
+            case .windowWithoutWorkspaces(let id):
+                return "windowWithoutWorkspaces window=\(id)"
             case .workspaceWithoutTabs(let id):
                 return "workspaceWithoutTabs workspace=\(id)"
             case .duplicateIdentifier(let id):
@@ -76,6 +78,9 @@ enum SessionSnapshotValidator {
         for window in snapshot.windows {
             guard seenIdentifiers.insert(window.physicalUUID).inserted else {
                 return .failure(.duplicateIdentifier(window.physicalUUID))
+            }
+            guard !window.workspaces.isEmpty else {
+                return .failure(.windowWithoutWorkspaces(windowID: window.physicalUUID))
             }
             guard window.workspaces.count <= Limits.workspacesPerWindow else {
                 return .failure(.limitExceeded(
@@ -114,6 +119,9 @@ enum SessionSnapshotValidator {
                         return .failure(.duplicateIdentifier(tab.id))
                     }
                     if let rejection = checkLength(tab.titleOverride, field: "tab.titleOverride") {
+                        return .failure(rejection)
+                    }
+                    if let rejection = checkLength(tab.tabColor, field: "tab.tabColor") {
                         return .failure(rejection)
                     }
                     if let tree = tab.paneTree {
@@ -190,8 +198,8 @@ enum SessionSnapshotValidator {
     }
 
     private static func checkLength(_ value: String?, field: String) -> Rejection? {
-        guard let value, value.count > Limits.stringLength else { return nil }
-        return .stringTooLong(field: field, length: value.count)
+        guard let value, value.utf8.count > Limits.stringLength else { return nil }
+        return .stringTooLong(field: field, length: value.utf8.count)
     }
 
     private static func clampedSelection(
@@ -210,28 +218,4 @@ enum SessionSnapshotValidator {
         return SelectionSnapshot(workspaceID: first.id, tabID: tabID)
     }
 
-    /// Refusing to create an over-limit file means the user never meets the
-    /// load-side rejection in normal use; the previous valid file stays.
-    static func isWithinSaveLimits(_ snapshot: AppSessionSnapshot) -> Rejection? {
-        if snapshot.windows.count > Limits.windows {
-            return .limitExceeded(kind: "window", count: snapshot.windows.count, limit: Limits.windows)
-        }
-        for window in snapshot.windows {
-            if window.workspaces.count > Limits.workspacesPerWindow {
-                return .limitExceeded(
-                    kind: "workspace",
-                    count: window.workspaces.count,
-                    limit: Limits.workspacesPerWindow
-                )
-            }
-            for workspace in window.workspaces where workspace.paneCount > Limits.panesPerWorkspace {
-                return .limitExceeded(
-                    kind: "pane",
-                    count: workspace.paneCount,
-                    limit: Limits.panesPerWorkspace
-                )
-            }
-        }
-        return nil
-    }
 }

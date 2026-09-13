@@ -88,6 +88,89 @@ import Testing
             .reduce(0) { $0 + ($1.paneTree?.paneCount ?? 0) }
     }
 
+    // MARK: - Write scheduling
+
+    @Test func duplicateTicksWhileAWriteIsPendingAreCoalesced() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let queue = DispatchQueue(label: "chostty-persist-tests.pending", qos: .utility)
+        let release = DispatchSemaphore(value: 0)
+        queue.async {
+            // Bound a regression to a failed expectation, not a hung test host.
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        let persistence = SessionPersistenceController(
+            repository: repository,
+            gate: openGate(),
+            registry: PendingHydrationRegistry(),
+            queue: queue,
+            controllersProvider: { [controller] }
+        )
+        defer {
+            release.signal()
+            persistence.flush()
+        }
+
+        #expect(persistence.persistIfNeeded())
+        #expect(!persistence.persistIfNeeded())
+        #expect(!persistence.persistIfNeeded())
+        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+
+        release.signal()
+        persistence.flush()
+        #expect(try decode(repository).windows.map(\.physicalUUID) == [controller.physicalUUID])
+        #expect(!persistence.persistIfNeeded())
+    }
+
+    @Test func changedCursorQueuesBehindPendingWriteAndBecomesClean() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController(workspaceName: "Before")
+        let queue = DispatchQueue(label: "chostty-persist-tests.changed", qos: .utility)
+        let release = DispatchSemaphore(value: 0)
+        let firstFinished = DispatchSemaphore(value: 0)
+        let releaseSecond = DispatchSemaphore(value: 0)
+        queue.async {
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        let persistence = SessionPersistenceController(
+            repository: repository,
+            gate: openGate(),
+            registry: PendingHydrationRegistry(),
+            queue: queue,
+            controllersProvider: { [controller] }
+        )
+        defer {
+            release.signal()
+            releaseSecond.signal()
+            persistence.flush()
+        }
+
+        #expect(persistence.persistIfNeeded())
+        queue.async {
+            firstFinished.signal()
+            #expect(releaseSecond.wait(timeout: .now() + 5) == .success)
+        }
+        let store = controller.workspaceStore
+        store.renameWorkspace(store.snapshot.workspaces[0].id, to: "After")
+        #expect(persistence.persistIfNeeded())
+        #expect(!persistence.persistIfNeeded())
+        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+
+        release.signal()
+        #expect(firstFinished.wait(timeout: .now() + 5) == .success)
+        #expect(try decode(repository).windows[0].workspaces[0].name == "Before")
+        // Completing the older cursor must not clear the newer reservation.
+        #expect(!persistence.persistIfNeeded())
+        releaseSecond.signal()
+        persistence.flush()
+        #expect(try decode(repository).windows[0].workspaces[0].name == "After")
+        #expect(!persistence.persistIfNeeded())
+    }
+
     // MARK: - (1) Idle: no extra write, deterministic window order
 
     @Test func repeatedCallsWithoutChangesWriteOnceAndKeepWindowOrderStable() throws {
@@ -329,6 +412,83 @@ import Testing
         // reopened tab inherits; letting every pane write it would make those
         // last-writer-wins.
         #expect(session.pwd == sessionPwdBefore)
+    }
+
+    // MARK: - Write rejection and retry
+
+    @Test func emptyControllersCannotOverwritePrimaryOrScheduleInvalidWrites() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        var controllers = [controller]
+        let persistence = makePersistence(directory: directory) { controllers }
+        persistence.persistNow()
+        let original = try Data(contentsOf: repository.primaryURL)
+        #expect(!persistence.persistIfNeeded())
+
+        controllers = []
+        #expect(!persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+
+        persistence.persistNow()
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+        #expect(!persistence.persistIfNeeded())
+    }
+
+    @Test func failedWriteRetriesWithoutModelChangeAndThenBecomesClean() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A regular file where the repository needs a directory produces a
+        // real, deterministic I/O error without relying on permission bits.
+        let blockedDirectory = directory.appendingPathComponent("blocked")
+        let sentinel = Data("not a directory".utf8)
+        try sentinel.write(to: blockedDirectory)
+        let repository = SessionSnapshotRepository(directory: blockedDirectory)
+        let controller = try makeController()
+        let persistence = makePersistence(directory: blockedDirectory) { [controller] }
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(try Data(contentsOf: blockedDirectory) == sentinel)
+        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+
+        try FileManager.default.removeItem(at: blockedDirectory)
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        guard case .loaded(let snapshot, let source) = repository.load() else {
+            Issue.record("the unchanged model must be retried after the I/O error")
+            return
+        }
+        #expect(source == .primary)
+        #expect(snapshot.windows.map(\.physicalUUID) == [controller.physicalUUID])
+        #expect(!persistence.persistIfNeeded())
+    }
+
+    @Test func refusedSnapshotWaitsForStateChangeBeforeRetrying() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var controllers = try (0...SessionSnapshotValidator.Limits.windows).map { index in
+            try makeController(workspaceName: "Window \(index)")
+        }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let persistence = makePersistence(directory: directory) { controllers }
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+        #expect(!persistence.persistIfNeeded())
+
+        controllers.removeLast()
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        guard case .loaded(let snapshot, source: .primary) = repository.load() else {
+            Issue.record("a changed valid cursor must save after a refusal")
+            return
+        }
+        #expect(snapshot.windows.count == SessionSnapshotValidator.Limits.windows)
+        #expect(!persistence.persistIfNeeded())
     }
 
     // MARK: - Gate and second-instance behavior
