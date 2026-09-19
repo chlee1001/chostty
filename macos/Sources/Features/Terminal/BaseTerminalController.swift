@@ -321,6 +321,14 @@ class BaseTerminalController: NSWindowController,
             name: .ghosttySurfaceDragEndedNoTarget,
             object: nil)
 
+        // Virtual-tab tear-off: a tab drag released outside the strip with no
+        // drop target claiming it. See `ghosttyTabDragEndedNoTarget(_:)`.
+        center.addObserver(
+            self,
+            selector: #selector(ghosttyTabDragEndedNoTarget(_:)),
+            name: .ghosttyTabDragEndedNoTarget,
+            object: nil)
+
         // Listen for local events that we need to know of outside of
         // single surface handlers.
         self.eventMonitor = NSEvent.addLocalMonitorForEvents(
@@ -1762,6 +1770,154 @@ class BaseTerminalController: NSWindowController,
             position: notification.userInfo?[Notification.Name.ghosttySurfaceDragEndedNoTargetPointKey] as? NSPoint,
             confirmUndo: false,
             inheritBackgroundOpacity: isBackgroundOpaque)
+    }
+
+    /// Virtual-tab tear-off entry point: a tab drag ended outside the strip
+    /// with no drop target claiming it. Only the controller whose store still
+    /// owns the tab proceeds — every other window's controller receives the
+    /// same broadcast and returns at the first guard.
+    @objc private func ghosttyTabDragEndedNoTarget(_ notification: Notification) {
+        let info = notification.userInfo
+        guard let tabID = info?[Notification.Name.ghosttyTabDragEndedNoTargetTabIDKey] as? UUID,
+              workspaceStore.snapshot.workspaces.contains(where: {
+                  $0.tabs.contains { $0.id == tabID }
+              }) else { return }
+        let point = info?[Notification.Name.ghosttyTabDragEndedNoTargetPointKey] as? NSPoint
+        detachTabToNewWindow(tabID: tabID, screenPoint: point)
+    }
+
+    /// Detaches a live virtual tab into a new physical window, by reference.
+    ///
+    /// Order (the tear-off contract; every step is load-bearing):
+    /// 1. Guards — the store must hold more than this one session, and the
+    ///    tab must resolve, or the drag is a defined no-op.
+    /// 2. Write-back — for the presented tab the controller's `surfaceTree`
+    ///    is authoritative (`TerminalSessionState.surfaceTree` is only a
+    ///    stale copy until write-back), and after removal the source store
+    ///    can no longer resolve the session to write back to.
+    /// 3. Detach — `detachTab` (store commit; remove-then-create ordering)
+    ///    followed by `unregister`: the destination store registers the
+    ///    session itself in `init(restoredWorkspaces:)`, so this transfers
+    ///    single ownership instead of duplicating it.
+    /// 4. Remount — when the presented tab left, mount the store's committed
+    ///    successor selection (mirrors `closeWorkspaceTab`).
+    /// 5. Undo group — ONE group on the process-wide undo manager. The
+    ///    source-restore action registers FIRST and the destination window's
+    ///    close-on-undo registers SECOND, so reverse-order execution closes
+    ///    the destination before restoring the source. The restore action
+    ///    also owns redo as a full re-detach. The lease finalize is a no-op:
+    ///    a torn-off session is alive in the new window and must survive
+    ///    lease expiry (unlike a close, which tears down on expiry).
+    @discardableResult
+    func detachTabToNewWindow(tabID: UUID, screenPoint: NSPoint?) -> TerminalController? {
+        let store = workspaceStore
+        guard store.allSessions.count > 1 else { return nil }
+        guard let owning = store.snapshot.workspaces.first(where: {
+                  $0.tabs.contains { $0.id == tabID }
+              }),
+              let restoreIndex = owning.tabs.firstIndex(where: { $0.id == tabID }),
+              let session = store.liveSession(forTabID: tabID) else { return nil }
+
+        let wasPresented = presentedSessionID == tabID
+        let restoreWorkspaceID = owning.id
+        // Captured for the empty-workspace undo path: if the detach removed
+        // this workspace entirely, the restore rebuilds it with its identity
+        // and presentation state instead of a bare fallback workspace.
+        let restoreWorkspaceName = owning.name
+        let restoreWorkspaceColor = owning.color
+        let restoreWorkspaceCollapsed = owning.isCollapsed
+        let restoreWorkspaceDefaultDirectory = owning.defaultDirectory
+        let restoreWorkspaceIndex = store.snapshot.workspaces.firstIndex(where: { $0.id == owning.id })
+
+        // 2. Write-back BEFORE the detach: post-removal, the store can no
+        // longer resolve the session, so a stale tree would move instead.
+        if wasPresented {
+            session.surfaceTree = surfaceTree
+            session.focusedSurfaceID = focusedSurface?.id
+        }
+
+        undoManager?.beginUndoGrouping()
+        undoManager?.setActionName("Detach Tab")
+        defer {
+            undoManager?.endUndoGrouping()
+        }
+
+        // 3. Detach (remove-then-create: source removal commits before the
+        //    destination controller re-registers the surfaces). The guards above
+        //    duplicate detachTab's own refusal, so this cannot fail without a
+        //    concurrent mutation — in which case the empty group closes below
+        //    with no registrations, a harmless no-op on the shared stack.
+        guard let detached = store.detachTab(tabID) else { return nil }
+        store.unregister(detached.id)
+
+        // 4. Remount the committed successor when the presented tab left.
+        if wasPresented {
+            let sel = store.snapshot.selection
+            if sel.tabID != tabID {
+                selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+            }
+        }
+
+        // 5a. Source-restore undo (registers FIRST ⇒ executes LAST on undo).
+        let lease = DetachedUndoLease(payload: detached) { _ in
+            // Session-preserving by design: the torn-off session stays alive
+            // in the destination window even if this lease expires unused.
+        }
+
+        if let undoManager {
+            undoManager.registerUndo(
+                withTarget: self,
+                expiresAfter: undoExpiration
+            ) { target in
+                guard let restored = lease.consume() else { return }
+                target.workspaceStore.register(restored)
+                if target.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
+                    target.workspaceStore.insertTab(
+                        restored,
+                        intoWorkspace: restoreWorkspaceID,
+                        at: restoreIndex)
+                } else {
+                    // The detach emptied this workspace and it is gone: rebuild
+                    // it with its identity and presentation state (mirrors
+                    // closeWorkspaceTab's insertWorkspace undo).
+                    target.workspaceStore.insertWorkspace(
+                        id: restoreWorkspaceID,
+                        name: restoreWorkspaceName,
+                        sessions: [restored],
+                        selectedTabID: restored.id,
+                        at: restoreWorkspaceIndex,
+                        defaultDirectory: restoreWorkspaceDefaultDirectory,
+                        color: restoreWorkspaceColor,
+                        isCollapsed: restoreWorkspaceCollapsed)
+                }
+                let sel = target.workspaceStore.snapshot.selection
+                target.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+
+                // Redo = full re-detach. Registered while undoing, so it runs
+                // on the redo pass; never a recreate-from-captured-tree.
+                undoManager.registerUndo(
+                    withTarget: target.ghostty,
+                    expiresAfter: target.undoExpiration
+                ) { [weak target] _ in
+                    target?.detachTabToNewWindow(tabID: restored.id, screenPoint: nil)
+                }
+            }
+        }
+
+        // 5b. Destination window (registers SECOND ⇒ executes FIRST on
+        //     undo: the torn-off window closes before the source restores).
+        let destination = WorkspaceSession(
+            id: UUID(),
+            name: owning.name,
+            tabs: [detached],
+            selectedTabID: detached.id,
+            color: owning.color,
+            isCollapsed: owning.isCollapsed,
+            defaultDirectory: owning.defaultDirectory)
+        return TerminalController.newWindow(
+            ghostty,
+            detachedWorkspace: destination,
+            position: screenPoint)
     }
 
     // MARK: Local Events

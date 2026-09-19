@@ -1020,6 +1020,31 @@ final class WorkspaceSessionStore: ObservableObject {
         return session
     }
 
+    /// Detaches a tab for tear-off into a new physical window.
+    ///
+    /// A structural-candidate operation that reuses `removeTab`'s
+    /// workspace-removal/reselection logic rather than duplicating it: the
+    /// source store's selection, workspace resequencing, and `surfaceToTab`
+    /// pruning are exactly the close-tab bookkeeping tear-off needs. Refuses
+    /// (returns nil, mutating nothing) when the tab is the last session
+    /// standing anywhere in the window, so a tear-off can never empty the
+    /// source window.
+    ///
+    /// The session stays in the live registry; the caller owns the ownership
+    /// transfer — `unregister` it from this store BEFORE constructing the
+    /// destination (remove-then-create: the destination store registers the
+    /// session itself in `init(restoredWorkspaces:)`).
+    /// Unlike a close, nothing here tears the session down.
+    @discardableResult
+    func detachTab(_ tabID: UUID) -> TerminalSessionState? {
+        // The source window must keep at least one tab. `removeTab` alone
+        // would return nil for the last workspace's only tab anyway (the
+        // empty-candidate fallback), but only AFTER staging; refusing here
+        // makes the sole-tab no-op explicit and free of any bookkeeping.
+        guard allSessions.count > 1 else { return nil }
+        return removeTab(tabID)
+    }
+
     // MARK: Validation (for debug assertions)
 
     var isValid: Bool {

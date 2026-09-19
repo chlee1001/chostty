@@ -555,4 +555,32 @@ import Testing
         #expect(snapshot.ownerPID == 4242)
         #expect(snapshot.ownerInstanceID != AppSessionSnapshot.unownedInstanceID)
     }
+
+    // MARK: - Tab tear-off projection
+
+    @Test func detachedTabProjectsExactlyOnceAcrossBothWindows() throws {
+        // A torn-off tab must appear exactly once in the session projection:
+        // in the destination window, never duplicated in the source. No save
+        // runs here — the projection is what the next timer tick persists.
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeController(tabCount: 2)
+        let moving = controller.workspaceStore.allSessions[0]
+
+        let destination = try #require(
+            controller.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let persistence = makePersistence(directory: directory) {
+            [controller, destination]
+        }
+
+        let snapshot = persistence.snapshot(from: [controller, destination])
+        let allTabIDs = snapshot.windows
+            .flatMap(\.workspaces)
+            .flatMap(\.tabs)
+            .map(\.id)
+
+        #expect(snapshot.windows.count == 2)
+        #expect(allTabIDs.filter { $0 == moving.id }.count == 1)
+        #expect(allTabIDs.count == 2)
+    }
 }

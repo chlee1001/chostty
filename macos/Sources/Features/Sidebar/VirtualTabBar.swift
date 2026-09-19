@@ -141,6 +141,10 @@ private struct VirtualTabBarStrip: View {
     let onCloseToTheRight: (UUID) -> Void
     let onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
 
+    /// Shared strip geometry for every tab's AppKit drag source: tear-off
+    /// fires for releases outside this frame.
+    private let dragContext = VirtualTabDragContext()
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: spacing) {
@@ -149,6 +153,9 @@ private struct VirtualTabBarStrip: View {
                 }
             }
         }
+        // Hit-test-transparent geometry anchor for tear-off detection; changes
+        // nothing about how the strip handles clicks or drags.
+        .background(VirtualTabDragStripAnchor(context: dragContext))
     }
 
     // Factored out of `body`'s `ForEach` closure: the compiler could not
@@ -164,6 +171,7 @@ private struct VirtualTabBarStrip: View {
             tabs: workspace.tabs,
             isSelected: session.id == store.snapshot.selection.tabID,
             dropTarget: $dropTarget,
+            dragContext: dragContext,
             onSelect: { onSelect(workspace.id, session.id) },
             onClose: { onClose(session.id) },
             onCloseOthers: { onCloseOthers(session.id) },
@@ -192,6 +200,7 @@ private struct VirtualTabBarItem: View {
 
     let isSelected: Bool
     @Binding var dropTarget: WorkspaceDragPayload?
+    let dragContext: VirtualTabDragContext
     let onSelect: () -> Void
     let onClose: () -> Void
     let onCloseOthers: () -> Void
@@ -281,10 +290,28 @@ private struct VirtualTabBarItem: View {
         }
         .onTapGesture(perform: onSelect)
         .onHover { hover = $0 }
-        .workspaceReorderable(
-            payload: .tab(session.id),
-            dropTarget: $dropTarget,
-            onDrop: onDrop)
+        // AppKit drag source: reports its lifecycle to the tear-off detector,
+        // offers nothing outside the app (no Finder text clipping), and is
+        // hit-test-transparent so every gesture below still reaches SwiftUI.
+        .background(
+            VirtualTabDragSource(
+                context: dragContext,
+                payload: .tab(session.id),
+                previewText: label,
+                dragDisabled: isRenaming))
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first,
+                  let source = WorkspaceDragPayload(stringValue: raw),
+                  source != .tab(session.id) else { return false }
+            onDrop(source, .tab(session.id))
+            return true
+        } isTargeted: { targeted in
+            if targeted {
+                dropTarget = .tab(session.id)
+            } else if dropTarget == .tab(session.id) {
+                dropTarget = nil
+            }
+        }
         .contextMenu {
             Button("Rename…") {
                 draftName = label
