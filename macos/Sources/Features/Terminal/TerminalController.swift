@@ -686,6 +686,89 @@ class TerminalController: BaseTerminalController {
         return c
     }
 
+    /// Opens a new physical window hosting an already-live detached session —
+    /// the virtual-tab tear-off counterpart of `newWindow(tree:)`.
+    ///
+    /// The graph is built with `TerminalControllerGraphFactory.makeFromWorkspaces`
+    /// from the LIVE `TerminalSessionState` (identity, tree, metadata, Reader
+    /// store all move by reference; no surface is created, no PTY spawns), so
+    /// this constructor must only be called AFTER the source store has removed
+    /// the tab (remove-then-create): `BaseTerminalController.init` re-registers
+    /// the surfaces in the `SurfaceOwnerRegistry` for this controller, and
+    /// constructing before the source commit would leave both controllers
+    /// claiming the same surface IDs.
+    ///
+    /// The window-close-on-undo registration mirrors `newWindow(tree:)`'s
+    /// `confirmUndo: false` lineage (which also closes the session's Readers),
+    /// with two tear-off differences: the action name is caller-owned because
+    /// this registration lands inside the tear-off handler's undo group, and
+    /// NO nested redo is registered — the group's source-restore action owns
+    /// redo as a full re-detach.
+    ///
+    /// - Returns: nil when `makeFromWorkspaces` cannot resolve the graph (same
+    ///   conditions as window-close undo), leaving the caller to treat the
+    ///   detach as failed without a window.
+    @discardableResult
+    static func newWindow(
+        _ ghostty: Ghostty.App,
+        detachedWorkspace workspace: WorkspaceSession,
+        position: NSPoint? = nil,
+        confirmUndo: Bool = false,
+        undoActionName: String = "Detach Tab"
+    ) -> TerminalController? {
+        guard let session = workspace.tabs.first,
+              let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
+                  [workspace],
+                  selection: Selection(workspaceID: workspace.id, tabID: session.id)
+              ) else { return nil }
+
+        let c = TerminalController(ghostty, graph: graph)
+
+        // Size the window to the carried tree's current view bounds, then
+        // place it at the drop point (or cascade), mirroring `newWindow(tree:)`.
+        let treeSize: CGSize? = session.surfaceTree.root?.viewBounds()
+
+        c.scheduleInitialPresentation {
+            c.showWindow(self)
+            if let window = c.window {
+                if let treeSize, treeSize.width > 0, treeSize.height > 0 {
+                    window.setContentSize(treeSize)
+                    window.constrainToScreen()
+                }
+
+                if !window.styleMask.contains(.fullScreen) {
+                    if let position {
+                        window.setFrameTopLeftPoint(position)
+                        window.constrainToScreen()
+                    } else {
+                        let hasFixedPos = c.derivedConfig.windowPositionX != nil && c.derivedConfig.windowPositionY != nil
+                        Self.applyCascade(to: window, hasFixedPos: hasFixedPos)
+                    }
+                }
+            }
+        }
+
+        if let undoManager = c.undoManager {
+            undoManager.setActionName(undoActionName)
+            undoManager.registerUndo(
+                withTarget: c,
+                expiresAfter: c.undoExpiration
+            ) { target in
+                undoManager.disableUndoRegistration {
+                    if confirmUndo {
+                        target.closeWindow(nil)
+                    } else {
+                        target.closeWindowImmediately()
+                    }
+                }
+                // Deliberately no nested redo registration: the tear-off
+                // handler's source-restore action owns redo (full re-detach).
+            }
+        }
+
+        return c
+    }
+
     // MARK: - Methods
 
     @objc private func ghosttyConfigDidChange(_ notification: Notification) {
