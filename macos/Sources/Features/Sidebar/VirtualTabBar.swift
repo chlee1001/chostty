@@ -36,6 +36,11 @@ struct VirtualTabBar: View {
     /// Called when the user picks "Close Tabs to the Right" from a tab's context menu.
     var onCloseToTheRight: (UUID) -> Void
 
+    /// Called when a tab dragged in from ANOTHER window is dropped on the
+    /// strip. The tab joins this window's selected workspace and becomes
+    /// presented. Nil-accepting: same-window drops keep the reorder path.
+    var onReceiveForeignTab: ((UUID) -> Bool)? = nil
+
     @State private var dropTarget: WorkspaceDragPayload?
 
     private var workspace: WorkspaceSession? {
@@ -114,6 +119,8 @@ struct VirtualTabBar: View {
 
     /// Reorders within the visible workspace. The strip only ever shows one
     /// workspace's tabs, so a cross-workspace move cannot originate here.
+    /// A drop whose tab is unknown to this store came from another window:
+    /// it is received into the visible workspace instead of reordered.
     private func handleDrop(
         source: WorkspaceDragPayload,
         target: WorkspaceDragPayload,
@@ -123,6 +130,10 @@ struct VirtualTabBar: View {
               case let .tab(over) = target,
               let index = workspace.tabs.firstIndex(where: { $0.id == over })
         else { return }
+        if store.liveSession(forTabID: moving) == nil {
+            _ = onReceiveForeignTab?(moving)
+            return
+        }
         store.moveTab(moving, toWorkspace: workspace.id, at: index)
     }
 }

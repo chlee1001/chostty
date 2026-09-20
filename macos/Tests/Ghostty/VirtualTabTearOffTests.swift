@@ -403,4 +403,80 @@ import Testing
         #expect(restored.color == before.color)
         #expect(restored.isCollapsed == before.isCollapsed)
     }
+
+    // MARK: - Cross-window re-attach
+
+    @Test func receiveForeignTabMovesLiveSession() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+
+        // SAME object, now owned by the destination and presented there.
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(destination.presentedSessionID == moving.id)
+        #expect(moving.isTornDown == false)
+        // Source released it and stays open with its remaining tab.
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(source.workspaceStore.allSessions.count == 1)
+    }
+
+    @Test func receiveForeignTabRejectsOwnTabs() throws {
+        let controller = try makeController(tabs: 2)
+        let own = controller.workspaceStore.allSessions[0]
+
+        // Same-window drops keep the reorder path: the receive entry refuses.
+        #expect(controller.receiveForeignTab(own.id, from: controller, intoWorkspace: nil, at: nil) == false)
+        #expect(controller.workspaceStore.allSessions.count == 2)
+    }
+
+    @Test func receiveForeignTabRejectsUnknownTabs() throws {
+        let source = try makeController(tabs: 1)
+        let destination = try makeController(tabs: 1)
+
+        #expect(destination.receiveForeignTab(UUID(), from: source, intoWorkspace: nil, at: nil) == false)
+        #expect(destination.workspaceStore.allSessions.count == 1)
+        #expect(source.workspaceStore.allSessions.count == 1)
+    }
+
+    @Test func receiveLastTabClosesSourceWindow() throws {
+        let source = try makeController(tabs: 1)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        // A window handle is required for the close path; the harness builds
+        // controllers without loading windows, so attach one here.
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        source.window = window
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+
+        // The session survived in the destination while its old window closed.
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(destination.presentedSessionID == moving.id)
+        #expect(moving.isTornDown == false)
+    }
+
+    @Test func receiveForeignTabUndoRestoresSource() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let undoManager = try #require(destination.undoManager)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        undoManager.undo()
+
+        // Back in the source at its original index, same object, still alive;
+        // the destination released it.
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(source.workspaceStore.allSessions.map(\.id).first == moving.id)
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(moving.isTornDown == false)
+
+        undoManager.redo()
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(destination.presentedSessionID == moving.id)
+    }
 }
