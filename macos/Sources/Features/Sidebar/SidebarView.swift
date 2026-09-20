@@ -96,6 +96,10 @@ struct SidebarView: View {
     /// context menu. The owning controller resolves `ClosedTabHistory`;
     /// presentation never touches it directly.
     var onReopenClosedTab: () -> Void = {}
+    /// Called when a tab dragged in from ANOTHER window is dropped on a
+    /// workspace row. The tab joins that workspace and becomes presented.
+    /// Nil-accepting: same-window drops keep the reorder path.
+    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
 
     /// The sidebar search/filter query. Private view state — filtering is
     /// presentation-only and never reaches the store.
@@ -111,6 +115,7 @@ struct SidebarView: View {
         onCloseTab: ((UUID) -> Void)? = nil,
         onCloseWorkspace: ((UUID) -> Void)? = nil,
         onReopenClosedTab: @escaping () -> Void = {},
+        onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil,
         filesPanelController: FilesPanelController? = nil
     ) {
         self.workspaceSessionStore = workspaceSessionStore
@@ -120,6 +125,7 @@ struct SidebarView: View {
         self.onCloseTab = onCloseTab
         self.onCloseWorkspace = onCloseWorkspace
         self.onReopenClosedTab = onReopenClosedTab
+        self.onReceiveForeignTab = onReceiveForeignTab
         self.filesPanelController = filesPanelController
     }
 
@@ -138,6 +144,7 @@ struct SidebarView: View {
                 onCloseWorkspace: onCloseWorkspace,
                 onNewWorkspace: onNewWorkspace,
                 onReopenClosedTab: onReopenClosedTab,
+                onReceiveForeignTab: onReceiveForeignTab,
                 filterQuery: filterText
             )
         }
@@ -254,6 +261,9 @@ struct WorkspaceSessionList: View {
     var onCloseWorkspace: ((UUID) -> Void)? = nil
     var onNewWorkspace: () -> Void = {}
     var onReopenClosedTab: () -> Void = {}
+    /// Called when a tab dragged in from ANOTHER window lands on a workspace
+    /// row. Nil-accepting: same-window drops keep the reorder path.
+    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
 
     /// Search/filter query from the sidebar header. Empty means "show
     /// everything", reproducing unfiltered rendering exactly.
@@ -397,15 +407,28 @@ struct WorkspaceSessionList: View {
     ///
     /// Dropping a tab onto a workspace header moves it into that workspace;
     /// dropping onto another tab reorders relative to it. Workspaces only
-    /// reorder among themselves.
+    /// reorder among themselves. A dropped tab unknown to this store came
+    /// from another window: it is received instead of moved.
     private func handleDrop(source: WorkspaceDragPayload, target: WorkspaceDragPayload) {
         switch (source, target) {
         case let (.tab(moving), .tab(over)):
+            if store.liveSession(forTabID: moving) == nil {
+                guard let ws = store.snapshot.workspaces.first(where: { w in
+                    w.tabs.contains { $0.id == over }
+                }) else { return }
+                _ = onReceiveForeignTab?(moving, ws.id)
+                return
+            }
             guard let ws = store.snapshot.workspaces.first(where: { w in
                 w.tabs.contains { $0.id == over }
             }), let index = ws.tabs.firstIndex(where: { $0.id == over }) else { return }
             store.moveTab(moving, toWorkspace: ws.id, at: index)
 
+        case let (.tab(moving), .workspace(wsID)):
+            if store.liveSession(forTabID: moving) == nil {
+                _ = onReceiveForeignTab?(moving, wsID)
+                return
+            }
         case let (.tab(moving), .workspace(wsID)):
             // Append to the end of the target workspace.
             guard let ws = store.snapshot.workspaces.first(where: { $0.id == wsID })

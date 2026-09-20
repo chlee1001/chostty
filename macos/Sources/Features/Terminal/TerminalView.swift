@@ -77,6 +77,12 @@ protocol TerminalViewModel: ObservableObject {
 
     /// Close a virtual workspace by UUID.
     func closeWorkspace(_ workspaceID: UUID)
+
+    /// Receive a live tab dragged in from another window. The tab joins the
+    /// given workspace (or the selected one) and becomes presented. On
+    /// `BaseTerminalController` so no conformer-silencing cast is needed.
+    @discardableResult
+    func receiveForeignTab(_ tabID: UUID, intoWorkspace workspaceID: UUID?, at index: Int?) -> Bool
 }
 
 /// The main terminal view. This terminal view supports splits.
@@ -159,6 +165,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                             onReopenClosedTab: {
                                 viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
                             },
+                            onReceiveForeignTab: { tabID, workspaceID in
+                                viewModel.receiveForeignTab(tabID, intoWorkspace: workspaceID, at: nil)
+                            },
                             filesPanelController: viewModel.filesPanelController
                         )
                         .frame(width: sidebarWidth)
@@ -188,6 +197,9 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         },
                         onCloseToTheRight: { tabID in
                             viewModel.closeTabsOnTheRight(fromTab: tabID)
+                        },
+                        onReceiveForeignTab: { tabID in
+                            viewModel.receiveForeignTab(tabID, intoWorkspace: nil, at: nil)
                         }
                     )
 

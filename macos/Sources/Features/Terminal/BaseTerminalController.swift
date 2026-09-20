@@ -1920,6 +1920,155 @@ class BaseTerminalController: NSWindowController,
             position: screenPoint)
     }
 
+    /// Receives a live virtual tab dragged in from ANOTHER window's strip or
+    /// sidebar, by reference. The mirror image of `detachTabToNewWindow`:
+    /// instead of opening a new window, the tab joins this window's workspace
+    /// and becomes presented.
+    ///
+    /// Order (every step is load-bearing):
+    /// 1. Guards — the tab must NOT already live here (same-window drops keep
+    ///    their existing reorder path), and exactly one OTHER controller must
+    ///    own it, or the drop is a defined no-op.
+    /// 2. Write-back — if the tab is presented in its source window, that
+    ///    controller's `surfaceTree` is authoritative; the source writes back
+    ///    before removal.
+    /// 3. Transfer — source `removeTab` + `unregister`, then this store
+    ///    `addTab` into the target workspace (remove-then-create, so surface
+    ///    ownership never duplicates).
+    /// 4. Present — the received tab becomes this window's presented tab.
+    /// 5. Source cleanup — if the source window is now empty, close it. Its
+    ///    window-close undo runs in the same group (see below).
+    /// 6. Undo group — ONE group on the process-wide undo manager. The
+    ///    destination-remove action registers FIRST and the source-restore
+    ///    action registers SECOND, so reverse-order execution restores the
+    ///    source before removing from the destination. Redo re-runs the full
+    ///    receive. Lease finalize is a no-op: the session stays alive in the
+    ///    destination either way.
+    @discardableResult
+    func receiveForeignTab(_ tabID: UUID, intoWorkspace workspaceID: UUID?, at index: Int? = nil) -> Bool {
+        // 1. Guards.
+        if workspaceStore.liveSession(forTabID: tabID) != nil { return false }
+        guard let source = TerminalController.all.first(where: {
+            $0 !== self && $0.workspaceStore.liveSession(forTabID: tabID) != nil
+        }) else { return false }
+        return receiveForeignTab(tabID, from: source, intoWorkspace: workspaceID, at: index)
+    }
+
+    /// Test seam + the real worker: move `tabID` from `source` into this
+    /// window. Production callers use `receiveForeignTab(_:intoWorkspace:at:)`,
+    /// which resolves `source` via `TerminalController.all`; tests pass both
+    /// controllers explicitly (the harness must not depend on `NSApp.windows`
+    /// contents, which accumulate across suites in the test host).
+    @discardableResult
+    func receiveForeignTab(_ tabID: UUID, from source: TerminalController, intoWorkspace workspaceID: UUID?, at index: Int? = nil) -> Bool {
+        // 1. Guards.
+        if workspaceStore.liveSession(forTabID: tabID) != nil { return false }
+        guard source !== self,
+              source.workspaceStore.liveSession(forTabID: tabID) != nil else { return false }
+        let sourceStore = source.workspaceStore
+        guard let owning = sourceStore.snapshot.workspaces.first(where: {
+                  $0.tabs.contains { $0.id == tabID }
+              }),
+              let restoreIndex = owning.tabs.firstIndex(where: { $0.id == tabID }),
+              let session = sourceStore.liveSession(forTabID: tabID) else { return false }
+        let restoreWorkspaceID = owning.id
+        let restoreWorkspaceName = owning.name
+        let restoreWorkspaceColor = owning.color
+        let restoreWorkspaceCollapsed = owning.isCollapsed
+        let restoreWorkspaceDefaultDirectory = owning.defaultDirectory
+        let restoreWorkspaceIndex = sourceStore.snapshot.workspaces.firstIndex(where: { $0.id == owning.id })
+
+        // 2. Write-back on the source side when the moving tab is presented there.
+        let wasPresentedInSource = source.presentedSessionID == tabID
+        if wasPresentedInSource {
+            session.surfaceTree = source.surfaceTree
+            session.focusedSurfaceID = source.focusedSurface?.id
+        }
+
+        undoManager?.beginUndoGrouping()
+        undoManager?.setActionName("Move Tab to Window")
+        defer {
+            undoManager?.endUndoGrouping()
+        }
+
+        // 3. Transfer. The destination adopts FIRST, then the source releases:
+        //    `removeTab` cannot express an emptied source window (the model
+        //    forbids empty workspaces, so removing the last tab returns nil).
+        //    When the source still holds other tabs the removal commits
+        //    normally; when this was its last tab, closing the source window
+        //    IS the removal — the session already lives in the destination, so
+        //    no PTY is at risk, and the close's own undo restores the window.
+        //    (Transient dual registration mirrors the tear-off undo tests'
+        //    proven pattern; single ownership is restored below either way.)
+        let targetWorkspaceID = workspaceID ?? workspaceStore.snapshot.selection.workspaceID
+        workspaceStore.register(session)
+        workspaceStore.addTab(session, toWorkspace: targetWorkspaceID)
+
+        // 4. Present the received tab here.
+        selectSession(workspaceID: targetWorkspaceID, tabID: session.id)
+
+        if sourceStore.removeTab(tabID) != nil {
+            sourceStore.unregister(session.id)
+            // Remount the source's committed successor when its presented tab left.
+            if wasPresentedInSource {
+                let sel = sourceStore.snapshot.selection
+                if sel.tabID != tabID {
+                    source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                }
+            }
+        } else {
+            // 5. This was the source window's last tab: close the window. Its
+            //    close-window undo joins this same group (registered inside the
+            //    call below, executing before the receive-undo on undo).
+            source.closeWindowImmediately()
+        }
+
+        // 6a. Destination-remove undo (registers FIRST ⇒ executes LAST).
+        let lease = DetachedUndoLease(payload: session) { _ in
+            // Session-preserving by design: the moved session stays alive in
+            // whichever window holds it even if this lease expires unused.
+        }
+        if let undoManager {
+            undoManager.registerUndo(
+                withTarget: self,
+                expiresAfter: undoExpiration
+            ) { target in
+                guard let moved = lease.consume() else { return }
+                target.workspaceStore.removeTab(moved.id)
+                target.workspaceStore.unregister(moved.id)
+                // 6b. Source-restore (registers SECOND ⇒ executes FIRST):
+                // put the session back where it came from, then re-run the
+                // receive on redo.
+                source.workspaceStore.register(moved)
+                if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
+                    source.workspaceStore.insertTab(
+                        moved,
+                        intoWorkspace: restoreWorkspaceID,
+                        at: restoreIndex)
+                } else {
+                    source.workspaceStore.insertWorkspace(
+                        id: restoreWorkspaceID,
+                        name: restoreWorkspaceName,
+                        sessions: [moved],
+                        selectedTabID: moved.id,
+                        at: restoreWorkspaceIndex,
+                        defaultDirectory: restoreWorkspaceDefaultDirectory,
+                        color: restoreWorkspaceColor,
+                        isCollapsed: restoreWorkspaceCollapsed)
+                }
+                let sel = source.workspaceStore.snapshot.selection
+                source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                undoManager.registerUndo(
+                    withTarget: target.ghostty,
+                    expiresAfter: target.undoExpiration
+                ) { [weak target] _ in
+                    target?.receiveForeignTab(moved.id, intoWorkspace: targetWorkspaceID, at: index)
+                }
+            }
+        }
+        return true
+    }
+
     // MARK: Local Events
 
     private func localEventHandler(_ event: NSEvent) -> NSEvent? {
