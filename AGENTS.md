@@ -381,11 +381,13 @@ nothing to do with the change under test. Check `system_profiler SPDisplaysDataT
   `GhosttyKit`, `GHOSTTY_*` env vars, `xterm-ghostty`, `share/ghostty`, `~/.config/ghostty/`,
   the Linux `ghostty` executable name, and every AppleScript four-char code. Only the macOS
   bundle/executable/identifier are renamed. Do not "clean these up".
-- **Sparkle:** `Ghostty-Info.plist` points at this fork's appcast and carries
-  its Ed25519 public key. Because the plist is preprocessed by cpp, URL slashes
-  use `&#x2F;`. Signed releases require the external private key and Sparkle's
-  `generate_appcast`; neither belongs in the repository. Never use upstream's
-  appcast — it would replace Chostty with stock Ghostty.
+- **Sparkle:** `Ghostty-Info.plist` points at this fork's signed appcast and
+  carries its Ed25519 public key. Because the plist is preprocessed by cpp, URL slashes
+  use `&#x2F;`. Source builds keep automatic checks off; packaging enables them.
+  Chostty publishes stable updates only. Signed releases require the external
+  private key and Sparkle's `generate_appcast`; neither belongs in the
+  repository. Never use upstream's appcast — it would replace Chostty with
+  stock Ghostty.
 - **libghostty-vt C enums** must end with `_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE`; the
   `INT_MAX` sentinel forces `int` sizing on pre-C23 compilers. Omitting it is an ABI break. A
   new vt function must be threaded all the way through: `src/terminal/c/<module>.zig` →

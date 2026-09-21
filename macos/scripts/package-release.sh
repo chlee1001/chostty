@@ -58,6 +58,7 @@ PLIST="$APP/Contents/Info.plist"
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+rm -f "$OUT/appcast.xml"
 
 # --- Stamp -----------------------------------------------------------------
 
@@ -65,6 +66,12 @@ OUT="$(cd "$OUT" && pwd)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :GhosttyCommit $COMMIT" "$PLIST" 2>/dev/null ||
 	/usr/libexec/PlistBuddy -c "Add :GhosttyCommit string $COMMIT" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks true" "$PLIST" 2>/dev/null ||
+	/usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :SURequireSignedFeed true" "$PLIST" 2>/dev/null ||
+	/usr/libexec/PlistBuddy -c "Add :SURequireSignedFeed bool true" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :SUVerifyUpdateBeforeExtraction true" "$PLIST" 2>/dev/null ||
+	/usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$PLIST"
 
 # Fail closed if the packaged app no longer advertises this fork's feed.
 [ "$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$PLIST" 2>/dev/null)" = "$UPDATE_FEED_URL" ] || {
@@ -111,6 +118,19 @@ if [ "$IDENTITY" != "-" ] && { [ ! -x "$GENERATE_APPCAST" ] || [ ! -f "$ED_KEY_F
 	echo "signed releases need Sparkle's generate_appcast and the EdDSA key" >&2
 	echo "got: $GENERATE_APPCAST / $ED_KEY_FILE" >&2
 	exit 1
+fi
+if [ "$IDENTITY" != "-" ]; then
+	[ "$(stat -f %Su "$ED_KEY_FILE")" = "$(id -un)" ] &&
+		[ "$(stat -f %Lp "$ED_KEY_FILE")" = 600 ] || {
+		echo "Sparkle EdDSA key must be owned by the current user with mode 0600" >&2
+		exit 1
+	}
+	BUNDLE_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST")"
+	PRIVATE_KEY_PUBLIC_KEY="$("$SCRIPT_DIR/sparkle-public-key.swift" "$ED_KEY_FILE")"
+	[ "$BUNDLE_PUBLIC_KEY" = "$PRIVATE_KEY_PUBLIC_KEY" ] || {
+		echo "Sparkle private key does not match SUPublicEDKey" >&2
+		exit 1
+	}
 fi
 
 # Inside out. --deep is deprecated and skips some nested code, so walk the
@@ -242,5 +262,18 @@ if [ "$IDENTITY" != "-" ]; then
 	rm -rf "$APPCAST_DIR"
 	APPCAST_DIR=""
 	xmllint --noout "$OUT/appcast.xml"
+	grep -q "<sparkle:version>$BUILD</sparkle:version>" "$OUT/appcast.xml" || {
+		echo "generated appcast has the wrong sparkle:version" >&2
+		exit 1
+	}
+	grep -Eq 'sparkle:edSignature="[^"]+"' "$OUT/appcast.xml" || {
+		echo "generated appcast has no EdDSA signature" >&2
+		exit 1
+	}
+	if ! grep -q '<!-- sparkle-signatures:' "$OUT/appcast.xml" ||
+		! grep -Eq '^edSignature: [A-Za-z0-9+/]+={0,2}$' "$OUT/appcast.xml"; then
+		echo "generated appcast has no feed signature" >&2
+		exit 1
+	fi
 	echo "appcast: $OUT/appcast.xml"
 fi

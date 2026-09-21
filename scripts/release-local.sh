@@ -69,6 +69,15 @@ latest_release_tag() {
     )] | sort_by(.publishedAt) | last | .tagName // empty'
 }
 
+version_is_greater() {
+  local next_major next_minor next_patch current_major current_minor current_patch
+  IFS=. read -r next_major next_minor next_patch <<<"$1"
+  IFS=. read -r current_major current_minor current_patch <<<"$2"
+  (( next_major > current_major )) ||
+    (( next_major == current_major && next_minor > current_minor )) ||
+    (( next_major == current_major && next_minor == current_minor && next_patch > current_patch ))
+}
+
 LATEST_RELEASE_TAG=""
 if [ "$PUBLISH" = yes ]; then
   command -v gh >/dev/null || { echo "missing command: gh" >&2; exit 1; }
@@ -98,33 +107,20 @@ fi
 
 [ -n "$VERSION" ] || { echo "--version is required" >&2; exit 2; }
 printf '%s\n' "$VERSION" | grep -Eq \
-  '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' || {
+  '^[0-9]+\.[0-9]+\.[0-9]+$' || {
   echo "not a semantic version: $VERSION" >&2
   exit 2
 }
-if [ -z "$BUILD" ]; then
-  case "$VERSION" in
-    *[-+]*)
-      echo "--build is required for prerelease or build-metadata versions" >&2
-      exit 2
-      ;;
-    *) BUILD="$VERSION" ;;
-  esac
-fi
+BUILD="${BUILD:-$VERSION}"
 printf '%s\n' "$BUILD" | grep -Eq '^[0-9]+([.][0-9]+){0,2}$' || {
   echo "not a valid CFBundleVersion: $BUILD" >&2
   exit 2
 }
 if [ "$PUBLISH" = yes ]; then
-  case "$VERSION" in
-    *[-+]*) ;;
-    *)
-      [ "$BUILD" = "$VERSION" ] || {
-        echo "stable publishes require CFBundleVersion to equal $VERSION" >&2
-        exit 2
-      }
-      ;;
-  esac
+  [ "$BUILD" = "$VERSION" ] || {
+    echo "publishes require CFBundleVersion to equal $VERSION" >&2
+    exit 2
+  }
 fi
 
 for command in zig xcodebuild codesign hdiutil shasum; do
@@ -142,8 +138,9 @@ if [ -n "${CHOSTTY_SIGNING_IDENTITY:-}" ] && [ -z "${CHOSTTY_NOTARY_PROFILE:-}" 
   exit 1
 fi
 
-if [ "$PUBLISH" = yes ] && [ -z "${CHOSTTY_SIGNING_IDENTITY:-}" ]; then
-  echo "--publish requires CHOSTTY_SIGNING_IDENTITY" >&2
+if [ "$PUBLISH" = yes ] &&
+  { [ -z "${CHOSTTY_SIGNING_IDENTITY:-}" ] || [ "$CHOSTTY_SIGNING_IDENTITY" = "-" ]; }; then
+  echo "--publish requires a Developer ID Application identity" >&2
   exit 1
 fi
 
@@ -171,6 +168,10 @@ if [ "$PUBLISH" = yes ]; then
   fi
   [ -n "$LATEST_RELEASE_TAG" ] || LATEST_RELEASE_TAG="$(latest_release_tag)"
   if [ -n "$LATEST_RELEASE_TAG" ]; then
+    version_is_greater "$VERSION" "${LATEST_RELEASE_TAG#v}" || {
+      echo "$VERSION must be newer than ${LATEST_RELEASE_TAG#v}" >&2
+      exit 1
+    }
     git fetch --quiet origin \
       "refs/tags/$LATEST_RELEASE_TAG:refs/tags/$LATEST_RELEASE_TAG"
     git merge-base --is-ancestor "$LATEST_RELEASE_TAG^{commit}" "$COMMIT" || {
@@ -187,6 +188,7 @@ if [ "$PUBLISH" = yes ]; then
       macos/Sources macos/GhosttyUITests macos/Ghostty.xcodeproj \
       macos/Ghostty-Info.plist macos/Ghostty.sdef macos/build.nu \
       macos/*.entitlements macos/scripts/package-release.sh \
+      macos/scripts/sparkle-public-key.swift \
       LICENSE THIRD-PARTY-NOTICES.md; then
       echo "no release inputs changed since $LATEST_RELEASE_TAG" >&2
       exit 1

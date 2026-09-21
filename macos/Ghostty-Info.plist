@@ -105,12 +105,16 @@
 		</dict>
 	</array>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<!-- cpp treats adjacent slashes as a comment, so URL slashes are escaped. -->
 	<key>SUFeedURL</key>
 	<string>https:&#x2F;&#x2F;github.com&#x2F;chlee1001&#x2F;chostty&#x2F;releases&#x2F;latest&#x2F;download&#x2F;appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>zUcoYyG&#x2F;tOrpJ23EpQJQogZMHSj2hsOudC5ofbAb9w0=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

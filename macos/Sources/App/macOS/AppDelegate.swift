@@ -953,8 +953,11 @@ class AppDelegate: NSObject,
         // `never` rather than letting the system setting turn it back on.
         UserDefaults.ghostty.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
 
-        // User configuration overrides Sparkle's plist and saved preferences.
-        if let autoUpdate = config.autoUpdate {
+        // Source builds force updates off; packaging stamps this plist key true.
+        if Bundle.main.infoDictionary?["SUEnableAutomaticChecks"] as? Bool == false {
+            updateController.updater.automaticallyChecksForUpdates = false
+            updateController.updater.automaticallyDownloadsUpdates = false
+        } else if let autoUpdate = config.autoUpdate {
             updateController.updater.automaticallyChecksForUpdates =
                 autoUpdate == .check || autoUpdate == .download
             updateController.updater.automaticallyDownloadsUpdates =
