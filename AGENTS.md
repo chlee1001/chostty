@@ -164,6 +164,8 @@ shellcheck macos/scripts/*.sh scripts/*.sh # what CI's `scripts` job runs
 ./scripts/release-local.sh --version <v>   # local universal DMG + zip
 ./scripts/release-local.sh --version <v> --publish  # also tag and publish
 ./scripts/release-local.sh --publish-next  # sync main, bump patch, build and publish
+# Signed + notarized release: export CHOSTTY_SIGNING_IDENTITY (Developer ID
+# Application) and CHOSTTY_NOTARY_PROFILE (notarytool keychain profile) first
 ```
 
 `make` and `cmake` are **not** entry points for this product. `Makefile` has only `glad`
@@ -392,8 +394,12 @@ nothing to do with the change under test. Check `system_profiler SPDisplaysDataT
 - **Generated files:** `src/font/nerd_font_attributes.zig`,
   `src/font/nerd_font_codepoint_tables.py`, `src/unicode/*_table.zig` and the
   `build.zig.zon.*` mirrors are all machine-produced. Fix the generator, not the output.
-- **Ad-hoc signing.** No Developer ID, so every release is quarantined until the user runs
-  `xattr -cr /Applications/Chostty.app`. That is a distribution consequence, not a build bug.
+- **Signing.** Release artifacts are ad-hoc signed unless both `CHOSTTY_SIGNING_IDENTITY`
+  (a "Developer ID Application: …" identity) and `CHOSTTY_NOTARY_PROFILE` (a stored
+  `xcrun notarytool store-credentials` profile) are exported; then the app and DMG are
+  signed, notarized and stapled, and `package-release.sh` refuses one without the other.
+  Ad-hoc artifacts stay quarantined until the user runs `xattr -cr /Applications/Chostty.app`
+  — a distribution consequence, not a build bug.
 - **LaunchServices ambiguity:** build copies register under the same bundle id, so
   `tell application "Chostty"` can target a non-running copy and block in `AESendMessage`
   forever. Target AppleScript by absolute path, or

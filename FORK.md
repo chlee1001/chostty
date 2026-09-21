@@ -162,8 +162,11 @@ macOS minutes rebuilding code that already passed pull-request CI:
 
 The command builds a ReleaseFast universal GhosttyKit, builds Chostty with the
 Release configuration, and asks `macos/scripts/package-release.sh` to stamp,
-ad-hoc sign and package the app into `dist-local/`. It then verifies the bundle
+sign and package the app into `dist-local/`. It then verifies the bundle
 signature and DMG and writes SHA-256 checksums.
+Signing is ad-hoc unless both `CHOSTTY_SIGNING_IDENTITY` and
+`CHOSTTY_NOTARY_PROFILE` are exported, in which case the app and DMG are
+Developer ID signed, notarized and stapled.
 
 To tag the current `origin/main` commit and upload the DMG and zip to GitHub
 Releases in the same command:
@@ -193,10 +196,18 @@ an existing tag/release. The packaging script refuses a bundle carrying
 build downloadable workflow artifacts, but it never tags or creates a GitHub
 release and is not triggered after CI.
 
-Signing is ad-hoc because this fork has no Developer ID. That is a distribution
-consequence, not a build shortcut: every download is quarantined until the user
-runs `xattr -cr`, and the release notes say so rather than letting it look like
-a corrupt artifact.
+Signing defaults to ad-hoc so credential-less builds (CI, local test
+packaging) stay reproducible. For a distributed release, export both
+`CHOSTTY_SIGNING_IDENTITY` (a "Developer ID Application: …" identity) and
+`CHOSTTY_NOTARY_PROFILE` (a stored `xcrun notarytool store-credentials`
+profile) before running `release-local.sh`. The app is then signed with a
+hardened runtime and a secure timestamp, notarized and stapled, the zip is
+rebuilt from the stapled app, and the DMG is signed, notarized and stapled
+too. `package-release.sh` refuses a Developer ID identity without a notary
+profile — Gatekeeper blocks that harder than an ad-hoc build — and the
+GitHub release notes drop the `xattr -cr` workaround automatically for a
+notarized build. Ad-hoc artifacts are quarantined on download; the release
+notes say so rather than letting it look like a corrupt artifact.
 
 `.github/workflows/ci.yml` runs the audit, shellcheck, the build and the test
 suite on pull requests. UI tests are skipped there for the same reason

@@ -7,6 +7,11 @@
 #   scripts/release-local.sh --version <semver> [--build <n>] [--out <dir>]
 #                            [--publish]
 #   scripts/release-local.sh --publish-next
+#
+# Set both to distribute a Developer ID signed, notarized build (ad-hoc
+# otherwise; see macos/scripts/package-release.sh):
+#   CHOSTTY_SIGNING_IDENTITY  "Developer ID Application: NAME (TEAMID)"
+#   CHOSTTY_NOTARY_PROFILE    stored `notarytool` keychain profile
 
 set -euo pipefail
 
@@ -20,7 +25,7 @@ PUBLISH="no"
 PUBLISH_NEXT="no"
 
 usage() {
-  sed -n '2,9p' "$0"
+  sed -n '2,14p' "$0"
 }
 
 while [ $# -gt 0 ]; do
@@ -98,6 +103,14 @@ for command in zig xcodebuild codesign hdiutil shasum; do
     exit 1
   }
 done
+
+# Fail before the multi-minute build, not after it: package-release.sh would
+# refuse a Developer ID signature with no notary profile once the app exists.
+if [ -n "${CHOSTTY_SIGNING_IDENTITY:-}" ] && [ -z "${CHOSTTY_NOTARY_PROFILE:-}" ]; then
+  echo "CHOSTTY_SIGNING_IDENTITY is set but CHOSTTY_NOTARY_PROFILE is not" >&2
+  echo "store one with: xcrun notarytool store-credentials <profile>" >&2
+  exit 1
+fi
 
 COMMIT="$(git rev-parse HEAD)"
 SHORT_COMMIT="$(git rev-parse --short HEAD)"
@@ -209,7 +222,17 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-INSTALL_NOTES="$(cat <<'NOTES'
+if [ -n "${CHOSTTY_SIGNING_IDENTITY:-}" ]; then
+  INSTALL_NOTES="$(cat <<'NOTES'
+## Install
+
+Open the DMG and drag Chostty to Applications. The app is Developer ID
+signed and notarized, so macOS opens it without any quarantine workaround.
+There is no auto-updater. Universal binary, macOS 13 and later.
+NOTES
+)"
+else
+  INSTALL_NOTES="$(cat <<'NOTES'
 ## Install
 
 Open the DMG and drag Chostty to Applications, then run:
@@ -222,6 +245,7 @@ This is required because the app is ad-hoc signed and cannot be notarized.
 There is no auto-updater. Universal binary, macOS 13 and later.
 NOTES
 )"
+fi
 
 gh release create "$TAG" "$DMG" "$ZIP" "$CHECKSUMS" \
   --verify-tag \

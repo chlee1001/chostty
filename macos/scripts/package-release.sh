@@ -2,11 +2,20 @@
 #
 # Stamp, sign and package a built Chostty.app into a DMG and a zip.
 #
-# This fork has no Apple Developer ID, so the signature is ad-hoc. That is not
-# a shortcut around notarization — it is the only option, and it has a visible
-# consequence: macOS quarantines the download and refuses to open it until the
-# user clears the attribute. Say so in the release notes rather than shipping a
-# bundle that appears broken.
+# The signature is ad-hoc by default so credential-less builds (CI, local
+# test packaging) stay reproducible. For direct distribution, set:
+#
+#   CHOSTTY_SIGNING_IDENTITY  "Developer ID Application: NAME (TEAMID)"
+#   CHOSTTY_NOTARY_PROFILE    a stored `notarytool` keychain profile
+#                             (xcrun notarytool store-credentials ...)
+#
+# With both set, the app is signed with a hardened runtime and a secure
+# timestamp, notarized and stapled, the zip is rebuilt from the stapled app,
+# and the DMG is signed, notarized and stapled as well, so every artifact
+# carries offline-valid proof. A Developer ID signature without a notary
+# profile is refused: Gatekeeper blocks that harder than an ad-hoc build.
+# Ad-hoc artifacts are quarantined on download; say so in the release notes
+# rather than shipping a bundle that appears broken.
 #
 # Usage:
 #   macos/scripts/package-release.sh --app <path> --version <v> [--out <dir>]
@@ -82,6 +91,18 @@ cmp -s "$NOTICES_SOURCE" "$NOTICES_DEST" || {
 
 # --- Sign ------------------------------------------------------------------
 
+# "-" (the default) keeps the historical ad-hoc signature; a Developer ID
+# identity switches every signature to a secure timestamp plus hardened
+# runtime, which notarization requires.
+IDENTITY="${CHOSTTY_SIGNING_IDENTITY:--}"
+NOTARY_PROFILE="${CHOSTTY_NOTARY_PROFILE:-}"
+ENTITLEMENTS="$REPO_ROOT/macos/Ghostty.entitlements"
+if [ "$IDENTITY" != "-" ] && [ -z "$NOTARY_PROFILE" ]; then
+	echo "refusing to sign: CHOSTTY_SIGNING_IDENTITY is set but CHOSTTY_NOTARY_PROFILE is not" >&2
+	echo "store one with: xcrun notarytool store-credentials <profile>" >&2
+	exit 1
+fi
+
 # Inside out. --deep is deprecated and skips some nested code, so walk the
 # known nested bundles explicitly and let a new one show up as a verify
 # failure rather than shipping unsigned.
@@ -91,10 +112,17 @@ cmp -s "$NOTICES_SOURCE" "$NOTICES_DEST" || {
 # --verify failure.
 sign() {
 	[ -e "$1" ] || return 0
-	codesign --force --timestamp=none --sign - "$1" || {
-		echo "failed to sign nested bundle: $1" >&2
-		exit 1
-	}
+	if [ "$IDENTITY" = "-" ]; then
+		codesign --force --timestamp=none --sign - "$1" || {
+			echo "failed to sign nested bundle: $1" >&2
+			exit 1
+		}
+	else
+		codesign --force --timestamp --options runtime --sign "$IDENTITY" "$1" || {
+			echo "failed to sign nested bundle: $1" >&2
+			exit 1
+		}
+	fi
 }
 
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
@@ -109,25 +137,58 @@ if [ -d "$SPARKLE" ]; then
 fi
 sign "$APP/Contents/PlugIns/DockTilePlugin.plugin"
 
-codesign --force --sign - --entitlements macos/Ghostty.entitlements "$APP"
-codesign --verify --deep --strict "$APP"
-echo "signed ad-hoc: $(codesign -dv "$APP" 2>&1 | grep -c 'Signature=adhoc') (1 = ad-hoc)"
+if [ "$IDENTITY" = "-" ]; then
+	codesign --force --timestamp=none --sign - \
+		--entitlements "$ENTITLEMENTS" "$APP"
+	codesign --verify --deep --strict "$APP"
+	echo "signed ad-hoc: $(codesign -dv "$APP" 2>&1 | grep -c 'Signature=adhoc') (1 = ad-hoc)"
+else
+	codesign --force --timestamp --options runtime --sign "$IDENTITY" \
+		--entitlements "$ENTITLEMENTS" "$APP"
+	codesign --verify --deep --strict "$APP"
+	spctl --assess --type execute "$APP" ||
+		echo "warning: Gatekeeper assessment failed (expected before notarization)" >&2
+	echo "signed: $IDENTITY"
+fi
 
 # --- Package ---------------------------------------------------------------
 
 ZIP="$OUT/Chostty-$VERSION-macos-universal.zip"
-rm -f "$ZIP"
-(cd "$(dirname "$APP")" && zip -9 -r -q --symlinks "$ZIP" "$(basename "$APP")")
 ARCHIVE_LICENSE="$(basename "$APP")/Contents/Resources/LICENSE"
-unzip -p "$ZIP" "$ARCHIVE_LICENSE" | cmp -s - "$LICENSE_SOURCE" || {
-	echo "refusing to package: zip is missing the repository LICENSE" >&2
-	exit 1
-}
 ARCHIVE_NOTICES="$(basename "$APP")/Contents/Resources/THIRD-PARTY-NOTICES.md"
-unzip -p "$ZIP" "$ARCHIVE_NOTICES" | cmp -s - "$NOTICES_SOURCE" || {
-	echo "refusing to package: zip is missing the repository THIRD-PARTY-NOTICES" >&2
-	exit 1
+
+build_zip() {
+	rm -f "$ZIP"
+	(cd "$(dirname "$APP")" && zip -9 -r -q --symlinks "$ZIP" "$(basename "$APP")")
 }
+verify_zip() {
+	unzip -p "$ZIP" "$ARCHIVE_LICENSE" | cmp -s - "$LICENSE_SOURCE" || {
+		echo "refusing to package: zip is missing the repository LICENSE" >&2
+		exit 1
+	}
+	unzip -p "$ZIP" "$ARCHIVE_NOTICES" | cmp -s - "$NOTICES_SOURCE" || {
+		echo "refusing to package: zip is missing the repository THIRD-PARTY-NOTICES" >&2
+		exit 1
+	}
+}
+build_zip
+verify_zip
+
+# --- Notarize ---------------------------------------------------------------
+
+# Submit the zip, staple the ticket onto the app, then rebuild the zip from
+# the stapled bundle; the DMG below is created from that same stapled app.
+if [ "$IDENTITY" != "-" ]; then
+	xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+	xcrun stapler staple "$APP"
+	build_zip
+	verify_zip
+	spctl --assess --type execute "$APP" || {
+		echo "refusing to package: stapled app fails Gatekeeper assessment" >&2
+		exit 1
+	}
+	echo "notarized and stapled: $IDENTITY"
+fi
 
 DMG="$OUT/Chostty-$VERSION.dmg"
 STAGE="$(mktemp -d)"
@@ -137,6 +198,12 @@ ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
 hdiutil create -volname "Chostty $VERSION" -srcfolder "$STAGE" \
 	-ov -format UDZO -quiet "$DMG"
+
+if [ "$IDENTITY" != "-" ]; then
+	codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+	xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+	xcrun stapler staple "$DMG"
+fi
 
 # The universal slice is the whole point of building on macOS; a runner that
 # silently produced a single-architecture binary would still package fine.
