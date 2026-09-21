@@ -1,7 +1,7 @@
 import Testing
 @testable import Ghostty
 
-/// Where the workspace controls (sidebar toggle, "+", actions menu) render.
+/// Where the workspace controls (sidebar toggle and actions menu) render.
 ///
 /// A window state that resolved to `.titlebarAccessory` when the titlebar
 /// cannot show one leaves the controls invisible, and with the sidebar closed

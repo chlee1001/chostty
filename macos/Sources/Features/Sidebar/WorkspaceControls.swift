@@ -3,8 +3,8 @@ import SwiftUI
 
 // MARK: - Placement
 
-/// Where a window renders the workspace controls: the sidebar toggle, the new
-/// workspace `+`, and the workspace actions menu.
+/// Where a window renders the workspace controls: the sidebar toggle and
+/// workspace actions menu.
 ///
 /// They sit next to the traffic lights. Windows whose titlebar cannot show an
 /// accessory fall back to one of the other two hosts.
@@ -83,6 +83,9 @@ struct WorkspaceControls: View {
     @AppStorage("SidebarSingleWorkspacePolicy") private var singleWorkspacePolicyRaw: String =
         SidebarSingleWorkspacePolicy.alwaysGrouped.rawValue
 
+    @State private var sidebarSyncInspection: SessionPersistenceController.SidebarSyncInspection?
+    @State private var showingSidebarSync = false
+
     private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
         SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
     }
@@ -99,12 +102,6 @@ struct WorkspaceControls: View {
             if let filesPanelController {
                 FilesPanelToggleButton(controller: filesPanelController)
             }
-            Button(action: onNewWorkspace) {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.plain)
-            .help("New workspace (⌘N)")
-            .accessibilityLabel("New Workspace")
 
             Menu {
                 WorkspaceActionsMenuItems(
@@ -118,6 +115,11 @@ struct WorkspaceControls: View {
                     onTogglePolicy: {
                         singleWorkspacePolicyRaw = singleWorkspacePolicy.toggled.rawValue
                     })
+                Divider()
+                Button("Check Sidebar Sync…") {
+                    refreshSidebarSync()
+                    showingSidebarSync = true
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -129,6 +131,182 @@ struct WorkspaceControls: View {
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
+        .sheet(isPresented: $showingSidebarSync) {
+            SidebarSyncSheet(
+                inspection: sidebarSyncInspection,
+                refresh: refreshSidebarSync,
+                saveCurrentState: synchronizeSidebarState
+            )
+        }
+    }
+
+    private func refreshSidebarSync() {
+        sidebarSyncInspection = (NSApp.delegate as? AppDelegate)?
+            .sessionPersistence?
+            .sidebarSyncInspection()
+    }
+
+    private func synchronizeSidebarState() {
+        sidebarSyncInspection = (NSApp.delegate as? AppDelegate)?
+            .sessionPersistence?
+            .synchronizeSidebarState()
+    }
+}
+
+private struct SidebarSyncSheet: View {
+    let inspection: SessionPersistenceController.SidebarSyncInspection?
+    let refresh: () -> Void
+    let saveCurrentState: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Sidebar Sync")
+                .font(.headline)
+
+            if let inspection {
+                Text(statusText(for: inspection.status))
+                    .font(.subheadline)
+                    .foregroundStyle(statusColor(for: inspection.status))
+
+                HStack(alignment: .top, spacing: 20) {
+                    SidebarSyncSnapshotOutline(title: "Current", snapshot: inspection.current)
+                    SidebarSyncSnapshotOutline(title: "Saved", snapshot: inspection.saved)
+                }
+
+                if inspection.canSynchronize {
+                    Text("Saving writes the current live state to session storage. It never changes live terminals.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(unavailableText(for: inspection.synchronizationAvailability))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Button("Refresh", action: refresh)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                    if inspection.canSynchronize {
+                        Button("Save Current State", action: saveCurrentState)
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            } else {
+                Text("Session persistence is unavailable because the app state has not finished initializing.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 580)
+    }
+
+    private func statusText(for status: SessionPersistenceController.SidebarSyncInspection.Status) -> String {
+        switch status {
+        case .synchronized:
+            return "Synchronized: the current and saved workspace graphs match."
+        case .outOfSync:
+            return "Out of sync: the saved workspace graph differs from the current state."
+        case .absent:
+            return "No saved session is available."
+        case .unusable(let reason):
+            return "The saved session is unusable: \(reason)"
+        case .liveStateUnavailable:
+            return "The current live session state is unavailable."
+        }
+    }
+
+    private func statusColor(for status: SessionPersistenceController.SidebarSyncInspection.Status) -> Color {
+        switch status {
+        case .synchronized:
+            return .green
+        case .outOfSync, .absent, .unusable, .liveStateUnavailable:
+            return .secondary
+        }
+    }
+
+    private func unavailableText(
+        for availability: SessionPersistenceController.SidebarSyncInspection.SynchronizationAvailability
+    ) -> String {
+        switch availability {
+        case .available:
+            return ""
+        case .persistenceDisabled:
+            return "Saving is unavailable because session persistence is disabled."
+        case .ownedByAnotherLiveInstance:
+            return "Saving is unavailable because another live app instance owns the saved session."
+        case .noLiveState:
+            return "Saving is unavailable because there are no live terminal windows."
+        }
+    }
+}
+
+private struct SidebarSyncSnapshotOutline: View {
+    let title: String
+    let snapshot: AppSessionSnapshot?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let snapshot {
+                        if snapshot.windows.count > 1 {
+                            ForEach(Array(snapshot.windows.enumerated()), id: \.element.physicalUUID) { index, window in
+                                Text("Window \(index + 1)")
+                                    .font(.footnote.weight(.semibold))
+                                workspaceOutline(for: window)
+                                    .padding(.leading, 12)
+                            }
+                        } else if let window = snapshot.windows.first {
+                            workspaceOutline(for: window)
+                        }
+                    } else {
+                        Text("Unavailable")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func workspaceOutline(for window: WindowSnapshot) -> some View {
+        ForEach(window.workspaces, id: \.id) { workspace in
+            VStack(alignment: .leading, spacing: 3) {
+                Text(workspace.name)
+                    .font(.footnote.weight(.semibold))
+                ForEach(workspace.tabs, id: \.id) { tab in
+                    Text(tabSummary(tab))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, 12)
+        }
+    }
+
+    private func tabDisplayLabel(_ tab: TabSnapshot) -> String {
+        let override = tab.titleOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !override.isEmpty { return override }
+        let paneTitle = tab.paneTree?.leaves.first?.title?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return paneTitle.isEmpty ? "Terminal" : paneTitle
+    }
+
+    private func tabSummary(_ tab: TabSnapshot) -> String {
+        let paneCount = tab.paneTree?.paneCount ?? 0
+        return "\(tabDisplayLabel(tab)) — \(paneCount) \(paneCount == 1 ? "pane" : "panes")"
     }
 }
 

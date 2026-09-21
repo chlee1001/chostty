@@ -173,6 +173,96 @@ final class SessionPersistenceController {
         return true
     }
 
+    // MARK: - Sidebar sync inspection
+
+    struct SidebarSyncInspection: Equatable {
+        enum Status: Equatable {
+            case synchronized
+            case outOfSync
+            case absent
+            case unusable(String)
+            case liveStateUnavailable
+        }
+
+        enum SynchronizationAvailability: Equatable {
+            case available
+            case persistenceDisabled
+            case ownedByAnotherLiveInstance
+            case noLiveState
+        }
+
+        let current: AppSessionSnapshot?
+        let saved: AppSessionSnapshot?
+        let status: Status
+        let synchronizationAvailability: SynchronizationAvailability
+
+        var canSynchronize: Bool {
+            synchronizationAvailability == .available
+        }
+    }
+
+    /// Inspects the live projection and the repository's validated snapshot.
+    /// Owner fields intentionally do not participate in this comparison: they
+    /// describe the writer, not the workspace graph the sidebar displays.
+    func sidebarSyncInspection() -> SidebarSyncInspection {
+        let controllers = controllersProvider()
+        let current = controllers.isEmpty ? nil : snapshot(from: controllers)
+        let availability = synchronizationAvailability(hasLiveState: current != nil)
+
+        switch repository.load() {
+        case .absent:
+            return SidebarSyncInspection(
+                current: current,
+                saved: nil,
+                status: current == nil ? .liveStateUnavailable : .absent,
+                synchronizationAvailability: availability
+            )
+
+        case .loaded(let saved, _):
+            guard let current else {
+                return SidebarSyncInspection(
+                    current: nil,
+                    saved: saved,
+                    status: .liveStateUnavailable,
+                    synchronizationAvailability: availability
+                )
+            }
+            return SidebarSyncInspection(
+                current: current,
+                saved: saved,
+                status: current.windows == saved.windows ? .synchronized : .outOfSync,
+                synchronizationAvailability: availability
+            )
+
+        case .unusable(let reason):
+            return SidebarSyncInspection(
+                current: current,
+                saved: nil,
+                status: current == nil ? .liveStateUnavailable : .unusable(reason),
+                synchronizationAvailability: availability
+            )
+        }
+    }
+
+    /// Writes only the current live graph, then returns a freshly validated
+    /// comparison. It never applies the saved graph to live terminal sessions.
+    @discardableResult
+    func synchronizeSidebarState() -> SidebarSyncInspection {
+        let inspection = sidebarSyncInspection()
+        guard inspection.canSynchronize else { return inspection }
+        persistNow()
+        return sidebarSyncInspection()
+    }
+
+    private func synchronizationAvailability(
+        hasLiveState: Bool
+    ) -> SidebarSyncInspection.SynchronizationAvailability {
+        if isDisabledBySecondInstance { return .ownedByAnotherLiveInstance }
+        if !gate.shouldPersist { return .persistenceDisabled }
+        if !hasLiveState { return .noLiveState }
+        return .available
+    }
+
     // MARK: - Saving
 
     /// - Returns: `true` when a projection ran. The write itself may still be
