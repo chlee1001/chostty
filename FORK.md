@@ -31,10 +31,13 @@ module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
 terminfo, `share/ghostty` resource paths, `~/.config/ghostty/`, every AppleScript
 four-char code, and the `ghostty` executable name on Linux/GTK.
 
-**Updater disabled.** Sparkle is off, `SUPublicEDKey` is absent from the built
-bundle, and the appcast workflows are deleted. An enabled updater pointed at
-upstream's feed would replace this fork with stock Ghostty. Do not re-enable it
-without this fork's own feed and signing key.
+**Updater.** Sparkle checks this repository's latest-release appcast using the
+Ed25519 public key in `Ghostty-Info.plist`. Signed local releases generate and
+upload that appcast; the private key stays outside the repository. Releases
+through 0.2.12 contain no public key, so the first updater-enabled release
+requires a manual install. Losing the private key likewise requires a new
+public key and one manual release. Never use upstream Ghostty's appcast: it
+would replace Chostty with stock Ghostty.
 
 **Files panel Reader.** Opening a file from the right Files panel adds a
 read-only document tab to the selected Virtual Tab without unmounting its

@@ -26,6 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LICENSE_SOURCE="$REPO_ROOT/LICENSE"
 NOTICES_SOURCE="$REPO_ROOT/THIRD-PARTY-NOTICES.md"
+UPDATE_FEED_URL="https://github.com/chlee1001/chostty/releases/latest/download/appcast.xml"
+UPDATE_DOWNLOAD_PREFIX="https://github.com/chlee1001/chostty/releases/download"
 
 APP=""
 VERSION=""
@@ -64,15 +66,16 @@ OUT="$(cd "$OUT" && pwd)"
 /usr/libexec/PlistBuddy -c "Set :GhosttyCommit $COMMIT" "$PLIST" 2>/dev/null ||
 	/usr/libexec/PlistBuddy -c "Add :GhosttyCommit string $COMMIT" "$PLIST"
 
-# Sparkle is disabled in this fork and there is no appcast or signing key to
-# point it at. Assert the packaged bundle cannot advertise an update channel
-# rather than trusting that the source-level switch stayed off.
-/usr/libexec/PlistBuddy -c "Delete :SUEnableAutomaticChecks" "$PLIST" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$PLIST" 2>/dev/null || true
-if /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST" >/dev/null 2>&1; then
-	echo "refusing to package: SUPublicEDKey is present, so the disabled updater is still armed" >&2
+# Fail closed if the packaged app no longer advertises this fork's feed.
+[ "$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$PLIST" 2>/dev/null)" = "$UPDATE_FEED_URL" ] || {
+	echo "refusing to package: SUFeedURL does not match $UPDATE_FEED_URL" >&2
 	exit 1
-fi
+}
+/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST" 2>/dev/null |
+	grep -qE '^[A-Za-z0-9+/]+={0,2}$' || {
+	echo "refusing to package: SUPublicEDKey missing or malformed" >&2
+	exit 1
+}
 
 # Every distributed copy must carry the upstream MIT notice. Install it before
 # signing so both the zip and DMG contain the exact repository LICENSE.
@@ -97,9 +100,16 @@ cmp -s "$NOTICES_SOURCE" "$NOTICES_DEST" || {
 IDENTITY="${CHOSTTY_SIGNING_IDENTITY:--}"
 NOTARY_PROFILE="${CHOSTTY_NOTARY_PROFILE:-}"
 ENTITLEMENTS="$REPO_ROOT/macos/Ghostty.entitlements"
+GENERATE_APPCAST="${CHOSTTY_SPARKLE_BIN:-$HOME/.local/share/chostty-sparkle/bin}/generate_appcast"
+ED_KEY_FILE="${CHOSTTY_SPARKLE_ED_KEY_FILE:-$HOME/.local/share/chostty-sparkle/eddsa-private.key}"
 if [ "$IDENTITY" != "-" ] && [ -z "$NOTARY_PROFILE" ]; then
 	echo "refusing to sign: CHOSTTY_SIGNING_IDENTITY is set but CHOSTTY_NOTARY_PROFILE is not" >&2
 	echo "store one with: xcrun notarytool store-credentials <profile>" >&2
+	exit 1
+fi
+if [ "$IDENTITY" != "-" ] && { [ ! -x "$GENERATE_APPCAST" ] || [ ! -f "$ED_KEY_FILE" ]; }; then
+	echo "signed releases need Sparkle's generate_appcast and the EdDSA key" >&2
+	echo "got: $GENERATE_APPCAST / $ED_KEY_FILE" >&2
 	exit 1
 fi
 
@@ -192,7 +202,8 @@ fi
 
 DMG="$OUT/Chostty-$VERSION.dmg"
 STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
+APPCAST_DIR=""
+trap 'rm -rf "$STAGE" "$APPCAST_DIR"' EXIT
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
@@ -216,3 +227,20 @@ esac
 echo
 echo "architectures: $ARCHS"
 ls -lh "$DMG" "$ZIP"
+
+# --- Appcast ---------------------------------------------------------------
+
+if [ "$IDENTITY" != "-" ]; then
+	APPCAST_DIR="$(mktemp -d)"
+	cp "$ZIP" "$APPCAST_DIR/"
+	"$GENERATE_APPCAST" \
+		--ed-key-file "$ED_KEY_FILE" \
+		--download-url-prefix "$UPDATE_DOWNLOAD_PREFIX/v$VERSION/" \
+		--maximum-versions 1 \
+		-o "$OUT/appcast.xml" \
+		"$APPCAST_DIR"
+	rm -rf "$APPCAST_DIR"
+	APPCAST_DIR=""
+	xmllint --noout "$OUT/appcast.xml"
+	echo "appcast: $OUT/appcast.xml"
+fi
