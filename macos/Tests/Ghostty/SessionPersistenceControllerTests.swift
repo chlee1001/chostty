@@ -514,6 +514,91 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
     }
 
+    @Test func sidebarSyncSavesAnAbsentSnapshotWithoutChangingLiveState() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController(workspaceName: "Live")
+        let persistence = makePersistence(directory: directory) { [controller] }
+        let liveBeforeSave = persistence.snapshot(from: [controller])
+
+        let absent = persistence.sidebarSyncInspection()
+        #expect(absent.status == .absent)
+        #expect(absent.canSynchronize)
+        #expect(absent.synchronizationAvailability == .available)
+
+        let synchronized = persistence.synchronizeSidebarState()
+        #expect(synchronized.status == .synchronized)
+        #expect(synchronized.current?.windows == synchronized.saved?.windows)
+        #expect(try decode(repository).windows == liveBeforeSave.windows)
+        #expect(persistence.snapshot(from: [controller]).windows == liveBeforeSave.windows)
+    }
+
+    @Test func sidebarSyncReportsLiveChangesAndRefreshesAfterManualSave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController(workspaceName: "Before")
+        let persistence = makePersistence(directory: directory) { [controller] }
+
+        #expect(persistence.synchronizeSidebarState().status == .synchronized)
+
+        let store = controller.workspaceStore
+        store.renameWorkspace(store.snapshot.workspaces[0].id, to: "After")
+
+        let outOfSync = persistence.sidebarSyncInspection()
+        #expect(outOfSync.status == .outOfSync)
+        #expect(outOfSync.current?.windows != outOfSync.saved?.windows)
+
+        let synchronized = persistence.synchronizeSidebarState()
+        #expect(synchronized.status == .synchronized)
+        #expect(try decode(repository).windows[0].workspaces[0].name == "After")
+    }
+
+    @Test func sidebarSyncIgnoresSnapshotOwnerBookkeeping() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory) { [controller] }
+        let live = persistence.snapshot(from: [controller])
+        let saved = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 9999,
+            windows: live.windows
+        )
+        #expect(try repository.save(saved) == .written)
+
+        let inspection = persistence.sidebarSyncInspection()
+        #expect(inspection.status == .synchronized)
+        #expect(inspection.current?.ownerInstanceID != inspection.saved?.ownerInstanceID)
+        #expect(inspection.current?.ownerPID != inspection.saved?.ownerPID)
+    }
+
+    @Test func disabledSidebarSyncCannotWrite() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let persistence = SessionPersistenceController(
+            repository: repository,
+            gate: SessionPersistenceGate(
+                environment: [SessionPersistenceGate.killSwitchVariable: "1"],
+                arguments: [],
+                configEnabled: true
+            ),
+            registry: PendingHydrationRegistry(),
+            controllersProvider: { [controller] }
+        )
+
+        let inspection = persistence.sidebarSyncInspection()
+        #expect(inspection.status == .absent)
+        #expect(!inspection.canSynchronize)
+        #expect(inspection.synchronizationAvailability == .persistenceDisabled)
+        #expect(persistence.synchronizeSidebarState() == inspection)
+        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+    }
+
     @Test func secondInstanceStopsWriting() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)

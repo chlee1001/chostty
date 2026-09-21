@@ -115,12 +115,13 @@ deliberately NOT claimed — they are live `goto_split` bindings upstream.
 
 ## Workspace controls
 
-The sidebar toggle, the new-workspace `+`, and the workspace actions menu sit in
-the titlebar, immediately right of the traffic lights. They used to live in the
-sidebar header, where closing the sidebar took the button that reopens it away
-too and left `⌘B` as the only way back.
+The sidebar toggle and workspace actions menu sit in the titlebar, immediately
+right of the traffic lights. Creating a workspace and checking whether the live
+sidebar graph matches the saved session are both available from that menu. They
+used to live in the sidebar header, where closing the sidebar took the button
+that reopens it away too and left `⌘B` as the only way back.
 
-Windows with no titlebar to host them draw the same three buttons as a strip
+Windows with no titlebar to host them draw the same controls as a strip
 along the top of the window content, next to the window title — fullscreen
 (native parks the titlebar in an auto-hiding overlay, non-native removes it) and
 `window-decorations = false`. Two windows keep the controls in the sidebar
@@ -223,7 +224,8 @@ silicon and pass:
 - Right-clicking blank sidebar space opens the workspace menu.
 - Workspace controls in all three hosts, including a native fullscreen
   transition — `GhosttyWorkspaceControlsUITests` drives the real app, asserting
-  hittability and, in fullscreen, that clicking `+` creates a workspace. The
+  hittability and, in fullscreen, that the strip's workspace menu entry creates
+  a workspace. The
   first cut of the accessory was laid out but clipped to zero width, which an
   existence-only assertion accepted.
 

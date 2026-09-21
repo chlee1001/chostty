@@ -1,6 +1,6 @@
 import XCTest
 
-/// The workspace controls (sidebar toggle, "+", actions menu) must be reachable
+/// The workspace controls (sidebar toggle, actions menu) must be reachable
 /// in every window state, in both sidebar states.
 ///
 /// Existence alone is not enough: each test also pins whether the sidebar is
@@ -48,7 +48,8 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
 
         let toggle = window.buttons["Hide Sidebar"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "sidebar toggle is missing entirely")
-        XCTAssertTrue(window.buttons["New Workspace"].exists, "new workspace button is missing")
+        let actions = window.buttons["Workspace Actions"]
+        XCTAssertTrue(actions.exists, "workspace actions menu is missing")
 
         // The sidebar really is open, so this is the open-state placement.
         XCTAssertTrue(window.staticTexts["Workspaces"].exists)
@@ -67,7 +68,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
         // resolved to zero width, so the buttons were laid out and reachable by
         // accessibility while being clipped to nothing on screen.
         XCTAssertTrue(toggle.isHittable, "toggle exists but nothing can click it")
-        XCTAssertTrue(window.buttons["New Workspace"].isHittable)
+        XCTAssertTrue(window.buttons["Workspace Actions"].isHittable)
     }
 
     /// With the sidebar closed there has to be a button somewhere in the window.
@@ -78,7 +79,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
 
         let toggle = window.buttons["Show Sidebar"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "no way back to the sidebar")
-        XCTAssertTrue(window.buttons["New Workspace"].exists)
+        XCTAssertTrue(window.buttons["Workspace Actions"].exists)
 
         // Proves the sidebar is genuinely closed: otherwise this test would pass
         // on the old header-hosted buttons.
@@ -144,7 +145,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
         XCTAssertTrue(
             window.buttons["Show Sidebar"].waitForExistence(timeout: 10),
             "fullscreen with no sidebar left no way back")
-        XCTAssertTrue(window.buttons["New Workspace"].exists)
+        XCTAssertTrue(window.buttons["Workspace Actions"].exists)
         XCTAssertTrue(
             window.buttons["Show Sidebar"].isHittable,
             "strip is laid out but clipped or covered")
@@ -197,20 +198,24 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
         // unresolvable frame.
         app.staticTexts["Workspaces"].hover()
 
-        // Behavioural check rather than a hittability probe: `+` is a 10pt glyph
-        // one point below the screen edge, and XCUITest calls it not hittable in
-        // fullscreen even when a real click lands. Watching for the workspace it
-        // creates cannot pass on an invisible or dead strip.
+        // Behavioural check rather than a hittability probe: the actions menu
+        // sits one point below the screen edge in fullscreen, and XCUITest
+        // calls it not hittable even when a real click lands. Watching for the
+        // workspace it creates cannot pass on an invisible or dead strip.
         let toggle = app.buttons["Hide Sidebar"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "no strip in native fullscreen")
         XCTAssertTrue(toggle.isHittable, "strip is laid out but nothing can click it")
 
-        app.buttons["New Workspace"]
-            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .tap()
+        let actions = app.buttons["Workspace Actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 10), "no strip actions menu in native fullscreen")
+        actions.click()
+        XCTAssertTrue(
+            app.menuItems["New Workspace"].waitForExistence(timeout: 10),
+            "the strip's menu did nothing in native fullscreen")
+        app.menuItems["New Workspace"].click()
         XCTAssertTrue(
             app.staticTexts["Workspace 2"].waitForExistence(timeout: 10),
-            "the strip's + did nothing in native fullscreen")
+            "the strip's menu entry did nothing in native fullscreen")
     }
 
     // MARK: Sidebar header
@@ -226,7 +231,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
 
         let toggle = window.buttons["Hide Sidebar"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "hidden titlebar hid the controls too")
-        XCTAssertTrue(window.buttons["New Workspace"].exists)
+        XCTAssertTrue(window.buttons["Workspace Actions"].exists)
 
         let header = window.staticTexts["Workspaces"]
         XCTAssertTrue(header.exists)
