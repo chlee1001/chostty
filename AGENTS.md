@@ -165,7 +165,8 @@ shellcheck macos/scripts/*.sh scripts/*.sh # what CI's `scripts` job runs
 ./scripts/release-local.sh --version <v> --publish  # also tag and publish
 ./scripts/release-local.sh --publish-next  # sync main, bump patch, build and publish
 # Signed + notarized release: export CHOSTTY_SIGNING_IDENTITY (Developer ID
-# Application) and CHOSTTY_NOTARY_PROFILE (notarytool keychain profile) first
+# Application) and CHOSTTY_NOTARY_PROFILE (notarytool keychain profile), or put
+# them once in a gitignored .release-env at the repo root
 ```
 
 `make` and `cmake` are **not** entry points for this product. `Makefile` has only `glad`

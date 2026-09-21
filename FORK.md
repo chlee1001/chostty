@@ -200,7 +200,9 @@ Signing defaults to ad-hoc so credential-less builds (CI, local test
 packaging) stay reproducible. For a distributed release, export both
 `CHOSTTY_SIGNING_IDENTITY` (a "Developer ID Application: …" identity) and
 `CHOSTTY_NOTARY_PROFILE` (a stored `xcrun notarytool store-credentials`
-profile) before running `release-local.sh`. The app is then signed with a
+profile) before running `release-local.sh`, or write both once into a
+gitignored `.release-env` at the repo root, which `release-local.sh`
+sources when present. The app is then signed with a
 hardened runtime and a secure timestamp, notarized and stapled, the zip is
 rebuilt from the stapled app, and the DMG is signed, notarized and stapled
 too. `package-release.sh` refuses a Developer ID identity without a notary

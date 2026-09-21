@@ -8,15 +8,22 @@
 #                            [--publish]
 #   scripts/release-local.sh --publish-next
 #
-# Set both to distribute a Developer ID signed, notarized build (ad-hoc
-# otherwise; see macos/scripts/package-release.sh):
+# Signed, notarized releases need both (ad-hoc otherwise; see
+# macos/scripts/package-release.sh):
 #   CHOSTTY_SIGNING_IDENTITY  "Developer ID Application: NAME (TEAMID)"
 #   CHOSTTY_NOTARY_PROFILE    stored `notarytool` keychain profile
+# Export them per shell, or put them once in a gitignored .release-env at
+# the repo root; this script sources that file when it exists.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Per-machine signing defaults so a signed release needs no prior export.
+# The file is gitignored; write assignments with ${VAR:=...} so a value
+# exported in the calling shell still wins.
+[ -f "$REPO_ROOT/.release-env" ] && . "$REPO_ROOT/.release-env"
 
 VERSION=""
 BUILD="1"
@@ -25,7 +32,7 @@ PUBLISH="no"
 PUBLISH_NEXT="no"
 
 usage() {
-  sed -n '2,14p' "$0"
+  sed -n '2,16p' "$0"
 }
 
 while [ $# -gt 0 ]; do

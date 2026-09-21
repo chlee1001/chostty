@@ -43,3 +43,6 @@ dist-local/
 # Local-only build history extracted from .gjc/. Kept on disk so it can be read
 # from this folder, deliberately not tracked.
 docs/history/
+
+# Local signing identity/notary profile sourced by scripts/release-local.sh
+.release-env
