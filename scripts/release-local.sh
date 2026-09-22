@@ -12,6 +12,9 @@
 # macos/scripts/package-release.sh):
 #   CHOSTTY_SIGNING_IDENTITY  "Developer ID Application: NAME (TEAMID)"
 #   CHOSTTY_NOTARY_PROFILE    stored `notarytool` keychain profile
+# Publishing a signed release also generates the Sparkle appcast with:
+#   CHOSTTY_SPARKLE_BIN         dir holding Sparkle's `generate_appcast`
+#   CHOSTTY_SPARKLE_ED_KEY_FILE ed25519 private key file for the appcast
 # Export them per shell, or put them once in a gitignored .release-env at
 # the repo root; this script sources that file when it exists.
 
@@ -23,10 +26,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Per-machine signing defaults so a signed release needs no prior export.
 # The file is gitignored; write assignments with ${VAR:=...} so a value
 # exported in the calling shell still wins.
-[ -f "$REPO_ROOT/.release-env" ] && . "$REPO_ROOT/.release-env"
+if [ -f "$REPO_ROOT/.release-env" ]; then
+  # The file is machine-local and intentionally not tracked.
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.release-env"
+fi
 
 VERSION=""
-BUILD="1"
+BUILD=""
 OUT="dist-local"
 PUBLISH="no"
 PUBLISH_NEXT="no"
@@ -66,6 +73,15 @@ latest_release_tag() {
     )] | sort_by(.publishedAt) | last | .tagName // empty'
 }
 
+version_is_greater() {
+  local next_major next_minor next_patch current_major current_minor current_patch
+  IFS=. read -r next_major next_minor next_patch <<<"$1"
+  IFS=. read -r current_major current_minor current_patch <<<"$2"
+  (( next_major > current_major )) ||
+    (( next_major == current_major && next_minor > current_minor )) ||
+    (( next_major == current_major && next_minor == current_minor && next_patch > current_patch ))
+}
+
 LATEST_RELEASE_TAG=""
 if [ "$PUBLISH" = yes ]; then
   command -v gh >/dev/null || { echo "missing command: gh" >&2; exit 1; }
@@ -95,14 +111,21 @@ fi
 
 [ -n "$VERSION" ] || { echo "--version is required" >&2; exit 2; }
 printf '%s\n' "$VERSION" | grep -Eq \
-  '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' || {
+  '^[0-9]+\.[0-9]+\.[0-9]+$' || {
   echo "not a semantic version: $VERSION" >&2
   exit 2
 }
+BUILD="${BUILD:-$VERSION}"
 printf '%s\n' "$BUILD" | grep -Eq '^[0-9]+([.][0-9]+){0,2}$' || {
   echo "not a valid CFBundleVersion: $BUILD" >&2
   exit 2
 }
+if [ "$PUBLISH" = yes ]; then
+  [ "$BUILD" = "$VERSION" ] || {
+    echo "publishes require CFBundleVersion to equal $VERSION" >&2
+    exit 2
+  }
+fi
 
 for command in zig xcodebuild codesign hdiutil shasum; do
   command -v "$command" >/dev/null || {
@@ -116,6 +139,21 @@ done
 if [ -n "${CHOSTTY_SIGNING_IDENTITY:-}" ] && [ -z "${CHOSTTY_NOTARY_PROFILE:-}" ]; then
   echo "CHOSTTY_SIGNING_IDENTITY is set but CHOSTTY_NOTARY_PROFILE is not" >&2
   echo "store one with: xcrun notarytool store-credentials <profile>" >&2
+  exit 1
+fi
+
+if [ "$PUBLISH" = yes ] &&
+  { [ -z "${CHOSTTY_SIGNING_IDENTITY:-}" ] || [ "$CHOSTTY_SIGNING_IDENTITY" = "-" ]; }; then
+  echo "--publish requires a Developer ID Application identity" >&2
+  exit 1
+fi
+
+GENERATE_APPCAST="${CHOSTTY_SPARKLE_BIN:-$HOME/.local/share/chostty-sparkle/bin}/generate_appcast"
+ED_KEY_FILE="${CHOSTTY_SPARKLE_ED_KEY_FILE:-$HOME/.local/share/chostty-sparkle/eddsa-private.key}"
+if [ "$PUBLISH" = yes ] &&
+  { [ ! -x "$GENERATE_APPCAST" ] || [ ! -f "$ED_KEY_FILE" ]; }; then
+  echo "--publish needs Sparkle's generate_appcast and the EdDSA key" >&2
+  echo "got: $GENERATE_APPCAST / $ED_KEY_FILE" >&2
   exit 1
 fi
 
@@ -134,6 +172,10 @@ if [ "$PUBLISH" = yes ]; then
   fi
   [ -n "$LATEST_RELEASE_TAG" ] || LATEST_RELEASE_TAG="$(latest_release_tag)"
   if [ -n "$LATEST_RELEASE_TAG" ]; then
+    version_is_greater "$VERSION" "${LATEST_RELEASE_TAG#v}" || {
+      echo "$VERSION must be newer than ${LATEST_RELEASE_TAG#v}" >&2
+      exit 1
+    }
     git fetch --quiet origin \
       "refs/tags/$LATEST_RELEASE_TAG:refs/tags/$LATEST_RELEASE_TAG"
     git merge-base --is-ancestor "$LATEST_RELEASE_TAG^{commit}" "$COMMIT" || {
@@ -150,6 +192,7 @@ if [ "$PUBLISH" = yes ]; then
       macos/Sources macos/GhosttyUITests macos/Ghostty.xcodeproj \
       macos/Ghostty-Info.plist macos/Ghostty.sdef macos/build.nu \
       macos/*.entitlements macos/scripts/package-release.sh \
+      macos/scripts/sparkle-public-key.swift \
       LICENSE THIRD-PARTY-NOTICES.md; then
       echo "no release inputs changed since $LATEST_RELEASE_TAG" >&2
       exit 1
@@ -229,32 +272,17 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -n "${CHOSTTY_SIGNING_IDENTITY:-}" ]; then
-  INSTALL_NOTES="$(cat <<'NOTES'
+INSTALL_NOTES="$(cat <<'NOTES'
 ## Install
 
 Open the DMG and drag Chostty to Applications. The app is Developer ID
 signed and notarized, so macOS opens it without any quarantine workaround.
-There is no auto-updater. Universal binary, macOS 13 and later.
+In-app updates are enabled (Check for Updates… or automatic checks) and
+are served from this repository's releases. Universal binary, macOS 13+.
 NOTES
 )"
-else
-  INSTALL_NOTES="$(cat <<'NOTES'
-## Install
 
-Open the DMG and drag Chostty to Applications, then run:
-
-```
-xattr -cr /Applications/Chostty.app
-```
-
-This is required because the app is ad-hoc signed and cannot be notarized.
-There is no auto-updater. Universal binary, macOS 13 and later.
-NOTES
-)"
-fi
-
-gh release create "$TAG" "$DMG" "$ZIP" "$CHECKSUMS" \
+gh release create "$TAG" "$DMG" "$ZIP" "$CHECKSUMS" "$OUT/appcast.xml" \
   --verify-tag \
   --fail-on-no-commits \
   --title "Chostty $VERSION" \

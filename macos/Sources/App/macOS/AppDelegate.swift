@@ -953,10 +953,7 @@ class AppDelegate: NSObject,
         // `never` rather than letting the system setting turn it back on.
         UserDefaults.ghostty.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
 
-        // Sync our auto-update settings. If SUEnableAutomaticChecks (in our Info.plist) is
-        // explicitly false (NO), auto-updates are disabled. Otherwise, we use the behavior
-        // defined by our "auto-update" configuration (if set) or fall back to Sparkle
-        // user-based defaults.
+        // Source builds force updates off; packaging stamps this plist key true.
         if Bundle.main.infoDictionary?["SUEnableAutomaticChecks"] as? Bool == false {
             updateController.updater.automaticallyChecksForUpdates = false
             updateController.updater.automaticallyDownloadsUpdates = false
@@ -965,14 +962,6 @@ class AppDelegate: NSObject,
                 autoUpdate == .check || autoUpdate == .download
             updateController.updater.automaticallyDownloadsUpdates =
                 autoUpdate == .download
-            /*
-             To test `auto-update` easily, uncomment the line below and
-             delete `SUEnableAutomaticChecks` in Ghostty-Info.plist.
-
-             Note: When `auto-update = download`, you may need to
-             `Clean Build Folder` if a background install has already begun.
-             */
-            // updateController.updater.checkForUpdatesInBackground()
         }
 
         // Config could change keybindings, so update everything that depends on that

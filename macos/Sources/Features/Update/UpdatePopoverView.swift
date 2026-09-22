@@ -20,11 +20,6 @@ struct UpdatePopoverView: View {
                 // should not call the popover for idles.
                 EmptyView()
 
-            case .disabledNoChosttyFeed:
-                // Terminal, non-actionable state: there is nothing to confirm,
-                // retry, or dismiss, so the popover shows nothing.
-                EmptyView()
-
             case .permissionRequest(let request):
                 PermissionRequestView(request: request, dismiss: dismiss)
 

@@ -31,10 +31,13 @@ module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
 terminfo, `share/ghostty` resource paths, `~/.config/ghostty/`, every AppleScript
 four-char code, and the `ghostty` executable name on Linux/GTK.
 
-**Updater disabled.** Sparkle is off, `SUPublicEDKey` is absent from the built
-bundle, and the appcast workflows are deleted. An enabled updater pointed at
-upstream's feed would replace this fork with stock Ghostty. Do not re-enable it
-without this fork's own feed and signing key.
+**Updater.** Packaged stable releases enable Sparkle and verify this repository's
+latest-release appcast and update archive using the Ed25519 public key.
+Source builds do not check automatically. The private key stays outside the
+repository and must match the bundled public key before packaging. Releases
+through 0.2.12 require one manual upgrade. Losing the private key likewise
+requires a new public key and one manual release. Never use upstream Ghostty's
+appcast: it would replace Chostty with stock Ghostty.
 
 **Files panel Reader.** Opening a file from the right Files panel adds a
 read-only document tab to the selected Virtual Tab without unmounting its
@@ -188,9 +191,10 @@ publish when `origin/main` has no commits or no app/package input changes after
 the latest release, so documentation and release-tool-only merges do not create
 an empty app version.
 
-Publishing refuses a dirty tracked tree, a commit other than `origin/main`, or
-an existing tag/release. The packaging script refuses a bundle carrying
-`SUPublicEDKey` or a non-universal binary.
+Publishing refuses a dirty tracked tree, a commit other than `origin/main`, a
+non-increasing version, an ad-hoc identity, or an existing tag/release. The
+packaging script also checks the feed URL, public/private Sparkle key pair,
+signed appcast, and universal binary.
 
 `.github/workflows/release.yml` remains as a manual, no-publish fallback. It can
 build downloadable workflow artifacts, but it never tags or creates a GitHub

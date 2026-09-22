@@ -39,26 +39,11 @@ class UpdateController {
         installCancellable?.cancel()
     }
 
-    /// Whether in-app updates are available for this build.
-    ///
-    /// Chostty is a fork with its own product identity and does not yet own an
-    /// update feed, signing key, hosting, or rotation policy. Until it does,
-    /// every update path — startup, background scheduling, and manual checks —
-    /// stays off so an upstream Ghostty release can never replace this fork.
-    static let updatesAvailable = false
-
     /// Start the updater.
     ///
     /// This must be called before the updater can check for updates. If starting fails,
     /// the error will be shown to the user.
     func startUpdater() {
-        guard Self.updatesAvailable else {
-            // No feed and no signing key: never start Sparkle's scheduler, so
-            // it performs no network activity for the lifetime of the process.
-            userDriver.viewModel.state = .disabledNoChosttyFeed
-            return
-        }
-
         do {
             try updater.start()
         } catch {
@@ -107,12 +92,6 @@ class UpdateController {
     ///
     /// This is typically connected to a menu item action.
     @objc func checkForUpdates() {
-        // No feed exists, so a manual check must not touch the network either.
-        guard Self.updatesAvailable else {
-            viewModel.state = .disabledNoChosttyFeed
-            return
-        }
-
         // If we're already idle, then just check for updates immediately.
         if viewModel.state == .idle {
             updater.checkForUpdates()
@@ -137,8 +116,6 @@ class UpdateController {
     /// - Returns: Whether the menu item should be enabled
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(checkForUpdates) {
-            // Disabled while Chostty has no update feed of its own.
-            guard Self.updatesAvailable else { return false }
             return updater.canCheckForUpdates
         }
         return true
