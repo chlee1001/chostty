@@ -26,7 +26,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Per-machine signing defaults so a signed release needs no prior export.
 # The file is gitignored; write assignments with ${VAR:=...} so a value
 # exported in the calling shell still wins.
-[ -f "$REPO_ROOT/.release-env" ] && . "$REPO_ROOT/.release-env"
+if [ -f "$REPO_ROOT/.release-env" ]; then
+  # The file is machine-local and intentionally not tracked.
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.release-env"
+fi
 
 VERSION=""
 BUILD=""

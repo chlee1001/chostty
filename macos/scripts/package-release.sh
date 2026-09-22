@@ -120,11 +120,11 @@ if [ "$IDENTITY" != "-" ] && { [ ! -x "$GENERATE_APPCAST" ] || [ ! -f "$ED_KEY_F
 	exit 1
 fi
 if [ "$IDENTITY" != "-" ]; then
-	[ "$(stat -f %Su "$ED_KEY_FILE")" = "$(id -un)" ] &&
-		[ "$(stat -f %Lp "$ED_KEY_FILE")" = 600 ] || {
+	if [ "$(stat -f %Su "$ED_KEY_FILE")" != "$(id -un)" ] ||
+		[ "$(stat -f %Lp "$ED_KEY_FILE")" != 600 ]; then
 		echo "Sparkle EdDSA key must be owned by the current user with mode 0600" >&2
 		exit 1
-	}
+	fi
 	BUNDLE_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST")"
 	PRIVATE_KEY_PUBLIC_KEY="$("$SCRIPT_DIR/sparkle-public-key.swift" "$ED_KEY_FILE")"
 	[ "$BUNDLE_PUBLIC_KEY" = "$PRIVATE_KEY_PUBLIC_KEY" ] || {
