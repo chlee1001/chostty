@@ -46,6 +46,45 @@
     },
   };
 
+  // Screen-reader announcements; the page language picks the table. Terminal
+  // text inside the window stays English, as a real shell prints it.
+  const MESSAGES = {
+    en: {
+      newWorkspace: (w) => `New workspace ${w}`,
+      newTab: (t, w) => `New tab ${t} in ${w}`,
+      paneCap: () => "This demo stops at four panes",
+      split: (n, t) => `Split, ${n} panes in ${t}`,
+      closedPane: (n) => `Closed pane, ${n} left`,
+      closedTab: (t) => `Closed tab ${t}`,
+      closedWorkspace: (w) => `Closed workspace ${w}`,
+      lastPane: () => "Last pane stays open in the demo",
+      noWorkspace: (n) => `No workspace ${n}`,
+      workspace: (w) => `Workspace ${w}`,
+      pane: (i, n) => `Pane ${i} of ${n}`,
+      sidebarShown: () => "Sidebar shown",
+      sidebarHidden: () => "Sidebar hidden",
+      restarted: () =>
+        "Restarted: same workspaces, tabs and splits, fresh shells",
+    },
+    ko: {
+      newWorkspace: (w) => `${w} 워크스페이스를 만들었어요`,
+      newTab: (t, w) => `${w}에 ${t} 탭을 만들었어요`,
+      paneCap: () => "데모에서는 네 칸까지만 나눌 수 있어요",
+      split: (n, t) => `${t} 탭을 ${n}칸으로 나눴어요`,
+      closedPane: (n) => `칸을 닫았어요. ${n}칸 남았어요`,
+      closedTab: (t) => `${t} 탭을 닫았어요`,
+      closedWorkspace: (w) => `${w} 워크스페이스를 닫았어요`,
+      lastPane: () => "데모에서는 마지막 칸은 닫지 않아요",
+      noWorkspace: (n) => `${n}번 워크스페이스가 없어요`,
+      workspace: (w) => `${w} 워크스페이스`,
+      pane: (i, n) => `${n}칸 중 ${i}번째 칸`,
+      sidebarShown: () => "사이드바를 열었어요",
+      sidebarHidden: () => "사이드바를 닫았어요",
+      restarted: () => "다시 켰어요. 배치는 그대로이고 셸만 새로 떴어요",
+    },
+  };
+  const T = MESSAGES[document.documentElement.lang] || MESSAGES.en;
+
   const DOTS = [
     "#ffc27a",
     "#ff6f86",
@@ -250,7 +289,7 @@
       state.lastWorkspace = state.active;
       state.active = n;
       fresh.ws = n;
-      say(`New workspace ${ws().name}`);
+      say(T.newWorkspace(ws().name));
     },
     tab() {
       const w = ws();
@@ -261,19 +300,19 @@
         panes: [pane(tab().panes[0].dir, ["", OUT.plain])],
       });
       w.tab = w.tabs.length - 1;
-      say(`New tab ${name} in ${w.name}`);
+      say(T.newTab(name, w.name));
     },
     split() {
       const t = tab();
       if (t.panes.length >= 4) {
-        say("This demo stops at four panes");
+        say(T.paneCap());
         return;
       }
       const p = pane(t.panes[t.focus].dir, ["", OUT.plain]);
       t.panes.splice(t.focus + 1, 0, p);
       t.focus += 1;
       fresh.pane = p.id;
-      say(`Split, ${t.panes.length} panes in ${t.name}`);
+      say(T.split(t.panes.length, t.name));
     },
     close() {
       const w = ws();
@@ -281,37 +320,37 @@
       if (t.panes.length > 1) {
         t.panes.splice(t.focus, 1);
         t.focus = Math.min(t.focus, t.panes.length - 1);
-        say(`Closed pane, ${t.panes.length} left`);
+        say(T.closedPane(t.panes.length));
       } else if (w.tabs.length > 1) {
         w.tabs.splice(w.tab, 1);
         w.tab = Math.min(w.tab, w.tabs.length - 1);
-        say(`Closed tab ${t.name}`);
+        say(T.closedTab(t.name));
       } else if (state.workspaces.length > 1) {
         state.workspaces.splice(state.active, 1);
         state.active = Math.min(state.active, state.workspaces.length - 1);
-        say(`Closed workspace ${w.name}`);
+        say(T.closedWorkspace(w.name));
       } else {
-        say("Last pane stays open in the demo");
+        say(T.lastPane());
       }
     },
     goto(n) {
       const i = n === 9 ? state.workspaces.length - 1 : n - 1;
       if (i < 0 || i >= state.workspaces.length) {
-        say(`No workspace ${n}`);
+        say(T.noWorkspace(n));
         return;
       }
       if (i !== state.active) state.lastWorkspace = state.active;
       state.active = i;
-      say(`Workspace ${ws().name}`);
+      say(T.workspace(ws().name));
     },
     focusPane(dir) {
       const t = tab();
       t.focus = (t.focus + dir + t.panes.length) % t.panes.length;
-      say(`Pane ${t.focus + 1} of ${t.panes.length}`);
+      say(T.pane(t.focus + 1, t.panes.length));
     },
     sidebar() {
       state.sidebar = !state.sidebar;
-      say(state.sidebar ? "Sidebar shown" : "Sidebar hidden");
+      say(state.sidebar ? T.sidebarShown() : T.sidebarHidden());
     },
     restart() {
       const stamp = new Date().toLocaleTimeString("en-GB", {
@@ -327,7 +366,7 @@
             }
         render();
         demo.classList.remove("is-restarting");
-        say("Restarted: same workspaces, tabs and splits, fresh shells");
+        say(T.restarted());
       };
       demo.scrollIntoView({
         behavior: reduced.matches ? "auto" : "smooth",

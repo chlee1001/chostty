@@ -47,8 +47,10 @@
   --ink-3: #a499cf;
   --rule: rgb(255 255 255 / 0.1);
 
-  --display: "Saira SC", "Avenir Next Condensed", sans-serif;
-  --text: "Atkinson Next", "Avenir Next", system-ui, sans-serif;
+  /* The Latin subsets carry no Hangul; Korean falls through to the system face. */
+  --hangul: "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  --display: "Saira SC", "Avenir Next Condensed", var(--hangul);
+  --text: "Atkinson Next", "Avenir Next", var(--hangul);
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 
   --pitch: clamp(3.9rem, 3.3rem + 1.6vw, 4.7rem);
@@ -216,6 +218,10 @@ main > section {
   font: 600 0.92rem/1 var(--display);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+.topnav a.lang {
+  padding-left: 1.1rem;
+  border-left: 1px solid var(--rule);
 }
 .topnav a:hover {
   color: var(--ink);
@@ -1026,6 +1032,35 @@ h1 {
 
 /* ---------- responsive ---------- */
 
+/* Korean: break between words, not inside them, and give Hangul the line
+   height and tracking it needs next to the condensed Latin display face. */
+:lang(ko) {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+:lang(ko) :is(h1, h2, h3) {
+  line-height: 1.14;
+  letter-spacing: -0.01em;
+}
+:lang(ko) h1 {
+  font-size: clamp(2.5rem, 1.5rem + 2.7vw, 4.1rem);
+}
+:lang(ko) .biglegend {
+  font-size: clamp(2rem, 1.3rem + 2.4vw, 3.6rem);
+  line-height: 1.05;
+}
+:lang(ko) :is(.topnav a, .cap .action, .ledger dt, .returnkey-label) {
+  letter-spacing: 0;
+}
+/* Uppercasing only hits the Latin words in Korean copy ("MACOS용"); keep
+   them as written. Paragraphs avoid a lone word on the last line. */
+:lang(ko) :is(h1, h2, h3, .returnkey-label, .biglegend) {
+  text-transform: none;
+}
+:lang(ko) p {
+  text-wrap: pretty;
+}
+
 @media (max-width: 64rem) {
   .hero {
     grid-template-columns: minmax(0, 1fr);
@@ -1044,7 +1079,7 @@ h1 {
 }
 
 @media (max-width: 44rem) {
-  .topnav a:not(.gh) {
+  .topnav a:not(.gh, .lang) {
     display: none;
   }
   .legendsheet {
