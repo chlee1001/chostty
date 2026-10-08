@@ -166,6 +166,20 @@ struct SessionSnapshotRepository: Sendable {
         }
     }
 
+    struct StoredOwner: Decodable, Equatable {
+        let ownerInstanceID: UUID
+        let ownerPID: Int32
+    }
+
+    /// The writer recorded in the primary file, decoded without the workspace
+    /// graph. Ownership is a property of the file on disk, so it stays readable
+    /// even when the graph itself would fail restore validation.
+    func storedOwner() -> StoredOwner? {
+        guard let data = try? Data(contentsOf: primaryURL),
+              Self.resourceRejection(for: data) == nil else { return nil }
+        return try? JSONDecoder().decode(StoredOwner.self, from: data)
+    }
+
     private enum ReadFailure: Error, CustomStringConvertible {
         case missing
         case decode(String)

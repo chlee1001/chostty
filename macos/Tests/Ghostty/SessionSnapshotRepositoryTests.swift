@@ -267,6 +267,16 @@ import Testing
             return
         }
         #expect(reason.contains("noWindows"))
+        // The graph is unusable, but the writer it names still owns the file.
+        #expect(repository.storedOwner() == .init(ownerInstanceID: empty.ownerInstanceID, ownerPID: 1))
+    }
+
+    @Test func storedOwnerIsAbsentForMissingOrCorruptFiles() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        #expect(repository.storedOwner() == nil)
+        try Data("{ not json".utf8).write(to: repository.primaryURL)
+        #expect(repository.storedOwner() == nil)
     }
 
     @Test func corruptPrimaryFallsBackToBackup() throws {

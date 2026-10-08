@@ -59,14 +59,18 @@ import Testing
     private func makePersistence(
         directory: URL,
         registry: PendingHydrationRegistry? = nil,
+        ownerInstanceID: UUID = UUID(),
+        ownerPID: Int32 = 4242,
+        isLiveInstance: @escaping (Int32) -> Bool = { _ in false },
         controllers: @escaping () -> [TerminalController]
     ) -> SessionPersistenceController {
         SessionPersistenceController(
             repository: SessionSnapshotRepository(directory: directory),
             gate: openGate(),
             registry: registry ?? PendingHydrationRegistry(),
-            ownerInstanceID: UUID(),
-            ownerPID: 4242,
+            ownerInstanceID: ownerInstanceID,
+            ownerPID: ownerPID,
+            isLiveInstance: isLiveInstance,
             controllersProvider: controllers
         )
     }
@@ -171,7 +175,7 @@ import Testing
         #expect(!persistence.persistIfNeeded())
     }
 
-    // MARK: - (1) Idle: no extra write, deterministic window order
+    // MARK: - Idle: no extra write, deterministic window order
 
     @Test func repeatedCallsWithoutChangesWriteOnceAndKeepWindowOrderStable() throws {
         let directory = try makeTemporaryDirectory()
@@ -203,7 +207,7 @@ import Testing
         #expect(baseline.windows.map(\.physicalUUID) == expectedOrder)
     }
 
-    // MARK: - (2) Structural commit is reflected
+    // MARK: - Structural commit is reflected
 
     @Test func renamingAWorkspaceIsWrittenOnTheNextCall() throws {
         let directory = try makeTemporaryDirectory()
@@ -224,7 +228,7 @@ import Testing
         #expect(try decode(repository).windows[0].workspaces[0].name == "After")
     }
 
-    // MARK: - (3) Pending tabs are republished, never erased
+    // MARK: - Pending tabs are republished, never erased
 
     @Test func pendingTabsKeepTheirPaneCountAcrossRepeatedSaves() throws {
         let directory = try makeTemporaryDirectory()
@@ -278,7 +282,7 @@ import Testing
         #expect(paneCount(try decode(repository)) == 5)
     }
 
-    // MARK: - (4)(5) Metadata changes move the counter; one write per tick
+    // MARK: - Metadata changes move the counter; one write per tick
 
     @Test func renamingATabUpdatesDiskAndCoalescesWithinOneTick() throws {
         let directory = try makeTemporaryDirectory()
@@ -331,7 +335,7 @@ import Testing
         )
     }
 
-    // MARK: - (6) Splits are captured even though they bypass commit
+    // MARK: - Splits are captured even though they bypass commit
 
     @Test func splittingAPaneIsCapturedByTheNextSave() throws {
         let directory = try makeTemporaryDirectory()
@@ -603,15 +607,74 @@ import Testing
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let controller = try makeController()
-        let persistence = makePersistence(directory: directory) { [controller] }
+        let persistence = makePersistence(directory: directory, isLiveInstance: { $0 == 777 }) { [controller] }
 
-        persistence.disableForSecondInstance()
+        persistence.disableForSecondInstance(ownerPID: 777)
 
         #expect(persistence.isDisabledBySecondInstance)
         #expect(!persistence.persistIfNeeded())
         persistence.persistNow()
         persistence.flush()
         #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
+        #expect(persistence.sidebarSyncInspection().foreignOwner?.pid == 777)
+    }
+
+    @Test func savingResumesOnceTheOwnerExits() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        var ownerAlive = true
+        let persistence = makePersistence(directory: directory, isLiveInstance: { _ in ownerAlive }) {
+            [controller]
+        }
+        persistence.disableForSecondInstance(ownerPID: 777)
+        #expect(!persistence.persistIfNeeded())
+
+        ownerAlive = false
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(try decode(repository).ownerPID == 4242)
+    }
+
+    /// The other instance cannot be told directly, so it learns from the file:
+    /// a live foreign owner recorded there stops this writer before it writes.
+    @Test func aWriterYieldsToALiveInstanceThatTookTheFileOver() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, isLiveInstance: { $0 == 777 }) { [controller] }
+        persistence.persistNow()
+        #expect(try decode(repository).ownerPID == 4242)
+
+        let taker = makePersistence(directory: directory, ownerPID: 777, isLiveInstance: { $0 == 4242 }) {
+            [controller]
+        }
+        #expect(taker.adoptOwnership(of: try decode(repository)))
+        let inspection = taker.takeOverOwnership()
+        #expect(inspection.canSynchronize)
+        #expect(try decode(repository).ownerPID == 777)
+
+        // A change forces the original writer past its unchanged-cursor skip.
+        let store = controller.workspaceStore
+        store.renameWorkspace(store.snapshot.workspaces[0].id, to: "Changed")
+        #expect(!persistence.persistIfNeeded())
+        persistence.persistNow()
+        persistence.flush()
+        #expect(persistence.isDisabledBySecondInstance)
+        #expect(try decode(repository).ownerPID == 777)
+    }
+
+    @Test func aReusedPidOfAnotherProgramIsNotAnOwner() {
+        // launchd is alive and owned by root, which `kill(pid, 0)` reports as
+        // alive through EPERM; it is still not a Chostty instance.
+        #expect(!SessionPersistenceController.isLiveAppInstance(1))
+        #expect(!SessionPersistenceController.isLiveAppInstance(0))
+        #expect(!SessionPersistenceController.isLiveAppInstance(-1))
+        #expect(!SessionPersistenceController.isLiveAppInstance(Int32(ProcessInfo.processInfo.processIdentifier)))
     }
 
     @Test func terminateWriteIsUnconditional() throws {

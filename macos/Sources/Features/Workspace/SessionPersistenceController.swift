@@ -75,6 +75,15 @@ final class SessionPersistenceController {
             return true
         }
 
+        /// After an ownership change the file may hold another writer's graph,
+        /// so the next tick must write even when this process saw no change.
+        func forgetCompletedSaves() {
+            lock.lock()
+            defer { lock.unlock() }
+            savedCursor = nil
+            rejectedCursor = nil
+        }
+
         func finish(_ cursor: SaveCursor, result: Result) {
             lock.lock()
             defer { lock.unlock() }
@@ -93,8 +102,14 @@ final class SessionPersistenceController {
 
     private let saveState = SaveState()
 
-    /// Set when boot found another live instance owning the file.
-    private(set) var isDisabledBySecondInstance = false
+    /// PID of the other live instance that owns the file. While set, this
+    /// process neither saves nor overwrites until that owner exits or the user
+    /// takes ownership back.
+    private(set) var foreignOwnerPID: Int32?
+
+    var isDisabledBySecondInstance: Bool { foreignOwnerPID != nil }
+
+    private let isLiveInstance: (Int32) -> Bool
 
     init(
         repository: SessionSnapshotRepository,
@@ -103,6 +118,7 @@ final class SessionPersistenceController {
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
         queue: DispatchQueue = DispatchQueue(label: "com.chostty.session-persistence", qos: .utility),
+        isLiveInstance: @escaping (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.all }
     ) {
         self.repository = repository
@@ -111,6 +127,7 @@ final class SessionPersistenceController {
         self.ownerInstanceID = ownerInstanceID
         self.ownerPID = ownerPID
         self.queue = queue
+        self.isLiveInstance = isLiveInstance
         self.controllersProvider = controllersProvider
     }
 
@@ -137,23 +154,28 @@ final class SessionPersistenceController {
         timer = nil
     }
 
-    func disableForSecondInstance() {
-        isDisabledBySecondInstance = true
-        stop()
-        Self.logger.notice("session.persist.disabledSecondInstance")
+    /// The timer keeps running while passive: its ticks are what notice the
+    /// owner exiting.
+    func disableForSecondInstance(ownerPID: Int32) {
+        foreignOwnerPID = ownerPID
+        Self.logger.notice("session.persist.disabledSecondInstance ownerPID=\(ownerPID, privacy: .public)")
     }
 
-    /// `kill(pid, 0)` sends no signal, only the existence and permission
-    /// checks. `EPERM` means the process exists but belongs to another user,
-    /// which still counts as alive; only `ESRCH` is dead. The app is not
-    /// sandboxed, so this is not blocked.
-    static func processIsAlive(_ pid: Int32) -> Bool {
-        guard pid > 0 else { return false }
-        if kill(pid, 0) == 0 { return true }
-        return errno == EPERM
+    /// A pid alone is not an identity. After a reboot the recorded pid can
+    /// belong to an unrelated root daemon, which `kill(pid, 0)` reports as
+    /// alive through `EPERM`. Only a running application with this app's
+    /// bundle identifier counts. Debug and release builds have different
+    /// identifiers and directories, so they never share a file.
+    static func isLiveAppInstance(_ pid: Int32) -> Bool {
+        guard pid > 0,
+              pid != ProcessInfo.processInfo.processIdentifier,
+              let bundleIdentifier = Bundle.main.bundleIdentifier,
+              let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated else { return false }
+        return app.bundleIdentifier == bundleIdentifier
     }
 
-    /// Decides, once at boot, whether another live instance owns the file.
+    /// Decides at boot whether another live instance owns the file.
     ///
     /// Both conditions are required. An instance-id mismatch alone is true on
     /// every ordinary relaunch, since a new id is issued per process and the
@@ -161,16 +183,61 @@ final class SessionPersistenceController {
     /// persistence off from the second launch onward and freeze the user's
     /// layout at whatever the first run wrote.
     @discardableResult
-    func adoptOwnership(
-        of stored: AppSessionSnapshot?,
-        isProcessAlive: (Int32) -> Bool = SessionPersistenceController.processIsAlive
-    ) -> Bool {
+    func adoptOwnership(of stored: AppSessionSnapshot?) -> Bool {
         guard let stored else { return false }
-        guard stored.ownerInstanceID != ownerInstanceID else { return false }
-        guard isProcessAlive(stored.ownerPID) else { return false }
+        return yields(to: SessionSnapshotRepository.StoredOwner(
+            ownerInstanceID: stored.ownerInstanceID,
+            ownerPID: stored.ownerPID
+        ))
+    }
 
-        disableForSecondInstance()
+    /// Goes passive when the recorded writer is a different, live instance.
+    /// Checked before every write too, which is what makes a takeover by the
+    /// other instance stick instead of the two alternately overwriting.
+    private func yields(to stored: SessionSnapshotRepository.StoredOwner?) -> Bool {
+        guard let stored,
+              stored.ownerInstanceID != ownerInstanceID,
+              isLiveInstance(stored.ownerPID) else { return false }
+        disableForSecondInstance(ownerPID: stored.ownerPID)
         return true
+    }
+
+    /// Resumes saving once the instance this process deferred to has exited.
+    func reconcileOwnership() {
+        guard let foreignOwnerPID, !isLiveInstance(foreignOwnerPID) else { return }
+        self.foreignOwnerPID = nil
+        saveState.forgetCompletedSaves()
+        Self.logger.notice("session.persist.ownerExited ownerPID=\(foreignOwnerPID, privacy: .public)")
+    }
+
+    /// Writes this process's live graph over a file owned by another live
+    /// instance. That instance reads the new owner before its next write and
+    /// goes passive, so the takeover holds.
+    @discardableResult
+    func takeOverOwnership() -> SidebarSyncInspection {
+        if let foreignOwnerPID {
+            Self.logger.notice("session.persist.takeOver previousOwnerPID=\(foreignOwnerPID, privacy: .public)")
+        }
+        foreignOwnerPID = nil
+        saveState.forgetCompletedSaves()
+        if canPersist {
+            let controllers = controllersProvider()
+            if !controllers.isEmpty {
+                write(snapshot(from: controllers), cursor: saveCursor(from: controllers), synchronously: true)
+            }
+        }
+        return sidebarSyncInspection()
+    }
+
+    /// Details of the owning instance for the sync sheet.
+    private func foreignOwner() -> SidebarSyncInspection.ForeignOwner? {
+        guard let foreignOwnerPID else { return nil }
+        let app = NSRunningApplication(processIdentifier: foreignOwnerPID)
+        return SidebarSyncInspection.ForeignOwner(
+            pid: foreignOwnerPID,
+            bundlePath: app?.bundleURL?.path,
+            launchDate: app?.launchDate
+        )
     }
 
     // MARK: - Sidebar sync inspection
@@ -184,10 +251,16 @@ final class SessionPersistenceController {
             case liveStateUnavailable
         }
 
+        struct ForeignOwner: Equatable {
+            let pid: Int32
+            let bundlePath: String?
+            let launchDate: Date?
+        }
+
         enum SynchronizationAvailability: Equatable {
             case available
             case persistenceDisabled
-            case ownedByAnotherLiveInstance
+            case ownedByAnotherLiveInstance(ForeignOwner)
             case noLiveState
         }
 
@@ -199,12 +272,18 @@ final class SessionPersistenceController {
         var canSynchronize: Bool {
             synchronizationAvailability == .available
         }
+
+        var foreignOwner: ForeignOwner? {
+            guard case .ownedByAnotherLiveInstance(let owner) = synchronizationAvailability else { return nil }
+            return owner
+        }
     }
 
     /// Inspects the live projection and the repository's validated snapshot.
     /// Owner fields intentionally do not participate in this comparison: they
     /// describe the writer, not the workspace graph the sidebar displays.
     func sidebarSyncInspection() -> SidebarSyncInspection {
+        reconcileOwnership()
         let controllers = controllersProvider()
         let current = controllers.isEmpty ? nil : snapshot(from: controllers)
         let availability = synchronizationAvailability(hasLiveState: current != nil)
@@ -257,7 +336,7 @@ final class SessionPersistenceController {
     private func synchronizationAvailability(
         hasLiveState: Bool
     ) -> SidebarSyncInspection.SynchronizationAvailability {
-        if isDisabledBySecondInstance { return .ownedByAnotherLiveInstance }
+        if let owner = foreignOwner() { return .ownedByAnotherLiveInstance(owner) }
         if !gate.shouldPersist { return .persistenceDisabled }
         if !hasLiveState { return .noLiveState }
         return .available
@@ -269,6 +348,7 @@ final class SessionPersistenceController {
     ///   skipped because the bytes matched.
     @discardableResult
     func persistIfNeeded() -> Bool {
+        reconcileOwnership()
         guard canPersist else { return false }
 
         let controllers = controllersProvider()
@@ -278,6 +358,11 @@ final class SessionPersistenceController {
         guard !controllers.isEmpty else { return false }
         let cursor = saveCursor(from: controllers)
         guard saveState.reserve(cursor) else { return false }
+        // Read only once a write is due, so an idle tick stays off the disk.
+        if yields(to: repository.storedOwner()) {
+            saveState.finish(cursor, result: .failed)
+            return false
+        }
 
         write(snapshot(from: controllers), cursor: cursor, synchronously: false)
         return true
@@ -286,9 +371,11 @@ final class SessionPersistenceController {
     /// Blocks until the save attempt finishes. Invalid projections and I/O
     /// failures leave the previous valid snapshot in place.
     func persistNow() {
+        reconcileOwnership()
         guard canPersist else { return }
         let controllers = controllersProvider()
         guard !controllers.isEmpty else { return }
+        guard !yields(to: repository.storedOwner()) else { return }
         write(snapshot(from: controllers), cursor: saveCursor(from: controllers), synchronously: true)
     }
 
