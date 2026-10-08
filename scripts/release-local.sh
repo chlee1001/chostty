@@ -254,6 +254,7 @@ else
   if git rev-parse "$TAG^{commit}" >/dev/null 2>&1; then
     [ "$(git rev-parse "$TAG^{commit}")" = "$COMMIT" ] || {
       echo "$TAG already points at another commit" >&2
+      echo "if it is an upstream Ghostty tag, remove the local copy: git tag -d $TAG" >&2
       exit 1
     }
   else
