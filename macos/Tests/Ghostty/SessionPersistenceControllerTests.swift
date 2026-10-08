@@ -175,7 +175,7 @@ import Testing
         #expect(!persistence.persistIfNeeded())
     }
 
-    // MARK: - (1) Idle: no extra write, deterministic window order
+    // MARK: - Idle: no extra write, deterministic window order
 
     @Test func repeatedCallsWithoutChangesWriteOnceAndKeepWindowOrderStable() throws {
         let directory = try makeTemporaryDirectory()
@@ -207,7 +207,7 @@ import Testing
         #expect(baseline.windows.map(\.physicalUUID) == expectedOrder)
     }
 
-    // MARK: - (2) Structural commit is reflected
+    // MARK: - Structural commit is reflected
 
     @Test func renamingAWorkspaceIsWrittenOnTheNextCall() throws {
         let directory = try makeTemporaryDirectory()
@@ -228,7 +228,7 @@ import Testing
         #expect(try decode(repository).windows[0].workspaces[0].name == "After")
     }
 
-    // MARK: - (3) Pending tabs are republished, never erased
+    // MARK: - Pending tabs are republished, never erased
 
     @Test func pendingTabsKeepTheirPaneCountAcrossRepeatedSaves() throws {
         let directory = try makeTemporaryDirectory()
@@ -282,7 +282,7 @@ import Testing
         #expect(paneCount(try decode(repository)) == 5)
     }
 
-    // MARK: - (4)(5) Metadata changes move the counter; one write per tick
+    // MARK: - Metadata changes move the counter; one write per tick
 
     @Test func renamingATabUpdatesDiskAndCoalescesWithinOneTick() throws {
         let directory = try makeTemporaryDirectory()
@@ -335,7 +335,7 @@ import Testing
         )
     }
 
-    // MARK: - (6) Splits are captured even though they bypass commit
+    // MARK: - Splits are captured even though they bypass commit
 
     @Test func splittingAPaneIsCapturedByTheNextSave() throws {
         let directory = try makeTemporaryDirectory()
