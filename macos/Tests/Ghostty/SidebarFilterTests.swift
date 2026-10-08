@@ -76,7 +76,7 @@ struct SidebarFilterTests {
     }
 
     @Test func filterMatchesPwd() {
-        let session = makeSession(title: "zsh", pwd: "/Users/rudy/Projects/chostty")
+        let session = makeSession(title: "zsh", pwd: "/Users/me/Projects/chostty")
         let ws = makeWorkspace(name: "misc", tabs: [session])
         let other = makeWorkspace(name: "other", tabs: [makeSession(title: "vim", pwd: "/tmp")])
         let result = SidebarFilter.filter(workspaces: [ws, other], query: "chostty")
