@@ -962,6 +962,12 @@ class AppDelegate: NSObject,
                 autoUpdate == .check || autoUpdate == .download
             updateController.updater.automaticallyDownloadsUpdates =
                 autoUpdate == .download
+        } else {
+            // Sparkle prefers a stored preference over the plist, and every
+            // release through 0.2.12 stored `SUEnableAutomaticChecks = 0`.
+            // Without this, upgraded installs never check on their own.
+            // `auto-update = off` remains the opt-out.
+            updateController.updater.automaticallyChecksForUpdates = true
         }
 
         // Config could change keybindings, so update everything that depends on that

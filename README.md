@@ -21,21 +21,15 @@ config file, the same terminfo, the same shell integration.
 
 ## Install
 
-Download the DMG from [Releases](../../releases), drag Chostty to Applications,
-then run:
+Download the DMG from [Releases](../../releases) and drag Chostty to
+Applications. Releases since 0.2.13 are signed with a Developer ID and
+notarized, so they open without extra steps.
 
-```sh
-xattr -cr /Applications/Chostty.app
-```
-
-**That step is required.** This fork has no Apple Developer ID, so the app is
-ad-hoc signed and cannot be notarized. macOS quarantines the download and
-reports it as damaged until the attribute is cleared — which looks exactly like
-a corrupt build, so do not skip it and conclude the release is broken.
-
-There is no auto-updater. Sparkle is compiled out on purpose: pointing it at
-upstream's appcast would quietly replace this fork with stock Ghostty. New
-versions come from the releases page.
+Releases since 0.2.13 also update themselves through Sparkle, against this
+repository's signed appcast, never upstream's. Set `auto-update = off` to stop
+automatic checks, or `auto-update = download` to fetch updates in the
+background. Installs of 0.2.12 or older have no updater and need one manual
+upgrade.
 
 Universal binary, macOS 13 and later.
 
