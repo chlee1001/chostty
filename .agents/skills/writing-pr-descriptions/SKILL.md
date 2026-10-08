@@ -7,8 +7,12 @@ description: >-
 
 # Writing PR Descriptions
 
-Write PR titles and bodies in this fork's style: the fork's
-Conventional Commits title plus a gajae-code-structured body.
+PR bodies follow the gajae-code repository's PR template
+(`Yeachan-Heo/gajae-code` `.github/PULL_REQUEST_TEMPLATE.md`): `What`,
+`Why`, `Testing`, `Risk classification`, then a checklist. Only the
+checklist items change, to this fork's own gates. The commit-trailer
+format (`Constraint:`, `Tested:`, `Confidence:` …) belongs in commit
+messages, not PR bodies.
 
 ## Title
 
@@ -16,49 +20,69 @@ Conventional Commits title plus a gajae-code-structured body.
 <type>(<scope>): <summary>
 ```
 
-- Title matches the squashed commit subject exactly. The fork's own
-  history uses `feat(workspace):`, `fix(sidebar):`, `refactor(macos):`,
-  `test:`, `ci:`, `build:`, `chore:` — match it.
-- Summary: lowercase start, imperative mood, no trailing period.
+- Matches the squashed commit subject exactly. The fork's history uses
+  `feat(workspace):`, `fix(sidebar):`, `refactor(macos):`, `test:`,
+  `ci:`, `build:`, `chore:`.
+- Lowercase start, imperative mood, no trailing period.
 
 ## Body
 
-```
-<problem and change, plain prose>
+```markdown
+## What
 
-Constraint: <invariant that must hold>
-Rejected: <considered alternative> | <why it was refused>
-Tested: <what was actually run>
-Not-tested: <known gap>
-Confidence: <high|medium|low>
-Scope-risk: <low|moderate|high|narrow|...>
-Reversibility: <git-revert|revert commit|...>
+<one sentence on the user-visible change>
+
+- <change, with the type or file that carries it>
+- …
+
+## Why
+
+<the defect or gap, with observed evidence, and why this approach>
+
+Alternatives considered:
+- <alternative>. <why it was refused>
+
+## Testing
+
+- <command or suite> — <result with counts>
+- Not covered: <known gap>
+
+## Risk classification
+
+- [ ] `low-risk` — ordinary fix/maintenance
+- [ ] `regression-risk` — fix with material regression risk
+- [ ] `high-risk` — <area>; independent review required
+
+---
+
+- [ ] Target branch is `main`
+- [ ] `./macos/build.nu --configuration Debug --action build` passes
+- [ ] Affected macOS test suites pass (batched, see AGENTS.md)
+- [ ] `./macos/scripts/native-tab-audit.sh` passes
+- [ ] README / FORK.md updated (if user-facing)
 ```
 
 ### Rules
 
-- First paragraph states the defect or gap, then what changed and how
-  the new behavior works. Plain prose, no bullets. Focus on why and
-  how, not a diff restatement.
-- `Constraint:` lines name invariants the change must preserve (one
-  per line when more than one). Omit when there is none.
-- `Rejected:` lines record a seriously considered alternative and why
-  it was refused, separated by ` | `. Omit when nothing was weighed.
-- `Tested:` lists only what was actually run — builds, suites with
-  counts, gates, manual runs. Never claim an unrun check.
-- `Not-tested:` names the known verification gap (e.g. Xcode IDE UI
-  run needing accessibility permission). Omit only when nothing is
-  untested.
-- `Confidence:`, `Scope-risk:`, `Reversibility:` are each one line.
-- No `Co-authored-by` trailer: this fork's log carries none.
-- Body language is English, matching the repo docs.
+- `What` opens with the visible change, then bullets naming the code
+  that carries it. Describe behavior, not a diff restatement.
+- `Why` states the defect with the evidence actually observed (log
+  line, `defaults read`, reproduced command), the cause, and why this
+  fix. Put rejected approaches under `Alternatives considered:`; omit
+  that block when nothing was weighed.
+- `Testing` lists only what was actually run, with counts. End with a
+  `Not covered:` bullet for the known gap; omit it only when nothing
+  is untested. Never claim an unrun check.
+- Check exactly one risk box. Tick a checklist item only when it was
+  done; leave it unchecked and say why in parentheses otherwise.
+- No `Co-authored-by` trailer and no agent signature.
+- English, matching the repo docs.
 
 ## Workflow
 
 - Draft the title from the branch diff, matching the commit subject.
-- Draft the body from the defect, the change, rejected alternatives,
-  and the verification actually performed.
-- Create or update the PR with `gh pr create` / `gh pr edit`.
-- If `gh pr edit` fails on token scopes (`read:org` missing), report
-  the exact scope error and hand over the finished body text rather
-  than leaving a half-edited PR.
+- Create or update the PR with `gh pr create --base main` /
+  `gh pr edit`, always naming `--repo chlee1001/chostty`.
+- If `gh pr edit` fails on token scopes (`read:org` missing), update
+  the body through REST instead:
+  `gh api -X PATCH repos/chlee1001/chostty/pulls/<n> -F body=@<file>`.
