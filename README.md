@@ -91,6 +91,13 @@ catches that. A scheduled workflow posts the same report to a tracking issue.
 The sync point is the git merge base with `upstream/main`, so there is no
 recorded revision to fall out of date.
 
+## Relationship to Ghostty
+
+Chostty is an independent fork. It is not affiliated with, endorsed by, or
+supported by the Ghostty project; report problems here, not upstream. The name
+Ghostty and the Ghostty logo belong to their owners, and Chostty ships its own
+icon.
+
 ## Licence
 
 Ghostty is MIT licensed. `LICENSE` keeps the upstream copyright notice verbatim

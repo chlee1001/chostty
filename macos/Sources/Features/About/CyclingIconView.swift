@@ -2,7 +2,7 @@ import SwiftUI
 import GhosttyKit
 import Combine
 
-/// A view that cycles through Ghostty's official icon variants.
+/// A view that cycles through Chostty's built-in icon variants.
 struct CyclingIconView: View {
     @EnvironmentObject var viewModel: AboutViewModel
 
