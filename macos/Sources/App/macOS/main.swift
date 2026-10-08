@@ -30,4 +30,8 @@ if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCE
 // action is a command starting with a `+`, such as `ghostty +boo`.
 ghostty_cli_try_action()
 
+// Copy settings and the saved session from the pre-rename bundle identifier
+// before anything reads UserDefaults or Application Support.
+LegacyBundleMigration.run()
+
 _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)

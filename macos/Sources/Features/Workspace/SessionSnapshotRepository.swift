@@ -9,14 +9,14 @@ import OSLog
 ///
 /// The directory is injectable so tests never touch real Application Support,
 /// and the default derives from the bundle identifier. A Debug build is
-/// `com.chostty.app.debug` and would otherwise overwrite the release app's
+/// `kr.co.devch.chostty.debug` and would otherwise overwrite the release app's
 /// file.
 struct SessionSnapshotRepository: Sendable {
     /// Directory holding `session.json` and `session-previous.json`.
     let directory: URL
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.chostty.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
         category: "session-persistence"
     )
 
@@ -45,7 +45,7 @@ struct SessionSnapshotRepository: Sendable {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
-        return base.appendingPathComponent(bundleIdentifier ?? "com.chostty.app", isDirectory: true)
+        return base.appendingPathComponent(bundleIdentifier ?? "kr.co.devch.chostty", isDirectory: true)
     }
 
     var primaryURL: URL { directory.appendingPathComponent(Self.primaryFileName, isDirectory: false) }

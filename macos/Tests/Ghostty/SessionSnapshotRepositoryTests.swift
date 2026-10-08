@@ -70,12 +70,12 @@ import Testing
     // MARK: - Default location
 
     @Test func defaultDirectoryDerivesFromBundleIdentifier() {
-        let debug = SessionSnapshotRepository.defaultDirectory(bundleIdentifier: "com.chostty.app.debug")
-        let release = SessionSnapshotRepository.defaultDirectory(bundleIdentifier: "com.chostty.app")
+        let debug = SessionSnapshotRepository.defaultDirectory(bundleIdentifier: "kr.co.devch.chostty.debug")
+        let release = SessionSnapshotRepository.defaultDirectory(bundleIdentifier: "kr.co.devch.chostty")
 
         // A Debug build must not write into the release app's directory.
-        #expect(debug.lastPathComponent == "com.chostty.app.debug")
-        #expect(release.lastPathComponent == "com.chostty.app")
+        #expect(debug.lastPathComponent == "kr.co.devch.chostty.debug")
+        #expect(release.lastPathComponent == "kr.co.devch.chostty")
         #expect(debug != release)
     }
 

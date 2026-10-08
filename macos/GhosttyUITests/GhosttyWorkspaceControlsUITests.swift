@@ -93,7 +93,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
     ///
     /// Launched without the `NSArgumentDomain` override the other tests use,
     /// since that domain outranks the write `@AppStorage` performs. Writes land
-    /// in `com.chostty.app.debug`, a separate domain from the release app, and
+    /// in `kr.co.devch.chostty.debug`, a separate domain from the release app, and
     /// the test restores the state it found.
     @MainActor
     func testTitlebarToggleActuallyMovesTheSidebar() throws {

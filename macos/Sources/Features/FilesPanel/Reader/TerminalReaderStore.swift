@@ -9,7 +9,7 @@ final class TerminalReaderStore: ObservableObject {
     /// Reader diagnostics never include file contents — only paths the user
     /// explicitly opened, plus counts and failure reasons.
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.chostty.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
         category: String(describing: TerminalReaderStore.self)
     )
 

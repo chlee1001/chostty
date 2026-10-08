@@ -25,7 +25,12 @@ removed, not merely bypassed; `macos/scripts/native-tab-audit.sh` is an
 enforcing gate that fails if any of it returns.
 
 **Product identity on macOS only.** The bundle is `Chostty.app`, the executable
-is `chostty`, and the bundle identifier is `com.chostty.app`. Everything a user
+is `chostty`, and the bundle identifier is `kr.co.devch.chostty` (Debug:
+`kr.co.devch.chostty.debug`). Releases through 0.2.15 used `com.chostty.app`;
+on first launch the renamed app copies that domain's preferences and its saved
+session once, keeping the originals, and the Dock tile plugin reads the old
+domain until then. macOS privacy grants such as Automation and notifications
+are keyed by bundle identifier and must be granted again. Everything a user
 or a script already depends on is deliberately unchanged: the `Ghostty` Swift
 module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
 terminfo, `share/ghostty` resource paths, `~/.config/ghostty/`, every AppleScript
@@ -287,7 +292,7 @@ The build directories hold `Chostty.app` copies carrying the same bundle
 identifier as the installed one, and Xcode registers each one with
 LaunchServices as the last step of every build (`RegisterWithLaunchServices` →
 `lsregister -f -R -trusted`). Once that has happened,
-`tell application "Chostty"` and `tell application id "com.chostty.app"` can
+`tell application "Chostty"` and `tell application id "kr.co.devch.chostty"` can
 resolve to a copy that is not running and block in `AESendMessage` forever,
 which looks exactly like the app hanging — it is not; its main thread is idle.
 
