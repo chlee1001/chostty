@@ -66,35 +66,118 @@ enum LegacyBundleMigration {
         legacyDefaults: [String: Any]?,
         legacyDirectory: URL,
         directory: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        copyItem: ((URL, URL) throws -> Void)? = nil
     ) {
         guard !defaults.bool(forKey: completedKey) else { return }
 
+        let destinationFiles = sessionFileNames.map {
+            directory.appendingPathComponent($0, isDirectory: false)
+        }
+        let hasCurrentSession = destinationFiles.contains {
+            fileManager.fileExists(atPath: $0.path)
+        }
+        let sourceFileNames = sessionFileNames.filter {
+            fileManager.fileExists(
+                atPath: legacyDirectory.appendingPathComponent($0, isDirectory: false).path
+            )
+        }
+
+        if !hasCurrentSession, !sourceFileNames.isEmpty {
+            let scratch = directory.deletingLastPathComponent()
+                .appendingPathComponent(".legacy-bundle-migration-\(UUID().uuidString)", isDirectory: true)
+            let stagedDirectory = scratch.appendingPathComponent("sessions", isDirectory: true)
+            let copy = copyItem ?? { source, destination in
+                try fileManager.copyItem(at: source, to: destination)
+            }
+            defer {
+                try? fileManager.removeItem(at: scratch)
+            }
+
+            do {
+                try fileManager.createDirectory(
+                    at: stagedDirectory,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                for name in sourceFileNames {
+                    try copy(
+                        legacyDirectory.appendingPathComponent(name, isDirectory: false),
+                        stagedDirectory.appendingPathComponent(name, isDirectory: false)
+                    )
+                }
+
+                // A session saved while the legacy files were prepared wins as
+                // well; never merge a legacy primary with its current backup.
+                guard !destinationFiles.contains(where: {
+                    fileManager.fileExists(atPath: $0.path)
+                }) else {
+                    finish(
+                        defaults: defaults,
+                        legacyDefaults: legacyDefaults,
+                        copiedFiles: 0,
+                        legacy: legacy
+                    )
+                    return
+                }
+
+                if !fileManager.fileExists(atPath: directory.path) {
+                    // Publishing the prepared directory is one rename, so a
+                    // failed import cannot leave one legacy session slot behind.
+                    try fileManager.moveItem(at: stagedDirectory, to: directory)
+                } else {
+                    // Preserve unrelated files already in this directory while
+                    // publishing the session pair with one replacement.
+                    let preparedDirectory = scratch.appendingPathComponent(
+                        "destination",
+                        isDirectory: true
+                    )
+                    try fileManager.copyItem(at: directory, to: preparedDirectory)
+                    for name in sourceFileNames {
+                        try fileManager.moveItem(
+                            at: stagedDirectory.appendingPathComponent(name, isDirectory: false),
+                            to: preparedDirectory.appendingPathComponent(name, isDirectory: false)
+                        )
+                    }
+                    try fileManager.replaceItemAt(
+                        directory,
+                        withItemAt: preparedDirectory,
+                        backupItemName: nil,
+                        options: []
+                    )
+                }
+            } catch {
+                logger.error("failed to import sessions from \(legacy, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return
+            }
+
+            finish(
+                defaults: defaults,
+                legacyDefaults: legacyDefaults,
+                copiedFiles: sourceFileNames.count,
+                legacy: legacy
+            )
+            return
+        }
+
+        finish(
+            defaults: defaults,
+            legacyDefaults: legacyDefaults,
+            copiedFiles: 0,
+            legacy: legacy
+        )
+    }
+
+    private static func finish(
+        defaults: UserDefaults,
+        legacyDefaults: [String: Any]?,
+        copiedFiles: Int,
+        legacy: String
+    ) {
         var copiedKeys = 0
         for (key, value) in legacyDefaults ?? [:] where defaults.object(forKey: key) == nil {
             defaults.set(value, forKey: key)
             copiedKeys += 1
-        }
-
-        var copiedFiles = 0
-        for name in sessionFileNames {
-            let source = legacyDirectory.appendingPathComponent(name, isDirectory: false)
-            let destination = directory.appendingPathComponent(name, isDirectory: false)
-            guard fileManager.fileExists(atPath: source.path),
-                  !fileManager.fileExists(atPath: destination.path)
-            else { continue }
-
-            do {
-                try fileManager.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-                try fileManager.copyItem(at: source, to: destination)
-                copiedFiles += 1
-            } catch {
-                logger.error("failed to copy \(name, privacy: .public) from \(legacy, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            }
         }
 
         defaults.set(true, forKey: completedKey)
