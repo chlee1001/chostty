@@ -1,5 +1,7 @@
 # Chostty
 
+English | [한국어](README.ko.md)
+
 A macOS fork of [Ghostty](https://github.com/ghostty-org/ghostty) that replaces
 native window tabs with an in-window **Workspace → Tab → Pane** hierarchy,
 driven from a left sidebar.

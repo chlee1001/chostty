@@ -232,6 +232,7 @@ still look like that.)
 | File | Why it matters |
 |---|---|
 | `FORK.md` | What changed vs upstream, what is frozen for compatibility, known gaps, release/verification notes. Read before touching the window model. |
+| `README.ko.md` / `FORK.ko.md` | Korean translations of `README.md` / `FORK.md`. The English file is canonical; update the Korean one in the same change. |
 | `build.zig` / `src/build/Config.zig` | Every build step and `-D` flag |
 | `build.zig.zon` | Deps + `minimum_zig_version = "0.16.0"` |
 | `build.zig.zon.{nix,txt,json}` | **Generated** by `nix/build-support/check-zig-cache.sh --update`; never hand-edit |

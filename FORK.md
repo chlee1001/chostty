@@ -1,5 +1,7 @@
 # Chostty
 
+English | [한국어](FORK.ko.md)
+
 A macOS fork of [Ghostty](https://github.com/ghostty-org/ghostty) that replaces
 native window tabs with an in-window Workspace → Tab → Pane hierarchy, driven
 from a left sidebar. `README.md` is the front door; this file records what
@@ -214,7 +216,9 @@ the latest release, so documentation and release-tool-only merges do not create
 an empty app version.
 
 Publishing refuses a dirty tracked tree, a commit other than `origin/main`, a
-non-increasing version, an ad-hoc identity, or an existing tag/release.
+non-increasing version, an ad-hoc identity, or an existing tag/release. The
+packaging script also checks the feed URL, public/private Sparkle key pair,
+signed appcast, and universal binary.
 
 Chostty versions are independent of Ghostty's. 1.0.0 is the first stable
 Chostty release; `--publish-next` increments the patch from there, and minor or
@@ -222,9 +226,7 @@ major bumps are an explicit `--version`. Upstream's own `vX.Y.Z` tags share the
 same namespace, so `scripts/upstream-sync.sh` fetches with `--no-tags`. A
 checkout that already imported them refuses to publish a colliding version
 with "already points at another commit"; delete the local upstream tag
-(`git tag -d vX.Y.Z`) and publish again. The
-packaging script also checks the feed URL, public/private Sparkle key pair,
-signed appcast, and universal binary.
+(`git tag -d vX.Y.Z`) and publish again.
 
 `.github/workflows/release.yml` remains as a manual, no-publish fallback. It can
 build downloadable workflow artifacts, but it never tags or creates a GitHub
