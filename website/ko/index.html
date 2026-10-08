@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chostty — 워크스페이스와 탭을 사이드바로 정리하는 macOS용 Ghostty</title>
+<meta name="description" content="Chostty는 macOS용 Ghostty 포크예요. 창 하나에서 셸을 워크스페이스, 탭, 분할 창으로 나눠 사이드바로 관리해요. Ghostty 설정 파일을 고치지 않고 쓸 수 있어요." />
+<meta name="theme-color" content="#1b1442" />
+<meta property="og:title" content="Chostty" />
+<meta property="og:locale" content="ko_KR" />
+<meta property="og:description" content="창 하나에서 워크스페이스, 탭, 분할 창을 사이드바로 관리하는 macOS용 Ghostty." />
+<meta property="og:image" content="../assets/img/chostty-512.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/img/favicon-32.png" />
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png" />
+<link rel="preload" href="../assets/fonts/saira-semi-condensed-800.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="../assets/fonts/atkinson-hyperlegible-next-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="alternate" hreflang="en" href="https://devch.co.kr/chostty/" />
+<link rel="alternate" hreflang="ko" href="https://devch.co.kr/chostty/ko/" />
+<link rel="stylesheet" href="../assets/site.css" />
+</head>
+<body>
+<svg width="0" height="0" class="defs" aria-hidden="true" focusable="false">
+<symbol id="g-cmd" viewBox="0 0 24 24">
+<path d="M9 9V6a3 3 0 1 0-3 3h3Zm0 0v6m0-6h6m-6 6H6a3 3 0 1 0 3 3v-3Zm0 0h6m0 0v3a3 3 0 1 0 3-3h-3Zm0 0V9m0 0V6a3 3 0 1 1 3 3h-3Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
+</symbol>
+<symbol id="g-shift" viewBox="0 0 24 24">
+<path d="M12 3.5 3.5 12.5H8V20h8v-7.5h4.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
+</symbol>
+<symbol id="g-ctrl" viewBox="0 0 24 24">
+<path d="m6 13 6-6 6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+</symbol>
+<symbol id="g-return" viewBox="0 0 24 24">
+<path d="M19 5v7a3 3 0 0 1-3 3H6m0 0 4-4m-4 4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+</symbol>
+<symbol id="g-sidebar" viewBox="0 0 24 24">
+<rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7" />
+<path d="M9.5 5v14" stroke="currentColor" stroke-width="1.7" />
+</symbol>
+<symbol id="g-github" viewBox="0 0 24 24">
+<path fill="currentColor" d="M12 2.5a9.5 9.5 0 0 0-3 18.52c.48.09.65-.2.65-.46v-1.6c-2.64.57-3.2-1.27-3.2-1.27-.43-1.1-1.06-1.39-1.06-1.39-.86-.59.07-.58.07-.58.95.07 1.45.98 1.45.98.85 1.45 2.22 1.03 2.76.79.09-.62.33-1.03.6-1.27-2.1-.24-4.32-1.05-4.32-4.68 0-1.03.37-1.88.98-2.54-.1-.24-.42-1.2.09-2.5 0 0 .8-.26 2.61.97a9 9 0 0 1 4.75 0c1.81-1.23 2.61-.97 2.61-.97.52 1.3.19 2.26.1 2.5.6.66.97 1.5.97 2.54 0 3.64-2.22 4.44-4.33 4.67.34.3.64.88.64 1.77v2.63c0 .26.17.56.66.46A9.5 9.5 0 0 0 12 2.5Z" />
+</symbol>
+</svg>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<header class="masthead"> <a class="brand" href="./" aria-label="Chostty 홈"> <img src="../assets/img/chostty-512.png" width="36" height="36" alt="" /> <span>Chostty</span>
+</a>
+<nav class="topnav" aria-label="페이지"> <a href="#levels">구조</a> <a href="#config">설정</a> <a href="#keymap">단축키</a> <a class="gh" href="https://github.com/chlee1001/chostty">
+<svg aria-hidden="true"><use href="#g-github" /></svg> <span>GitHub</span>
+</a> <a class="lang" href="../" hreflang="en" lang="en">English</a>
+</nav>
+</header>
+<main id="main">
+<section class="hero" aria-labelledby="hero-title">
+<div class="hero-copy">
+<h1 id="hero-title">모든 프로젝트를 창 하나에.</h1>
+<p class="lede"> Chostty는 macOS용 Ghostty 포크예요. 탭마다 창을 따로 여는 대신 워크스페이스, 탭, 분할 창을 한 창에 모아 사이드바에서 관리해요. 쓰던 Ghostty 설정 파일도 고치지 않고 쓸 수 있어요.
+</p> <a class="returnkey" href="https://github.com/chlee1001/chostty/releases/latest">
+<span class="returnkey-face"> <span class="returnkey-label">macOS용 다운로드</span>
+<svg class="returnkey-glyph" aria-hidden="true"><use href="#g-return" /></svg>
+</span>
+</a>
+<p class="facts">1.0.0 · Apple 실리콘·Intel · macOS 13 이상 · Apple 공증 · 무료, MIT</p>
+</div>
+<div class="stage">
+<figure class="window" id="demo">
+<div class="titlebar">
+<span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+<button class="tb-btn" type="button" data-act="sidebar" aria-label="사이드바 열고 닫기" aria-pressed="true">
+<svg aria-hidden="true"><use href="#g-sidebar" /></svg>
+</button>
+<span class="tb-title" id="demo-title">api — server</span>
+</div>
+<div class="body">
+<nav class="sidebar" id="demo-sidebar" aria-label="데모 워크스페이스"></nav>
+<div class="content">
+<div class="tabstrip" id="demo-tabs" role="tablist" aria-label="데모 탭"></div>
+<div class="panes" id="demo-panes"></div>
+</div>
+</div>
+<noscript><p class="nojs">데모를 움직이려면 JavaScript가 필요해요. 아래 설명은 JavaScript 없이도 읽을 수 있어요.</p></noscript>
+<figcaption class="sr-only">Chostty 창을 흉내 낸 데모예요. 프로젝트 이름과 출력은 예시로 지어낸 거예요.</figcaption>
+</figure>
+<div class="plate" role="group" aria-labelledby="plate-title">
+<p class="plate-title" id="plate-title"> 키를 클릭하거나 키보드로 글자만 눌러 보세요. <kbd>⌘N</kbd>과 <kbd>⌘T</kbd>는 브라우저가 먼저 가져가서 여기서는 ⌘ 없이 눌러요.
+</p>
+<div class="capsrow">
+<button class="cap mod" type="button" data-act="workspace" data-key="n">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>N</span>
+<span class="action">새 공간</span>
+</button>
+<button class="cap mod" type="button" data-act="tab" data-key="t">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>T</span>
+<span class="action">새 탭</span>
+</button>
+<button class="cap mod" type="button" data-act="split" data-key="d">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>D</span>
+<span class="action">분할</span>
+</button>
+<button class="cap mod" type="button" data-act="close" data-key="w">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>W</span>
+<span class="action">닫기</span>
+</button>
+<button class="cap" type="button" data-act="goto" data-key="1" data-n="1">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>1</span>
+<span class="action">1번</span>
+</button>
+<button class="cap" type="button" data-act="goto" data-key="2" data-n="2">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>2</span>
+<span class="action">2번</span>
+</button>
+<button class="cap" type="button" data-act="goto" data-key="3" data-n="3">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>3</span>
+<span class="action">3번</span>
+</button>
+<button class="cap accent" type="button" data-act="sidebar" data-key="b">
+<span class="legend"><svg aria-hidden="true"><use href="#g-cmd" /></svg>B</span>
+<span class="action">사이드바</span>
+</button>
+</div>
+<p class="sr-only" id="demo-status" aria-live="polite"></p>
+</div>
+</div>
+</section>
+<section class="levels" id="levels" aria-labelledby="levels-title">
+<h2 id="levels-title">워크스페이스, 탭, 분할 창</h2>
+<p class="section-lede"> Ghostty는 탭마다 macOS 창을 하나씩 열어요. 그래서 탭을 프로젝트별로 묶을 수 없고 열린 탭을 한눈에 보기도 어려워요. Chostty는 창을 하나만 쓰고 그 안에서 탭을 세 단계로 나눠요.
+</p>
+<ol class="legendsheet">
+<li>
+<span class="biglegend">워크스페이스</span>
+<span class="minikeys"><kbd class="k mod"><svg aria-hidden="true"><use href="#g-cmd" /></svg>N</kbd></span>
+<p>프로젝트 하나를 담아요. 이름과 색을 붙이고 접거나 순서를 바꿀 수 있어요. <kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>1</kbd>–<kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>8</kbd>로 바로 가요.</p>
+</li>
+<li>
+<span class="biglegend">탭</span>
+<span class="minikeys"><kbd class="k mod"><svg aria-hidden="true"><use href="#g-cmd" /></svg>T</kbd></span>
+<p>서버, 테스트, 배포처럼 프로젝트 안에서 하는 일 하나를 맡아요. 잘못 닫았다면 <kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>T</kbd>로 다시 열어요.</p>
+</li>
+<li>
+<span class="biglegend">분할 창</span>
+<span class="minikeys"><kbd class="k mod"><svg aria-hidden="true"><use href="#g-cmd" /></svg>D</kbd></span>
+<p>셸 하나가 들어가는 칸이에요. Ghostty 분할 단축키로 탭을 원하는 만큼 나누고, 나눈 모양은 탭마다 따로 남아요.</p>
+</li>
+</ol>
+<p class="aside"> 오른쪽 파일 패널에서 Markdown, 소스 코드, 이미지를 고르면 셸 옆에 읽기 전용 탭으로 열려요. 터미널은 그동안에도 계속 돌아가요.
+</p>
+</section>
+<section class="config" id="config" aria-labelledby="config-title">
+<div class="config-copy">
+<h2 id="config-title">쓰던 Ghostty 설정 그대로</h2>
+<p> Chostty는 <code>~/.config/ghostty/config</code>를 읽어요. keybind와 theme 문법이 같고 <code>TERM=xterm-ghostty</code>도 똑같이 설정해요. 화면을 그리는 렌더러, 글꼴, 셸 연동도 Ghostty 코드 그 자체예요. Ghostty와 함께 설치해도 서로 부딪히지 않아요.
+</p>
+<p class="swatch-help" id="swatch-help">테마를 고르면 위쪽 데모 창 색이 바뀌어요.</p>
+<div class="swatches" role="radiogroup" aria-labelledby="swatch-help"></div>
+</div> <pre class="configfile" aria-label="Ghostty 설정 예시"><span class="cf-path"># ~/.config/ghostty/config</span>
+<span class="cf-key">theme</span> = <span class="cf-val" id="cf-theme">Catppuccin Mocha</span>
+<span class="cf-key">font-family</span> = <span class="cf-val">JetBrains Mono</span>
+<span class="cf-key">keybind</span> = <span class="cf-val">cmd+d=new_split:right</span>
+
+<span class="cf-path"># Chostty 전용 키 (Ghostty는 무시)</span>
+<span class="cf-key">macos-session-persistence</span> = <span class="cf-val">true</span>
+<span class="cf-key">auto-update</span> = <span class="cf-val">check</span></pre>
+</section>
+<section class="persist" aria-labelledby="persist-title">
+<h2 id="persist-title">껐다 켜도 하던 자리에서</h2>
+<div class="persist-grid">
+<div>
+<p> Chostty는 창 배치를 저장해요. 워크스페이스와 탭, 이름과 색, 분할 모양, 칸마다 열려 있던 디렉터리를 기억해요. 다시 실행하면 배치가 돌아오고 칸마다 원래 디렉터리에서 새 셸이 떠요.
+</p>
+<p> 실행 중이던 프로세스, 화면 내용, 스크롤백은 저장하지 않고 터미널 내용을 디스크에 쓰지도 않아요. 셸은 지금 보는 탭에서만 바로 뜨고 다른 탭은 열 때 떠요.
+</p>
+<button class="cap wide mod" type="button" data-act="restart">
+<span class="legend">데모 창 다시 켜기</span>
+</button>
+</div>
+<dl class="ledger">
+<div><dt>복원</dt><dd>워크스페이스, 탭, 제목, 색, 순서, 분할, 작업 디렉터리</dd></div>
+<div><dt>새로 시작</dt><dd>셸, 화면 내용, 스크롤백</dd></div>
+<div><dt>끄기</dt><dd><code>macos-session-persistence = false</code></dd></div>
+</dl>
+</div>
+</section>
+<section class="keymap" id="keymap" aria-labelledby="keymap-title">
+<h2 id="keymap-title">단축키</h2>
+<p class="section-lede"> Chostty는 Ghostty에서 비어 있거나 원래 동작하지 않던 단축키만 써요. 키 위치로 인식해서 한글 입력 상태에서도 똑같이 동작해요.
+</p>
+<div class="keymap-cols">
+<div>
+<h3>Chostty</h3>
+<dl class="kmap">
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>N</kbd></dt><dd>새 워크스페이스</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>T</kbd></dt><dd>새 탭</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>N</kbd></dt><dd>새 창</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>1</kbd>–<kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>8</kbd></dt><dd>워크스페이스로 이동</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>9</kbd></dt><dd>마지막 워크스페이스</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>[</kbd> <kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>]</kbd></dt><dd>이전 / 다음 탭</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-ctrl" /></svg>Tab</kbd> <kbd class="k"><svg aria-hidden="true"><use href="#g-ctrl" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>Tab</kbd></dt><dd>다음 / 이전 워크스페이스</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>T</kbd></dt><dd>닫은 탭 다시 열기</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>B</kbd></dt><dd>사이드바 열고 닫기</dd></div>
+</dl>
+</div>
+<div>
+<h3>Ghostty 기본 단축키</h3>
+<dl class="kmap">
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>D</kbd></dt><dd>오른쪽으로 분할</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg><svg aria-hidden="true"><use href="#g-shift" /></svg>D</kbd></dt><dd>아래로 분할</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>[</kbd> <kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>]</kbd></dt><dd>이전 / 다음 분할 창</dd></div>
+<div><dt><kbd class="k"><svg aria-hidden="true"><use href="#g-cmd" /></svg>W</kbd></dt><dd>분할 창 닫기</dd></div>
+</dl>
+<p class="kmap-note"> 다른 Ghostty 단축키와 <code>keybind</code>로 정한 단축키도 모두 그대로 써요.
+</p>
+</div>
+</div>
+</section>
+<section class="install" id="install" aria-labelledby="install-title">
+<h2 id="install-title">설치</h2>
+<ol class="steps">
+<li><span><a href="https://github.com/chlee1001/chostty/releases/latest">최신 릴리스</a>에서 DMG 파일을 내려받아요.</span></li>
+<li><span>Chostty를 응용 프로그램 폴더로 옮기고 실행해요. Apple 공증을 받은 앱이라 보안 경고로 막히지 않아요.</span></li>
+<li><span>새 버전은 앱이 알아서 확인해요. 끄려면 설정에 <code>auto-update = off</code>를 넣어요.</span></li>
+</ol>
+<p class="upgrade"> <strong>0.2.15 이하를 쓰고 있다면</strong> 앱 ID가 <code>kr.co.devch.chostty</code>로 바뀌었어요. 처음 실행할 때 설정과 저장된 세션을 옮겨 와요. 손쉬운 사용, 자동화 같은 권한은 다시 허용해야 해요.
+</p> <a class="returnkey small" href="https://github.com/chlee1001/chostty/releases/latest">
+<span class="returnkey-face"> <span class="returnkey-label">Chostty 1.0.0 다운로드</span>
+<svg class="returnkey-glyph" aria-hidden="true"><use href="#g-return" /></svg>
+</span>
+</a>
+</section>
+</main>
+<footer class="foot">
+<p> Chostty는 <a href="https://ghostty.org">Ghostty</a>의 비공식 포크이고 Ghostty 프로젝트와 관계없어요. Ghostty 이름과 로고의 권리는 원래 소유자에게 있어요.
+</p>
+<p> MIT 라이선스 · upstream 저작권 고지 포함 · <a href="https://github.com/chlee1001/chostty">소스</a> · <a href="https://github.com/chlee1001/chostty/blob/main/FORK.ko.md">바뀐 점</a> · <a href="../" hreflang="en" lang="en">English</a> · <a href="https://ghostty.org/docs">Ghostty 문서</a>
+</p>
+</footer>
+<script src="../assets/demo.js" defer></script>
+</body>
+</html> 
