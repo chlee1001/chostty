@@ -33,7 +33,10 @@ four-char code, and the `ghostty` executable name on Linux/GTK.
 
 **Updater.** Packaged stable releases enable Sparkle and verify this repository's
 latest-release appcast and update archive using the Ed25519 public key.
-Source builds do not check automatically. The private key stays outside the
+Source builds do not check automatically. Packaged builds check automatically
+unless `auto-update` says otherwise, overriding the `SUEnableAutomaticChecks = 0`
+preference that releases through 0.2.12 stored. The appcast is a release asset,
+so Sparkle can only fetch it while this repository is public. The private key stays outside the
 repository and must match the bundled public key before packaging. Releases
 through 0.2.12 require one manual upgrade. Losing the private key likewise
 requires a new public key and one manual release. Never use upstream Ghostty's
