@@ -3,7 +3,8 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.openURL) var openURL
 
-    private let githubURL = URL(string: "https://github.com/ghostty-org/ghostty")
+    private let githubURL = URL(string: "https://github.com/chlee1001/chostty")
+    // Chostty reads Ghostty's configuration, so Ghostty's docs still apply.
     private let docsURL = URL(string: "https://ghostty.org/docs")
 
     /// Read the commit from the bundle.
@@ -33,8 +34,7 @@ struct AboutView: View {
         var url: URL? {
             switch self {
             case .stable(let version):
-                let slug = version.replacingOccurrences(of: ".", with: "-")
-                return URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)")
+                return URL(string: "https://github.com/chlee1001/chostty/releases/tag/v\(version)")
             default:
                 return nil
             }
@@ -115,7 +115,7 @@ struct AboutView: View {
 
                 HStack(spacing: 8) {
                     if let url = docsURL {
-                        Button("Docs") {
+                        Button("Ghostty Docs") {
                             openURL(url)
                         }
                     }
@@ -125,6 +125,14 @@ struct AboutView: View {
                         }
                     }
                 }
+
+                Text("Chostty is a fork of Ghostty and is not affiliated with the Ghostty project.")
+                    .font(.caption)
+                    .tint(.secondary)
+                    .opacity(0.8)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 256)
 
                 if let copy = self.copyright {
                     Text(copy)

@@ -25,7 +25,12 @@ removed, not merely bypassed; `macos/scripts/native-tab-audit.sh` is an
 enforcing gate that fails if any of it returns.
 
 **Product identity on macOS only.** The bundle is `Chostty.app`, the executable
-is `chostty`, and the bundle identifier is `com.chostty.app`. Everything a user
+is `chostty`, and the bundle identifier is `kr.co.devch.chostty` (Debug:
+`kr.co.devch.chostty.debug`). Releases through 0.2.15 used `com.chostty.app`;
+on first launch the renamed app copies that domain's preferences and its saved
+session once, keeping the originals, and the Dock tile plugin reads the old
+domain until then. macOS privacy grants such as Automation and notifications
+are keyed by bundle identifier and must be granted again. Everything a user
 or a script already depends on is deliberately unchanged: the `Ghostty` Swift
 module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
 terminfo, `share/ghostty` resource paths, `~/.config/ghostty/`, every AppleScript
@@ -263,6 +268,21 @@ each was checked to fail on the real defect and to survive a cosmetic reformat �
 an earlier version was satisfied by a doc comment while the real frame was
 hard-coded.
 
+## App icon
+
+Ghostty's icon is not reused. The app icon (`images/Chostty.icon`), the eight
+alternate icons, the custom-icon layers that `macos-icon = custom-style`
+composites, and the Linux and Windows icon files are all drawn by
+`macos/scripts/generate-icons.py`: a window with a workspace sidebar, a split
+pane and a `>_` prompt. Edit the script and re-run it rather than editing the
+PNGs:
+
+    python3 macos/scripts/generate-icons.py
+
+It needs Pillow. The `macos-icon` values and the Swift asset names
+(`CustomIconGhost` and so on) keep their upstream spelling so existing configs
+still resolve; only the artwork changed.
+
 ## Known gaps
 
 - `new tab` is only dispatched when the `in` parameter is present. `new tab in
@@ -279,7 +299,6 @@ hard-coded.
   and has no app-local command source.
 - Source-pinned assertions catch a modifier being removed or moved, but not one
   being added alongside.
-- The app icon is still Ghostty's.
 
 ## Working on this
 
@@ -287,7 +306,7 @@ The build directories hold `Chostty.app` copies carrying the same bundle
 identifier as the installed one, and Xcode registers each one with
 LaunchServices as the last step of every build (`RegisterWithLaunchServices` →
 `lsregister -f -R -trusted`). Once that has happened,
-`tell application "Chostty"` and `tell application id "com.chostty.app"` can
+`tell application "Chostty"` and `tell application id "kr.co.devch.chostty"` can
 resolve to a copy that is not running and block in `AESendMessage` forever,
 which looks exactly like the app hanging — it is not; its main thread is idle.
 

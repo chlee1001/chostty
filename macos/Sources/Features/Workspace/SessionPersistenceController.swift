@@ -33,7 +33,7 @@ final class SessionPersistenceController {
     private let ownerPID: Int32
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.chostty.app",
+        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
         category: "session-persistence"
     )
 
@@ -117,7 +117,7 @@ final class SessionPersistenceController {
         registry: PendingHydrationRegistry,
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
-        queue: DispatchQueue = DispatchQueue(label: "com.chostty.session-persistence", qos: .utility),
+        queue: DispatchQueue = DispatchQueue(label: "kr.co.devch.chostty.session-persistence", qos: .utility),
         isLiveInstance: @escaping (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.all }
     ) {

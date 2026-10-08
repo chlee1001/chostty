@@ -9,12 +9,16 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
 
     // Separate defaults based on debug vs release builds so we can test icons
     // without messing up releases.
+    // The legacy domains cover a Dock tile drawn before the renamed app has
+    // launched once and run `LegacyBundleMigration`.
     #if DEBUG
-    private let primaryDefaults = UserDefaults(suiteName: "com.chostty.app.debug")
-    private let legacyDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty.debug")
+    private let primaryDefaults = UserDefaults(suiteName: "kr.co.devch.chostty.debug")
+    private let legacyDefaults = ["com.chostty.app.debug", "com.mitchellh.ghostty.debug"]
+        .compactMap(UserDefaults.init(suiteName:))
     #else
-    private let primaryDefaults = UserDefaults(suiteName: "com.chostty.app")
-    private let legacyDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty")
+    private let primaryDefaults = UserDefaults(suiteName: "kr.co.devch.chostty")
+    private let legacyDefaults = ["com.chostty.app", "com.mitchellh.ghostty"]
+        .compactMap(UserDefaults.init(suiteName:))
     #endif
 
     private var iconChangeObserver: Any?
@@ -41,9 +45,9 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
     }
 
     /// Read the configured app icon, preferring the Chostty defaults domain
-    /// and falling back to the legacy Ghostty domain for migration.
+    /// and falling back to the legacy domains in order.
     private func currentAppIcon() -> AppIcon? {
-        primaryDefaults.flatMap { $0.appIcon } ?? legacyDefaults.flatMap { $0.appIcon }
+        primaryDefaults.flatMap { $0.appIcon } ?? legacyDefaults.lazy.compactMap(\.appIcon).first
     }
 
     private func iconDidChange(_ newIcon: AppIcon?, dockTile: NSDockTile) {
@@ -63,7 +67,7 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
             // Use the `Blueprint` icon to distinguish Debug from Release builds.
             appIcon = pluginBundle.image(forResource: "BlueprintImage")!
             #else
-            // Reset to Ghostty.icon
+            // Reset to Chostty.icon
             appIcon = nil
             #endif
         } else {

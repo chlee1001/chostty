@@ -54,7 +54,7 @@ final class FilesPanelWatchBroker: @unchecked Sendable {
 
     private static let debounceInterval: TimeInterval = 0.3
     private let lock = NSLock()
-    private let queue = DispatchQueue(label: "com.chostty.files-panel.watch", qos: .utility)
+    private let queue = DispatchQueue(label: "kr.co.devch.chostty.files-panel.watch", qos: .utility)
     private var entries: [String: Entry] = [:]
 
     func subscribe(root: String, onChange: @escaping Handler) -> Subscription? {

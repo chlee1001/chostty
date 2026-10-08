@@ -137,7 +137,7 @@ private struct FilesPanelStaticHTMLView: NSViewRepresentable {
             self.source = source
             let rules = #"[{"trigger":{"url-filter":".*","resource-type":["image","style-sheet","script","font","media","raw","svg-document"]},"action":{"type":"block"}}]"#
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "com.chostty.reader.static-html",
+                forIdentifier: "kr.co.devch.chostty.reader.static-html",
                 encodedContentRuleList: rules
             ) { ruleList, _ in
                 Task { @MainActor in
