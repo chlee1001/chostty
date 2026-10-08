@@ -35,7 +35,8 @@ UPSTREAM_URL="https://github.com/ghostty-org/ghostty.git"
 if ! git remote get-url upstream >/dev/null 2>&1; then
 	git remote add upstream "$UPSTREAM_URL"
 fi
-git fetch --quiet upstream "$BRANCH"
+# Upstream's own vX.Y.Z tags share Chostty's tag namespace; never import them.
+git fetch --quiet --no-tags upstream "$BRANCH"
 
 REF="upstream/$BRANCH"
 MB="$(git merge-base HEAD "$REF")"

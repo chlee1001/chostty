@@ -232,6 +232,7 @@ still look like that.)
 | File | Why it matters |
 |---|---|
 | `FORK.md` | What changed vs upstream, what is frozen for compatibility, known gaps, release/verification notes. Read before touching the window model. |
+| `README.ko.md` / `FORK.ko.md` | Korean translations of `README.md` / `FORK.md`. The English file is canonical; update the Korean one in the same change. |
 | `build.zig` / `src/build/Config.zig` | Every build step and `-D` flag |
 | `build.zig.zon` | Deps + `minimum_zig_version = "0.16.0"` |
 | `build.zig.zon.{nix,txt,json}` | **Generated** by `nix/build-support/check-zig-cache.sh --update`; never hand-edit |
@@ -380,7 +381,9 @@ nothing to do with the change under test. Check `system_profiler SPDisplaysDataT
 - **Upstream-compatible identifiers are frozen on purpose**: the `Ghostty` Swift module,
   `GhosttyKit`, `GHOSTTY_*` env vars, `xterm-ghostty`, `share/ghostty`, `~/.config/ghostty/`,
   the Linux `ghostty` executable name, and every AppleScript four-char code. Only the macOS
-  bundle/executable/identifier are renamed. Do not "clean these up".
+  bundle/executable/identifier are renamed. Do not "clean these up". The bundle identifier
+  is `kr.co.devch.chostty` (`.debug` for Debug); releases through 0.2.15 used
+  `com.chostty.app`, which `LegacyBundleMigration` copies from once at launch.
 - **Sparkle:** `Ghostty-Info.plist` points at this fork's signed appcast and
   carries its Ed25519 public key. Because the plist is preprocessed by cpp, URL slashes
   use `&#x2F;`. Source builds keep automatic checks off; packaging enables them.
@@ -395,7 +398,15 @@ nothing to do with the change under test. Check `system_profiler SPDisplaysDataT
   `src/lib_vt.zig` → declaration in `include/ghostty/vt/`.
 - **Generated files:** `src/font/nerd_font_attributes.zig`,
   `src/font/nerd_font_codepoint_tables.py`, `src/unicode/*_table.zig` and the
-  `build.zig.zon.*` mirrors are all machine-produced. Fix the generator, not the output.
+  `build.zig.zon.*` mirrors are all machine-produced. So is every icon —
+  `images/Chostty.icon`, the asset-catalog app/alternate/custom-icon PNGs, `images/gnome`,
+  `images/icons` and the `dist/` icons all come from `macos/scripts/generate-icons.py`.
+  Fix the generator, not the output.
+- **Version tags collide with upstream.** Chostty's own versions reached 1.0.0, and
+  upstream's `vX.Y.Z` tags use the same names. `upstream-sync.sh` fetches with `--no-tags`;
+  if an earlier fetch imported them, `release-local.sh` refuses to publish with "already
+  points at another commit" — run `git tag -d vX.Y.Z` for the upstream tag, never move a
+  pushed Chostty tag.
 - **Signing.** Release artifacts are ad-hoc signed unless both `CHOSTTY_SIGNING_IDENTITY`
   (a "Developer ID Application: …" identity) and `CHOSTTY_NOTARY_PROFILE` (a stored
   `xcrun notarytool store-credentials` profile) are exported; then the app and DMG are

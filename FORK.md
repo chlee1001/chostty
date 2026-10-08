@@ -1,5 +1,7 @@
 # Chostty
 
+English | [한국어](FORK.ko.md)
+
 A macOS fork of [Ghostty](https://github.com/ghostty-org/ghostty) that replaces
 native window tabs with an in-window Workspace → Tab → Pane hierarchy, driven
 from a left sidebar. `README.md` is the front door; this file records what
@@ -29,7 +31,9 @@ is `chostty`, and the bundle identifier is `kr.co.devch.chostty` (Debug:
 `kr.co.devch.chostty.debug`). Releases through 0.2.15 used `com.chostty.app`;
 on first launch the renamed app copies that domain's preferences and its saved
 session once, keeping the originals, and the Dock tile plugin reads the old
-domain until then. macOS privacy grants such as Automation and notifications
+domain until then. A session already saved under the new identifier always
+wins, and a failed copy is retried on the next launch rather than recorded as
+done. macOS privacy grants such as Automation and notifications
 are keyed by bundle identifier and must be granted again. Everything a user
 or a script already depends on is deliberately unchanged: the `Ghostty` Swift
 module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
@@ -168,12 +172,16 @@ xattr -cr macos/build/Debug/Chostty.app
 ```
 
 `xattr -cr` before the test step is required: launching the app re-adds extended
-attributes that fail the test host's codesign step.
+attributes that fail the test host's codesign step. Locally, run the suite as
+`-only-testing:` batches rather than one invocation; every controller-building
+test keeps live terminal surfaces, and enough of them starve the test host.
+`AGENTS.md` has the exact command.
 
 ## Releasing
 
-Releases are built locally so the private repository does not spend hosted
-macOS minutes rebuilding code that already passed pull-request CI:
+Releases are built locally, where the signing identity, notary profile and
+Sparkle private key live, rather than spending hosted macOS minutes rebuilding
+code that already passed pull-request CI:
 
 ```sh
 ./scripts/release-local.sh --version <semver>
@@ -212,6 +220,14 @@ non-increasing version, an ad-hoc identity, or an existing tag/release. The
 packaging script also checks the feed URL, public/private Sparkle key pair,
 signed appcast, and universal binary.
 
+Chostty versions are independent of Ghostty's. 1.0.0 is the first stable
+Chostty release; `--publish-next` increments the patch from there, and minor or
+major bumps are an explicit `--version`. Upstream's own `vX.Y.Z` tags share the
+same namespace, so `scripts/upstream-sync.sh` fetches with `--no-tags`. A
+checkout that already imported them refuses to publish a colliding version
+with "already points at another commit"; delete the local upstream tag
+(`git tag -d vX.Y.Z`) and publish again.
+
 `.github/workflows/release.yml` remains as a manual, no-publish fallback. It can
 build downloadable workflow artifacts, but it never tags or creates a GitHub
 release and is not triggered after CI.
@@ -231,12 +247,13 @@ GitHub release notes drop the `xattr -cr` workaround automatically for a
 notarized build. Ad-hoc artifacts are quarantined on download; the release
 notes say so rather than letting it look like a corrupt artifact.
 
-`.github/workflows/ci.yml` runs the audit, shellcheck, the build and the test
-suite on pull requests. UI tests are skipped there for the same reason
+`.github/workflows/ci.yml` runs shellcheck and the audit on every pull request,
+and the Zig core build and macOS test suite only when the pull request changes a
+macOS build input. UI tests are skipped there for the same reason
 `macos/build.nu` skips them: no CI runner grants accessibility permission.
 
 Two further CI-only concessions, both about the hosted runner rather than the
-code. Tests run serially: twenty of the forty-two suites stand up a real
+code. Tests run serially: many suites stand up a real
 `TerminalController` with windows and a Metal surface, and run concurrently the
 test host exits partway through, which xcodebuild reports as every unfinished
 test failing. And `reopenAfterForcedFinalizeCreatesFreshTabWithRecordedMetadata`
