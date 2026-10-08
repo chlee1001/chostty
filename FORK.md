@@ -128,7 +128,7 @@ key that controls the behavior described above.
 | `⌘1`–`⌘8` | Go to workspace by index |
 | `⌘9` | Go to last workspace |
 | `⌘⇧[` / `⌘⇧]` | Previous / next tab |
-| `Ctrl+Tab` / `Ctrl+⇧+Tab` | Previous / next workspace |
+| `Ctrl+Tab` / `Ctrl+⇧+Tab` | Next / previous workspace |
 | `⌘⇧T` | Reopen closed tab (undo stays on `⌘Z`) |
 | `⌘B` | Toggle sidebar |
 

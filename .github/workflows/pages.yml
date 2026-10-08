@@ -1,0 +1,46 @@
+name: Pages
+
+# Publishes the static landing page in website/ to GitHub Pages. The site has
+# no build step; the directory is uploaded as-is.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # Pages is unavailable for a private repository on this plan, so the job
+    # is skipped rather than failing until the repository is made public.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pages must be switched on once with the Actions source (Settings >
+      # Pages, or `gh api -X POST repos/{owner}/{repo}/pages -f build_type=workflow`);
+      # GITHUB_TOKEN cannot enable it.
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
