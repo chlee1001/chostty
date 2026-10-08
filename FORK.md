@@ -268,6 +268,21 @@ each was checked to fail on the real defect and to survive a cosmetic reformat â
 an earlier version was satisfied by a doc comment while the real frame was
 hard-coded.
 
+## App icon
+
+Ghostty's icon is not reused. The app icon (`images/Chostty.icon`), the eight
+alternate icons, the custom-icon layers that `macos-icon = custom-style`
+composites, and the Linux and Windows icon files are all drawn by
+`macos/scripts/generate-icons.py`: a window with a workspace sidebar, a split
+pane and a `>_` prompt. Edit the script and re-run it rather than editing the
+PNGs:
+
+    python3 macos/scripts/generate-icons.py
+
+It needs Pillow. The `macos-icon` values and the Swift asset names
+(`CustomIconGhost` and so on) keep their upstream spelling so existing configs
+still resolve; only the artwork changed.
+
 ## Known gaps
 
 - `new tab` is only dispatched when the `in` parameter is present. `new tab in
@@ -284,7 +299,6 @@ hard-coded.
   and has no app-local command source.
 - Source-pinned assertions catch a modifier being removed or moved, but not one
   being added alongside.
-- The app icon is still Ghostty's.
 
 ## Working on this
 
