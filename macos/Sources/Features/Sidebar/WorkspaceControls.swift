@@ -149,8 +149,7 @@ struct WorkspaceControls: View {
                 saveHealth: saveHealth,
                 restoreAttemptsUnavailable: restoreAttemptsUnavailable,
                 refresh: refreshSidebarSync,
-                saveCurrentState: synchronizeSidebarState,
-                takeOver: takeOverSidebarSync
+                saveCurrentState: synchronizeSidebarState
             )
         }
         .onAppear(perform: refreshPersistenceHealth)
@@ -185,12 +184,6 @@ struct WorkspaceControls: View {
             .sessionPersistence?
             .synchronizeSidebarState()
     }
-
-    private func takeOverSidebarSync() {
-        sidebarSyncInspection = (NSApp.delegate as? AppDelegate)?
-            .sessionPersistence?
-            .takeOverOwnership()
-    }
 }
 
 private struct SidebarSyncSheet: View {
@@ -199,7 +192,6 @@ private struct SidebarSyncSheet: View {
     let restoreAttemptsUnavailable: Bool
     let refresh: () -> Void
     let saveCurrentState: () -> Void
-    let takeOver: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -243,16 +235,10 @@ private struct SidebarSyncSheet: View {
 
                 HStack {
                     Button("Refresh", action: refresh)
-                    if let owner = inspection.foreignOwner {
-                        Button("Show Owner") { activate(owner) }
-                    }
                     Spacer()
                     Button("Close") { dismiss() }
                     if inspection.canSynchronize {
                         Button("Save Current State", action: saveCurrentState)
-                            .buttonStyle(.borderedProminent)
-                    } else if inspection.foreignOwner != nil {
-                        Button("Take Over and Save", action: takeOver)
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -332,23 +318,6 @@ private struct SidebarSyncSheet: View {
         }
     }
 
-    private func ownerDescription(
-        _ owner: SessionPersistenceController.SidebarSyncInspection.ForeignOwner
-    ) -> String {
-        var parts = ["PID \(owner.pid)"]
-        if let launchDate = owner.launchDate {
-            parts.append("started \(launchDate.formatted(date: .abbreviated, time: .shortened))")
-        }
-        if let bundlePath = owner.bundlePath {
-            parts.append(bundlePath)
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func activate(_ owner: SessionPersistenceController.SidebarSyncInspection.ForeignOwner) {
-        _ = NSRunningApplication(processIdentifier: owner.pid)?.activate(options: [.activateAllWindows])
-    }
-
     private func unavailableText(
         for availability: SessionPersistenceController.SidebarSyncInspection.SynchronizationAvailability
     ) -> String {
@@ -357,12 +326,6 @@ private struct SidebarSyncSheet: View {
             return ""
         case .persistenceDisabled:
             return "Saving is unavailable because session persistence is disabled."
-        case .ownedByAnotherLiveInstance(let owner):
-            return """
-                Saving is paused because another running Chostty owns the saved session.
-                \(ownerDescription(owner))
-                Take Over writes this window's state and makes the other instance stop saving.
-                """
         case .noLiveState:
             return "Saving is unavailable because there are no live terminal windows."
         }

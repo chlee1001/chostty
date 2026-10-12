@@ -386,7 +386,8 @@ import Testing
     private func makePersistence(
         ownerInstanceID: UUID = UUID(),
         directory: URL? = nil,
-        isLiveInstance: @escaping (Int32) -> Bool = { _ in false }
+        isActive: @escaping () -> Bool = { false },
+        isLiveInstance: @escaping @Sendable (Int32) -> Bool = { _ in false }
     ) throws -> SessionPersistenceController {
         let directory = try directory ?? {
             let url = FileManager.default.temporaryDirectory
@@ -400,6 +401,7 @@ import Testing
             registry: PendingHydrationRegistry(),
             ownerInstanceID: ownerInstanceID,
             ownerPID: 4242,
+            isActive: isActive,
             isLiveInstance: isLiveInstance,
             controllersProvider: { [] }
         )
@@ -419,24 +421,24 @@ import Testing
         let isSecond = persistence.adoptOwnership(of: previousRun)
 
         #expect(!isSecond)
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
-    @Test func aLiveForeignOwnerMakesThisInstancePassive() throws {
+    @Test func aLiveForeignOwnerMakesAnInactiveLaunchPassive() throws {
         let persistence = try makePersistence { pid in pid == 12_345 }
         let otherApp = storedSnapshot(ownerInstanceID: UUID(), ownerPID: 12_345)
 
         let isSecond = persistence.adoptOwnership(of: otherApp)
 
         #expect(isSecond)
-        #expect(persistence.isDisabledBySecondInstance)
-        #expect(persistence.foreignOwnerPID == 12_345)
+        #expect(persistence.isPassive)
+        #expect(persistence.deferredOwners[otherApp.ownerInstanceID] == 12_345)
     }
 
     @Test func firstEverLaunchHasNoOwnerToDeferTo() throws {
         let persistence = try makePersistence { _ in true }
         #expect(!persistence.adoptOwnership(of: nil))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
     @Test func ourOwnFileIsNeverTreatedAsForeign() throws {
@@ -446,7 +448,7 @@ import Testing
 
         // Alive pid, but it is us.
         #expect(!persistence.adoptOwnership(of: ours))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
     @Test func unownedRecoveredFieldsDoNotClaimOwnership() throws {
@@ -459,7 +461,18 @@ import Testing
         // pid 0 is never alive, so corrupt owner bookkeeping reads as unowned
         // and this process keeps saving.
         #expect(!persistence.adoptOwnership(of: recovered))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
+    }
+
+    @Test func anActiveLaunchNeverDefers() throws {
+        let persistence = try makePersistence(
+            isActive: { true },
+            isLiveInstance: { $0 == 12_345 }
+        )
+        let otherApp = storedSnapshot(ownerInstanceID: UUID(), ownerPID: 12_345)
+
+        #expect(!persistence.adoptOwnership(of: otherApp))
+        #expect(!persistence.isPassive)
     }
 
 }

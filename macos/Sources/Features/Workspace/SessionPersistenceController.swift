@@ -116,16 +116,17 @@ final class SessionPersistenceController {
     private var consecutiveSaveFailures = 0
     private(set) var saveHealth: SaveHealth = .healthy
 
-    /// PID of the other live instance that owns the file. While set, this
-    /// process neither saves nor overwrites until that owner exits or the user
-    /// takes ownership back.
-    private(set) var foreignOwnerPID: Int32?
+    private(set) var deferredOwners: [UUID: Int32] = [:]
+    private(set) var activationEpoch: UInt64?
+    private(set) var claimedWindowIDs = Set<UUID>()
+    private var retiredAcknowledged = Set<UUID>()
 
-    var isDisabledBySecondInstance: Bool { foreignOwnerPID != nil }
+    var isPassive: Bool { !deferredOwners.isEmpty }
 
-    private let isLiveInstance: (Int32) -> Bool
+    private let isActive: () -> Bool
+    private let isLiveInstance: @Sendable (Int32) -> Bool
     private let scheduleAfter: MainScheduler
-    private let uptime: () -> UInt64
+    private let uptime: @Sendable () -> UInt64
 
     static let restoreAttemptSettleDelay: TimeInterval = 2.0
     private(set) var restoreAttemptsUnavailable = false
@@ -138,11 +139,12 @@ final class SessionPersistenceController {
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
         queue: DispatchQueue = DispatchQueue(label: "kr.co.devch.chostty.session-persistence", qos: .utility),
-        isLiveInstance: @escaping (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
+        isActive: @escaping () -> Bool = { NSApp.isActive },
+        isLiveInstance: @escaping @Sendable (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
         scheduleAfter: @escaping MainScheduler = { delay, action in
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
         },
-        uptime: @escaping () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) },
+        uptime: @escaping @Sendable () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) },
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.open }
     ) {
         self.repository = repository
@@ -151,6 +153,7 @@ final class SessionPersistenceController {
         self.ownerInstanceID = ownerInstanceID
         self.ownerPID = ownerPID
         self.queue = queue
+        self.isActive = isActive
         self.isLiveInstance = isLiveInstance
         self.scheduleAfter = scheduleAfter
         self.uptime = uptime
@@ -338,13 +341,6 @@ final class SessionPersistenceController {
         scheduleSave()
     }
 
-    /// The timer keeps running while passive: its ticks are what notice the
-    /// owner exiting.
-    func disableForSecondInstance(ownerPID: Int32) {
-        foreignOwnerPID = ownerPID
-        Self.logger.notice("session.persist.disabledSecondInstance ownerPID=\(ownerPID, privacy: .public)")
-    }
-
     /// A pid alone is not an identity. After a reboot the recorded pid can
     /// belong to an unrelated root daemon, which `kill(pid, 0)` reports as
     /// alive through `EPERM`. Only a running application with this app's
@@ -359,69 +355,32 @@ final class SessionPersistenceController {
         return app.bundleIdentifier == bundleIdentifier
     }
 
-    /// Decides at boot whether another live instance owns the file.
-    ///
-    /// Both conditions are required. An instance-id mismatch alone is true on
-    /// every ordinary relaunch, since a new id is issued per process and the
-    /// previous run always saves on quit; keying off it would switch
-    /// persistence off from the second launch onward and freeze the user's
-    /// layout at whatever the first run wrote.
+    /// Records a live owner when an inactive launch must defer its first write.
     @discardableResult
     func adoptOwnership(of stored: AppSessionSnapshot?) -> Bool {
-        guard let stored else { return false }
-        return yields(to: SessionSnapshotRepository.StoredOwner(
+        guard !isActive(),
+              let stored else { return false }
+        let owner = SessionSnapshotRepository.StoredOwner(
             ownerInstanceID: stored.ownerInstanceID,
             ownerPID: stored.ownerPID
-        ))
-    }
-
-    /// Goes passive when the recorded writer is a different, live instance.
-    /// Checked before every write too, which is what makes a takeover by the
-    /// other instance stick instead of the two alternately overwriting.
-    private func yields(to stored: SessionSnapshotRepository.StoredOwner?) -> Bool {
-        guard let stored,
-              stored.ownerInstanceID != ownerInstanceID,
-              isLiveInstance(stored.ownerPID) else { return false }
-        disableForSecondInstance(ownerPID: stored.ownerPID)
+        )
+        guard owner.ownerInstanceID != ownerInstanceID,
+              isLiveInstance(owner.ownerPID) else { return false }
+        deferredOwners[owner.ownerInstanceID] = owner.ownerPID
         return true
     }
 
-    /// Resumes saving once the instance this process deferred to has exited.
-    func reconcileOwnership() {
-        guard let foreignOwnerPID, !isLiveInstance(foreignOwnerPID) else { return }
-        self.foreignOwnerPID = nil
+    func noteActivation() {
+        guard isActive() else { return }
+        let epoch = uptime()
+        activationEpoch = epoch
+        let previousOwners = deferredOwners
+        deferredOwners.removeAll()
         saveState.forgetCompletedSaves()
-        Self.logger.notice("session.persist.ownerExited ownerPID=\(foreignOwnerPID, privacy: .public)")
-    }
-
-    /// Writes this process's live graph over a file owned by another live
-    /// instance. That instance reads the new owner before its next write and
-    /// goes passive, so the takeover holds.
-    @discardableResult
-    func takeOverOwnership() -> SidebarSyncInspection {
-        if let foreignOwnerPID {
-            Self.logger.notice("session.persist.takeOver previousOwnerPID=\(foreignOwnerPID, privacy: .public)")
-        }
-        foreignOwnerPID = nil
-        saveState.forgetCompletedSaves()
-        if canPersist {
-            let controllers = controllersProvider()
-            if !controllers.isEmpty {
-                write(snapshot(from: controllers), cursor: saveCursor(from: controllers), synchronously: true)
-            }
-        }
-        return sidebarSyncInspection()
-    }
-
-    /// Details of the owning instance for the sync sheet.
-    private func foreignOwner() -> SidebarSyncInspection.ForeignOwner? {
-        guard let foreignOwnerPID else { return nil }
-        let app = NSRunningApplication(processIdentifier: foreignOwnerPID)
-        return SidebarSyncInspection.ForeignOwner(
-            pid: foreignOwnerPID,
-            bundlePath: app?.bundleURL?.path,
-            launchDate: app?.launchDate
+        Self.logger.notice(
+            "session.persist.claimed epoch=\(epoch, privacy: .public) previousOwners=\(previousOwners.count, privacy: .public)"
         )
+        scheduleSave()
     }
 
     // MARK: - Sidebar sync inspection
@@ -435,16 +394,9 @@ final class SessionPersistenceController {
             case liveStateUnavailable
         }
 
-        struct ForeignOwner: Equatable {
-            let pid: Int32
-            let bundlePath: String?
-            let launchDate: Date?
-        }
-
         enum SynchronizationAvailability: Equatable {
             case available
             case persistenceDisabled
-            case ownedByAnotherLiveInstance(ForeignOwner)
             case noLiveState
         }
 
@@ -456,18 +408,12 @@ final class SessionPersistenceController {
         var canSynchronize: Bool {
             synchronizationAvailability == .available
         }
-
-        var foreignOwner: ForeignOwner? {
-            guard case .ownedByAnotherLiveInstance(let owner) = synchronizationAvailability else { return nil }
-            return owner
-        }
     }
 
     /// Inspects the live projection and the repository's validated snapshot.
     /// Owner fields intentionally do not participate in this comparison: they
     /// describe the writer, not the workspace graph the sidebar displays.
     func sidebarSyncInspection() -> SidebarSyncInspection {
-        reconcileOwnership()
         let controllers = controllersProvider()
         let current = controllers.isEmpty ? nil : snapshot(from: controllers)
         let availability = synchronizationAvailability(hasLiveState: current != nil)
@@ -520,7 +466,6 @@ final class SessionPersistenceController {
     private func synchronizationAvailability(
         hasLiveState: Bool
     ) -> SidebarSyncInspection.SynchronizationAvailability {
-        if let owner = foreignOwner() { return .ownedByAnotherLiveInstance(owner) }
         if !gate.shouldPersist { return .persistenceDisabled }
         if !hasLiveState { return .noLiveState }
         return .available
@@ -533,23 +478,34 @@ final class SessionPersistenceController {
     @discardableResult
     func persistIfNeeded() -> Bool {
         guard !isTerminating else { return false }
-        reconcileOwnership()
-        guard canPersist else { return false }
+        guard gate.shouldPersist else { return false }
 
         let controllers = controllersProvider()
-        // Closing every window is a normal macOS state, not a new restorable
-        // layout. Keep the last valid snapshot without retrying an invalid
-        // zero-window projection on every timer tick.
+        let live = Set(controllers.map(\.physicalUUID))
+        claimedWindowIDs.formUnion(live)
+        let retire = claimedWindowIDs.subtracting(live)
+
+        if isPassive && !isActive() {
+            let unacknowledged = retire.subtracting(retiredAcknowledged)
+            guard !unacknowledged.isEmpty else { return false }
+            write(
+                nil,
+                cursor: nil,
+                retire: unacknowledged,
+                synchronously: false
+            )
+            return true
+        }
+
         guard !controllers.isEmpty else { return false }
         let cursor = saveCursor(from: controllers)
         guard saveState.reserve(cursor) else { return false }
-        // Read only once a write is due, so an idle tick stays off the disk.
-        if yields(to: repository.storedOwner()) {
-            saveState.finish(cursor, result: .failed)
-            return false
-        }
-
-        write(snapshot(from: controllers), cursor: cursor, synchronously: false)
+        write(
+            snapshot(from: controllers),
+            cursor: cursor,
+            retire: retire,
+            synchronously: false
+        )
         return true
     }
 
@@ -557,12 +513,23 @@ final class SessionPersistenceController {
     /// failures leave the previous valid snapshot in place.
     func persistNow() {
         guard !isTerminating else { return }
-        reconcileOwnership()
-        guard canPersist else { return }
+        guard gate.shouldPersist else { return }
         let controllers = controllersProvider()
-        guard !controllers.isEmpty else { return }
-        guard !yields(to: repository.storedOwner()) else { return }
-        write(snapshot(from: controllers), cursor: saveCursor(from: controllers), synchronously: true)
+        let live = Set(controllers.map(\.physicalUUID))
+        claimedWindowIDs.formUnion(live)
+        let retire = claimedWindowIDs.subtracting(live)
+        if isPassive && !isActive() {
+            let unacknowledged = retire.subtracting(retiredAcknowledged)
+            guard !unacknowledged.isEmpty else { return }
+            write(nil, cursor: nil, retire: unacknowledged, synchronously: true)
+        } else if !controllers.isEmpty {
+            write(
+                snapshot(from: controllers),
+                cursor: saveCursor(from: controllers),
+                retire: retire,
+                synchronously: true
+            )
+        }
     }
 
     /// For tests; production does not need it, since the terminate path is
@@ -571,42 +538,101 @@ final class SessionPersistenceController {
         queue.sync {}
     }
 
-    private var canPersist: Bool {
-        gate.shouldPersist && !isDisabledBySecondInstance
-    }
-
-    private func write(_ snapshot: AppSessionSnapshot, cursor: SaveCursor, synchronously: Bool) {
+    private func write(
+        _ snapshot: AppSessionSnapshot?,
+        cursor: SaveCursor?,
+        retire: Set<UUID>,
+        synchronously: Bool
+    ) {
         let repository = self.repository
         let saveState = self.saveState
-        let work = { () -> SaveState.Result in
-            var result = SaveState.Result.failed
+        let enqueuedActivationEpoch = activationEpoch
+        let policy = SessionSnapshotRepository.SavePolicy(
+            claimEpoch: isActive() ? activationEpoch : nil,
+            selfInstanceID: ownerInstanceID,
+            selfPID: ownerPID,
+            deferredOwnerIDs: Set(deferredOwners.keys),
+            isLiveInstance: isLiveInstance,
+            now: uptime,
+            retire: retire
+        )
+        let work = { () -> SessionSnapshotRepository.SaveReceipt? in
             do {
-                switch try repository.save(snapshot) {
-                case .written, .skippedIdentical:
-                    result = .saved
-                case .refusedInvalid(let rejection):
-                    result = .rejected(rejection)
+                let receipt = try repository.save(snapshot, policy: policy)
+                if let cursor {
+                    switch receipt.outcome {
+                    case .written, .skippedIdentical:
+                        saveState.finish(cursor, result: .saved)
+                    case .refusedInvalid(let rejection):
+                        saveState.finish(cursor, result: .rejected(rejection))
+                    case .yielded:
+                        saveState.finish(cursor, result: .yielded)
+                    case .retired, .nothingToWrite:
+                        saveState.finish(cursor, result: .failed)
+                    }
                 }
+                return receipt
             } catch {
                 // A failed write is retried on the next tick; the previous file
                 // is still on disk and still usable.
                 Self.logger.warning("session.persist.writeFailed \(String(describing: error), privacy: .public)")
+                if let cursor {
+                    saveState.finish(cursor, result: .failed)
+                }
             }
-            saveState.finish(cursor, result: result)
-            return result
+            return nil
         }
 
         if synchronously {
-            applySaveResult(queue.sync(execute: work))
+            applySaveResult(
+                queue.sync(execute: work),
+                retire: retire,
+                enqueuedActivationEpoch: enqueuedActivationEpoch
+            )
         } else {
             queue.async { [weak self] in
-                let result = work()
+                let receipt = work()
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
-                        self?.applySaveResult(result)
+                        self?.applySaveResult(
+                            receipt,
+                            retire: retire,
+                            enqueuedActivationEpoch: enqueuedActivationEpoch
+                        )
                     }
                 }
             }
+        }
+    }
+
+    private func applySaveResult(
+        _ receipt: SessionSnapshotRepository.SaveReceipt?,
+        retire: Set<UUID>,
+        enqueuedActivationEpoch: UInt64?
+    ) {
+        guard let receipt else {
+            applySaveResult(.failed)
+            return
+        }
+        switch receipt.outcome {
+        case .yielded(let owner):
+            retiredAcknowledged.formUnion(retire)
+            if enqueuedActivationEpoch == activationEpoch {
+                deferredOwners[owner.ownerInstanceID] = owner.ownerPID
+                Self.logger.notice(
+                    "session.persist.yielded owner=\(owner.ownerInstanceID.uuidString, privacy: .public) pid=\(owner.ownerPID, privacy: .public)"
+                )
+            }
+            applySaveResult(.yielded)
+        case .retired:
+            retiredAcknowledged.formUnion(retire)
+            applySaveResult(.saved)
+        case .written, .skippedIdentical:
+            applySaveResult(.saved)
+        case .refusedInvalid(let rejection):
+            applySaveResult(.rejected(rejection))
+        case .nothingToWrite:
+            applySaveResult(.saved)
         }
     }
 
@@ -655,6 +681,7 @@ final class SessionPersistenceController {
     /// Reads live `NSView` state, so main-thread only; the encode and write go
     /// to the background queue.
     func snapshot(from controllers: [TerminalController]) -> AppSessionSnapshot {
+        claimedWindowIDs.formUnion(controllers.map(\.physicalUUID))
         let pending = registry.allPending
         for controller in controllers {
             for workspace in controller.workspaceStore.snapshot.workspaces {

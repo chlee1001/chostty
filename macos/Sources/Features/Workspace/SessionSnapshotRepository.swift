@@ -23,6 +23,7 @@ struct SessionSnapshotRepository: Sendable {
 
     static let primaryFileName = "session.json"
     static let backupFileName = "session-previous.json"
+    static let lockFileName = "session.lock"
     static let restoreAttemptsFileName = "restore-attempts.json"
     static let restoreAttemptsLockFileName = "restore-attempts.lock"
 
@@ -41,15 +42,20 @@ struct SessionSnapshotRepository: Sendable {
     }
 
     private let restoreAttemptsLock: @Sendable (Int32, Int32) -> Int32
+    private let sessionLock: @Sendable (Int32, Int32) -> Int32
 
     init(
         directory: URL,
         restoreAttemptsLock: @escaping @Sendable (Int32, Int32) -> Int32 = { descriptor, operation in
             flock(descriptor, operation)
+        },
+        sessionLock: @escaping @Sendable (Int32, Int32) -> Int32 = { descriptor, operation in
+            flock(descriptor, operation)
         }
     ) {
         self.directory = directory
         self.restoreAttemptsLock = restoreAttemptsLock
+        self.sessionLock = sessionLock
     }
 
     init(
@@ -61,6 +67,9 @@ struct SessionSnapshotRepository: Sendable {
             fileManager: fileManager
         )
         self.restoreAttemptsLock = { descriptor, operation in
+            flock(descriptor, operation)
+        }
+        self.sessionLock = { descriptor, operation in
             flock(descriptor, operation)
         }
     }
@@ -78,6 +87,7 @@ struct SessionSnapshotRepository: Sendable {
 
     var primaryURL: URL { directory.appendingPathComponent(Self.primaryFileName, isDirectory: false) }
     var backupURL: URL { directory.appendingPathComponent(Self.backupFileName, isDirectory: false) }
+    var lockURL: URL { directory.appendingPathComponent(Self.lockFileName, isDirectory: false) }
     var restoreAttemptsURL: URL {
         directory.appendingPathComponent(Self.restoreAttemptsFileName, isDirectory: false)
     }
@@ -134,37 +144,159 @@ struct SessionSnapshotRepository: Sendable {
 
     // MARK: - Saving
 
-    enum SaveOutcome: Equatable {
+    enum SaveOutcome: Equatable, Sendable {
         case written
         /// The encoded bytes matched the file on disk. This is what keeps an
         /// idle app from touching the disk on every tick.
         case skippedIdentical
         /// Not loadable; the previous valid file is left untouched.
         case refusedInvalid(SessionSnapshotValidator.Rejection)
+        case yielded(StoredOwner)
+        case retired(Int)
+        case nothingToWrite
+    }
+
+    struct ClaimRecord: Codable, Equatable, Sendable {
+        let instanceID: UUID
+        let pid: Int32
+        let epoch: UInt64
+    }
+
+    struct SavePolicy: Sendable {
+        let claimEpoch: UInt64?
+        let selfInstanceID: UUID
+        let selfPID: Int32
+        let deferredOwnerIDs: Set<UUID>
+        let isLiveInstance: @Sendable (Int32) -> Bool
+        let now: @Sendable () -> UInt64
+        let retire: Set<UUID>
+    }
+
+    struct SaveReceipt: Equatable, Sendable {
+        var outcome: SaveOutcome
+        var preservedWindowIDs: [UUID] = []
     }
 
     @discardableResult
-    func save(_ snapshot: AppSessionSnapshot) throws -> SaveOutcome {
+    func save(
+        _ snapshot: AppSessionSnapshot?,
+        policy: SavePolicy
+    ) throws -> SaveReceipt {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try FileLock.withExclusiveLock(at: lockURL, lock: sessionLock) { descriptor in
+            let claim = validClaim(
+                readClaimRecord(from: descriptor),
+                policy: policy
+            )
+            let owner = validatedStoredOwner()
+            let shouldClaim: Bool
+            if let epoch = policy.claimEpoch {
+                shouldClaim = claim == nil
+                    || claim?.instanceID == policy.selfInstanceID
+                    || claim!.epoch <= epoch
+                if !shouldClaim {
+                    Self.logger.notice("session.persist.claimStale")
+                }
+            } else {
+                shouldClaim = false
+            }
+
+            if shouldClaim {
+                try writeClaimRecord(
+                    ClaimRecord(
+                        instanceID: policy.selfInstanceID,
+                        pid: policy.selfPID,
+                        epoch: policy.claimEpoch!
+                    ),
+                    to: descriptor
+                )
+                return try write(snapshot, existingOwner: owner)
+            }
+
+            let mayWrite = owner == nil
+                || owner?.ownerInstanceID == policy.selfInstanceID
+                || (!policy.isLiveInstance(owner!.ownerPID)
+                    && !policy.deferredOwnerIDs.contains(owner!.ownerInstanceID))
+            if mayWrite {
+                return try write(snapshot, existingOwner: owner)
+            }
+
+            guard let owner else {
+                return SaveReceipt(outcome: .nothingToWrite)
+            }
+            let retired = try retire(policy.retire)
+            return SaveReceipt(
+                outcome: retired > 0 ? .retired(retired) : .yielded(owner)
+            )
+        }
+    }
+
+    private func validClaim(
+        _ claim: ClaimRecord?,
+        policy: SavePolicy
+    ) -> ClaimRecord? {
+        guard let claim,
+              claim.epoch <= policy.now(),
+              policy.isLiveInstance(claim.pid) else { return nil }
+        return claim
+    }
+
+    private func validatedStoredOwner() -> StoredOwner? {
+        guard let data = try? Data(contentsOf: primaryURL),
+              case .success = Self.validate(data) else { return nil }
+        return try? JSONDecoder().decode(StoredOwner.self, from: data)
+    }
+
+    private func write(
+        _ snapshot: AppSessionSnapshot?,
+        existingOwner: StoredOwner?
+    ) throws -> SaveReceipt {
+        guard let snapshot else {
+            return SaveReceipt(outcome: .nothingToWrite)
+        }
         let validated: AppSessionSnapshot
         switch SessionSnapshotValidator.validate(snapshot) {
         case .success(let snapshot):
             validated = snapshot
         case .failure(let rejection):
             Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
-            return .refusedInvalid(rejection)
+            return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
 
         let encoded = try Self.encoder.encode(validated)
         if let rejection = Self.resourceRejection(for: encoded) {
             Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
-            return .refusedInvalid(rejection)
+            return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
         let existing = try? Data(contentsOf: primaryURL)
         if existing == encoded {
-            return .skippedIdentical
+            return SaveReceipt(outcome: .skippedIdentical)
         }
 
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try replacePrimary(encoded, existing: existing)
+        _ = existingOwner
+        return SaveReceipt(outcome: .written)
+    }
+
+    private func retire(_ windowIDs: Set<UUID>) throws -> Int {
+        guard !windowIDs.isEmpty,
+              let existing = try? Data(contentsOf: primaryURL),
+              case .success(let snapshot) = Self.validate(existing) else { return 0 }
+        let count = snapshot.windows.count
+        let windows = snapshot.windows.filter { !windowIDs.contains($0.physicalUUID) }
+        let retired = count - windows.count
+        guard retired > 0, !windows.isEmpty else { return 0 }
+        let replacement = AppSessionSnapshot(
+            version: snapshot.version,
+            ownerInstanceID: snapshot.ownerInstanceID,
+            ownerPID: snapshot.ownerPID,
+            windows: windows
+        )
+        try replacePrimary(try Self.encoder.encode(replacement), existing: existing)
+        return retired
+    }
+
+    private func replacePrimary(_ encoded: Data, existing: Data?) throws {
         if let existing, case .success = Self.validate(existing) {
             // Secure the previous valid bytes before replacing the primary.
             // A backup write failure must leave the primary intact for retry.
@@ -172,10 +304,32 @@ struct SessionSnapshotRepository: Sendable {
             restrictPermissions(of: backupURL)
         }
         try encoded.write(to: primaryURL, options: [.atomic])
-        // `.atomic` replaces the file, so permissions are reapplied after every
-        // write rather than once at creation.
         restrictPermissions(of: primaryURL)
-        return .written
+    }
+
+    private func readClaimRecord(from descriptor: Int32) -> ClaimRecord? {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, status.st_size > 0 else { return nil }
+        let size = Int(status.st_size)
+        var data = Data(count: size)
+        let read = data.withUnsafeMutableBytes {
+            pread(descriptor, $0.baseAddress, size, 0)
+        }
+        guard read == size else { return nil }
+        return try? JSONDecoder().decode(ClaimRecord.self, from: data)
+    }
+
+    private func writeClaimRecord(_ record: ClaimRecord, to descriptor: Int32) throws {
+        let data = try Self.encoder.encode(record)
+        guard ftruncate(descriptor, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let written = data.withUnsafeBytes {
+            pwrite(descriptor, $0.baseAddress, data.count, 0)
+        }
+        guard written == data.count else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     /// Promotes the primary file to the backup slot.
@@ -185,14 +339,15 @@ struct SessionSnapshotRepository: Sendable {
     /// primary, so recovery is not limited to the starting state of that boot.
     /// A missing primary is not an error; invalid bytes are never promoted.
     func promotePrimaryToBackup() throws {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: primaryURL.path) else { return }
-
-        let data = try Data(contentsOf: primaryURL)
-        _ = try Self.validate(data).get()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: backupURL, options: [.atomic])
-        restrictPermissions(of: backupURL)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileLock.withExclusiveLock(at: lockURL, lock: sessionLock) { _ in
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: primaryURL.path) else { return }
+            let data = try Data(contentsOf: primaryURL)
+            _ = try Self.validate(data).get()
+            try data.write(to: backupURL, options: [.atomic])
+            restrictPermissions(of: backupURL)
+        }
     }
 
     /// The file records working directories and titles, and `FORK.md` states it
@@ -222,7 +377,8 @@ struct SessionSnapshotRepository: Sendable {
         case unusable(reason: String)
     }
 
-    /// Prefers the primary, falling back to the previous validated snapshot.
+    /// Lock-free helper that prefers the primary, falling back to the previous
+    /// validated snapshot. Locked entry points also call this helper.
     func load() -> LoadOutcome {
         var primaryFailure: String?
 
@@ -247,14 +403,14 @@ struct SessionSnapshotRepository: Sendable {
         }
     }
 
-    struct StoredOwner: Decodable, Equatable {
+    struct StoredOwner: Decodable, Equatable, Sendable {
         let ownerInstanceID: UUID
         let ownerPID: Int32
     }
 
-    /// The writer recorded in the primary file, decoded without the workspace
-    /// graph. Ownership is a property of the file on disk, so it stays readable
-    /// even when the graph itself would fail restore validation.
+    /// Lock-free helper for the writer recorded in the primary file. Ownership
+    /// stays readable even when the graph itself would fail restore validation;
+    /// locked entry points also call this helper.
     func storedOwner() -> StoredOwner? {
         guard let data = try? Data(contentsOf: primaryURL),
               Self.resourceRejection(for: data) == nil else { return nil }

@@ -31,6 +31,57 @@ import Testing
         var count: Int { actions.count }
     }
 
+    private final class InstanceState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var activePIDs: Set<Int32>
+
+        init(activePIDs: Set<Int32>) {
+            self.activePIDs = activePIDs
+        }
+
+        func contains(_ pid: Int32) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return activePIDs.contains(pid)
+        }
+
+        func setActive(_ pids: Set<Int32>) {
+            lock.lock()
+            defer { lock.unlock() }
+            activePIDs = pids
+        }
+    }
+
+    private final class UptimeState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64
+
+        init(_ value: UInt64) {
+            self.value = value
+        }
+
+        func read() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func set(_ value: UInt64) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.value = value
+        }
+    }
+
+    @MainActor
+    private final class ControllerList {
+        var controllers: [TerminalController]
+
+        init(_ controllers: [TerminalController]) {
+            self.controllers = controllers
+        }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("chostty-persist-tests-\(UUID().uuidString)", isDirectory: true)
@@ -105,7 +156,10 @@ import Testing
         registry: PendingHydrationRegistry? = nil,
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = 4242,
-        isLiveInstance: @escaping (Int32) -> Bool = { _ in false },
+        queue: DispatchQueue = DispatchQueue(label: "chostty-tests.persistence"),
+        isActive: @escaping () -> Bool = { true },
+        isLiveInstance: @escaping @Sendable (Int32) -> Bool = { _ in false },
+        uptime: @escaping @Sendable () -> UInt64 = { 100 },
         scheduler: ManualScheduler? = nil,
         controllers: @escaping () -> [TerminalController]
     ) -> SessionPersistenceController {
@@ -115,6 +169,8 @@ import Testing
             registry: registry ?? PendingHydrationRegistry(),
             ownerInstanceID: ownerInstanceID,
             ownerPID: ownerPID,
+            queue: queue,
+            isActive: isActive,
             isLiveInstance: isLiveInstance,
             scheduleAfter: { delay, action in
                 if let scheduler {
@@ -123,6 +179,7 @@ import Testing
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
                 }
             },
+            uptime: uptime,
             controllersProvider: controllers
         )
     }
@@ -1441,7 +1498,16 @@ import Testing
             ownerPID: 9999,
             windows: live.windows
         )
-        #expect(try repository.save(saved) == .written)
+        let policy = SessionSnapshotRepository.SavePolicy(
+            claimEpoch: nil,
+            selfInstanceID: saved.ownerInstanceID,
+            selfPID: saved.ownerPID,
+            deferredOwnerIDs: [],
+            isLiveInstance: { _ in false },
+            now: { 100 },
+            retire: []
+        )
+        #expect(try repository.save(saved, policy: policy).outcome == .written)
 
         let inspection = persistence.sidebarSyncInspection()
         #expect(inspection.status == .synchronized)
@@ -1473,69 +1539,336 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
     }
 
-    @Test func secondInstanceStopsWriting() throws {
+    @Test func inactiveInstanceYieldsToTheInstanceThatClaimedTheFile() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let controller = try makeController()
-        let persistence = makePersistence(directory: directory, isLiveInstance: { $0 == 777 }) { [controller] }
-
-        persistence.disableForSecondInstance(ownerPID: 777)
-
-        #expect(persistence.isDisabledBySecondInstance)
-        #expect(!persistence.persistIfNeeded())
-        persistence.persistNow()
-        persistence.flush()
-        #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
-        #expect(persistence.sidebarSyncInspection().foreignOwner?.pid == 777)
+        let active = makePersistence(directory: directory, ownerPID: 777, isActive: { true }, isLiveInstance: { $0 == 4242 }, controllers: {
+            [controller]
+        })
+        active.noteActivation()
+        active.persistNow()
+        let passive = makePersistence(directory: directory, isActive: { false }, isLiveInstance: { $0 == 777 }, controllers: {
+            [controller]
+        })
+        #expect(passive.persistIfNeeded())
+        passive.flush()
+        #expect(try decode(repository).ownerPID == 777)
     }
 
-    @Test func savingResumesOnceTheOwnerExits() throws {
+    @Test func activeInstanceWritesOverALiveInactiveOwner() throws {
         let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let controller = try makeController()
-        var ownerAlive = true
-        let persistence = makePersistence(directory: directory, isLiveInstance: { _ in ownerAlive }) {
-            [controller]
-        }
-        persistence.disableForSecondInstance(ownerPID: 777)
+        let inactive = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            isActive: { false },
+            isLiveInstance: { $0 == 777 },
+            controllers: { [controller] }
+        )
+        let active = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { true },
+            isLiveInstance: { $0 == 4242 },
+            controllers: { [controller] }
+        )
+
+        inactive.persistNow()
+        active.noteActivation()
+        active.persistNow()
+
+        #expect(try decode(repository).ownerPID == 777)
+    }
+
+    @Test func ownerChangesOnlyWhenActivationChanges() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let active = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            isActive: { true },
+            isLiveInstance: { _ in false },
+            controllers: { [controller] }
+        )
+
+        active.noteActivation()
+        active.persistNow()
+        let first = try Data(contentsOf: repository.primaryURL)
+        active.persistNow()
+        #expect(try Data(contentsOf: repository.primaryURL) == first)
+    }
+
+    @Test func yieldsNeverDegradeSaveHealth() throws {
+        let directory = try makeTemporaryDirectory()
+        let controller = try makeController()
+        let owner = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { true },
+            isLiveInstance: { $0 == 4242 },
+            controllers: { [controller] }
+        )
+        owner.noteActivation()
+        owner.persistNow()
+        let passive = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            isActive: { false },
+            isLiveInstance: { $0 == 777 },
+            controllers: { [controller] }
+        )
+
+        passive.persistNow()
+        #expect(passive.saveHealth == .healthy)
+    }
+
+    @Test func passiveInstanceStaysPassiveAfterTheOwnerExitsUntilActivated() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let ownerID = UUID()
+        let owner = makePersistence(
+            directory: directory,
+            ownerInstanceID: ownerID,
+            ownerPID: 777,
+            isActive: { true },
+            isLiveInstance: { _ in false },
+            controllers: { [controller] }
+        )
+        owner.noteActivation()
+        owner.persistNow()
+        let state = InstanceState(activePIDs: [777])
+        let passive = makePersistence(
+            directory: directory,
+            isActive: { false },
+            isLiveInstance: { state.contains($0) },
+            controllers: { [controller] }
+        )
+        let stored = try decode(repository)
+        #expect(passive.adoptOwnership(of: stored))
+        state.setActive([])
+
+        passive.persistNow()
+        #expect(try decode(repository).ownerInstanceID == ownerID)
+    }
+
+    @Test func anIdlePassiveInstanceNeverTouchesTheDisk() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let owner = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { true },
+            isLiveInstance: { _ in false },
+            controllers: { [controller] }
+        )
+        owner.noteActivation()
+        owner.persistNow()
+        let original = try Data(contentsOf: repository.primaryURL)
+        let passive = makePersistence(
+            directory: directory,
+            isActive: { false },
+            isLiveInstance: { $0 == 777 },
+            controllers: { [controller] }
+        )
+        let stored = try decode(repository)
+        #expect(passive.adoptOwnership(of: stored))
+
+        #expect(!passive.persistIfNeeded())
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+    }
+
+    @Test func aStaleQueuedClaimYieldsToANewerActivation() async throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let first = try makeController(workspaceName: "A")
+        let second = try makeController(workspaceName: "B")
+        settleTitles()
+        let scheduler = ManualScheduler()
+        let active = InstanceState(activePIDs: [4242])
+        // Uptime is one system clock shared by every instance.
+        let clock = UptimeState(10)
+        let aQueue = DispatchQueue(label: "chostty-tests.stale-claim-a")
+        let hold = DispatchSemaphore(value: 0)
+        aQueue.async { hold.wait() }
+        let a = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            queue: aQueue,
+            isActive: { active.contains(4242) },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { [first] }
+        )
+        let b = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { active.contains(777) },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { [second] }
+        )
+
+        a.noteActivation()
+        #expect(a.persistIfNeeded())
+        clock.set(20)
+        active.setActive([777])
+        b.noteActivation()
+        b.persistNow()
+        let expected = try Data(contentsOf: repository.primaryURL)
+
+        hold.signal()
+        try await waitForSaveResults(a, until: { a.isPassive })
+        #expect(try Data(contentsOf: repository.primaryURL) == expected)
+        #expect(try decode(repository).ownerPID == 777)
+    }
+
+    @Test func aYieldedResultArrivingAfterANewerActivationIsIgnored() async throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        settleTitles()
+        let active = InstanceState(activePIDs: [4242])
+        // Uptime is one system clock shared by every instance.
+        let clock = UptimeState(10)
+        let scheduler = ManualScheduler()
+        let queue = DispatchQueue(label: "chostty-tests.stale-yield")
+        let hold = DispatchSemaphore(value: 0)
+        queue.async { hold.wait() }
+        let owner = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { active.contains(777) },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { [controller] }
+        )
+        let candidate = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            queue: queue,
+            isActive: { active.contains(4242) },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { [controller] }
+        )
+
+        candidate.noteActivation()
+        #expect(candidate.persistIfNeeded())
+        clock.set(20)
+        active.setActive([777])
+        owner.noteActivation()
+        owner.persistNow()
+        let expected = try Data(contentsOf: repository.primaryURL)
+        clock.set(30)
+        active.setActive([777, 4242])
+        candidate.noteActivation()
+        hold.signal()
+        try await waitForSaveResults(candidate)
+        #expect(!candidate.isPassive)
+        #expect(candidate.deferredOwners.isEmpty)
+        #expect(try Data(contentsOf: repository.primaryURL) == expected)
+    }
+
+    @Test func aPassiveInstanceStillRetiresItsOwnClosedWindow() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let closed = try makeController(workspaceName: "Closed")
+        let live = try makeController(workspaceName: "Live")
+        let ownerID = UUID()
+        let seeder = makePersistence(directory: directory) { [] }
+        let controllers = ControllerList([closed])
+        let observer = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            isActive: { false },
+            isLiveInstance: { $0 == 777 },
+            controllers: { controllers.controllers }
+        )
+        let observed = seeder.snapshot(from: [closed, live])
+        let stored = AppSessionSnapshot(
+            ownerInstanceID: ownerID,
+            ownerPID: 777,
+            windows: observed.windows
+        )
+        let policy = SessionSnapshotRepository.SavePolicy(
+            claimEpoch: nil,
+            selfInstanceID: ownerID,
+            selfPID: 777,
+            deferredOwnerIDs: [],
+            isLiveInstance: { _ in false },
+            now: { 100 },
+            retire: []
+        )
+        _ = try repository.save(stored, policy: policy)
+
+        observer.persistNow()
+        controllers.controllers = [live]
+        let retained = try #require(observed.windows.first { $0.physicalUUID == live.physicalUUID })
+        let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
+        observer.persistNow()
+        let after = try decode(repository)
+        #expect(after.ownerInstanceID == ownerID)
+        #expect(after.ownerPID == 777)
+        #expect(after.windows == [retained])
+        #expect(try SessionSnapshotRepository.encoder.encode(after.windows[0]) == retainedBytes)
+    }
+
+    @Test func finalSaveOfAnInactiveInstanceDoesNotOverwriteAnInstanceItDeferredTo() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeController()
+        let owner = makePersistence(
+            directory: directory,
+            ownerPID: 777,
+            isActive: { true },
+            isLiveInstance: { $0 == 4242 },
+            controllers: { [controller] }
+        )
+        owner.noteActivation()
+        owner.persistNow()
+        let expected = try Data(contentsOf: repository.primaryURL)
+        let passive = makePersistence(
+            directory: directory,
+            isActive: { false },
+            isLiveInstance: { $0 == 777 },
+            controllers: { [controller] }
+        )
+        let stored = try decode(repository)
+        #expect(passive.adoptOwnership(of: stored))
+
+        passive.beginTermination()
+        #expect(try Data(contentsOf: repository.primaryURL) == expected)
+    }
+
+    @Test func activationClearsARejectedCursorAndForcesOneWrite() throws {
+        let directory = try makeTemporaryDirectory()
+        let first = try makeController(paneUUID: UUID())
+        let duplicatePaneID = first.workspaceStore.allSessions[0].surfaceTree.first!.id
+        let duplicate = try makeController(paneUUID: duplicatePaneID)
+        settleTitles()
+        let scheduler = ManualScheduler()
+        let persistence = makePersistence(
+            directory: directory,
+            isActive: { true },
+            scheduler: scheduler,
+            controllers: { [first, duplicate] }
+        )
+
+        persistence.persistNow()
+        let refusedHealth = persistence.saveHealth
+        #expect(refusedHealth == .refused(.duplicateIdentifier(duplicatePaneID)))
         #expect(!persistence.persistIfNeeded())
-
-        ownerAlive = false
-
+        persistence.noteActivation()
         #expect(persistence.persistIfNeeded())
-        persistence.flush()
-        #expect(!persistence.isDisabledBySecondInstance)
-        #expect(try decode(repository).ownerPID == 4242)
-    }
-
-    /// The other instance cannot be told directly, so it learns from the file:
-    /// a live foreign owner recorded there stops this writer before it writes.
-    @Test func aWriterYieldsToALiveInstanceThatTookTheFileOver() throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let repository = SessionSnapshotRepository(directory: directory)
-        let controller = try makeController()
-        let persistence = makePersistence(directory: directory, isLiveInstance: { $0 == 777 }) { [controller] }
-        persistence.persistNow()
-        #expect(try decode(repository).ownerPID == 4242)
-
-        let taker = makePersistence(directory: directory, ownerPID: 777, isLiveInstance: { $0 == 4242 }) {
-            [controller]
-        }
-        #expect(taker.adoptOwnership(of: try decode(repository)))
-        let inspection = taker.takeOverOwnership()
-        #expect(inspection.canSynchronize)
-        #expect(try decode(repository).ownerPID == 777)
-
-        // A change forces the original writer past its unchanged-cursor skip.
-        let store = controller.workspaceStore
-        store.renameWorkspace(store.snapshot.workspaces[0].id, to: "Changed")
-        #expect(!persistence.persistIfNeeded())
-        persistence.persistNow()
-        persistence.flush()
-        #expect(persistence.isDisabledBySecondInstance)
-        #expect(try decode(repository).ownerPID == 777)
     }
 
     @Test func aReusedPidOfAnotherProgramIsNotAnOwner() {
@@ -1547,7 +1880,7 @@ import Testing
         #expect(!SessionPersistenceController.isLiveAppInstance(Int32(ProcessInfo.processInfo.processIdentifier)))
     }
 
-    @Test func terminateWriteIsUnconditional() throws {
+    @Test func finalSaveOfTheActiveInstanceAlwaysWrites() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let controller = try makeController()

@@ -125,13 +125,11 @@ the backup. If writing the backup fails, the primary is preserved and the save
 fails for retry. Both slots use atomic writes and owner-only permissions;
 identical saves leave both untouched.
 
-Only one running Chostty writes the file. A launch that finds the file owned by
-another running Chostty (same bundle identifier, still alive) stays passive and
-resumes saving as soon as that instance exits; a recorded pid now held by an
-unrelated process does not count. The sidebar's **Check Sidebar Sync…** sheet
-names the owning instance and offers **Take Over and Save**, which writes the
-current window's state; the previous owner reads the new owner before its next
-write and goes passive.
+The Chostty instance you are using — the active one — saves the file;
+activating another running instance hands saving to it. An instance that has
+yielded to another one only removes the windows it closed, and stays that way
+until you activate it, even after the other instance exits. A recorded pid now
+held by an unrelated process does not count as a running Chostty instance.
 
 Closing every physical window does not replace the last valid snapshot with an
 empty one. If the app later quits without opening another window, the next

@@ -20,8 +20,8 @@ import Testing
         _ directory: URL,
         instance: UUID = UUID(),
         pid: Int32 = 71,
-        live: @escaping (Int32) -> Bool = { _ in false },
-        uptime: @escaping () -> UInt64 = { 100 }
+        live: @escaping @Sendable (Int32) -> Bool = { _ in false },
+        uptime: @escaping @Sendable () -> UInt64 = { 100 }
     ) -> SessionPersistenceController {
         SessionPersistenceController(
             repository: SessionSnapshotRepository(directory: directory),

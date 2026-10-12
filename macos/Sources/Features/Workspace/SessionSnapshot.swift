@@ -13,7 +13,7 @@ import Foundation
 // it was written.
 
 /// Root document written to `session.json`.
-struct AppSessionSnapshot: Codable, Equatable {
+struct AppSessionSnapshot: Codable, Equatable, Sendable {
     /// A file whose version is not ``currentVersion`` is unusable, never
     /// partially applied.
     let version: Int
@@ -71,7 +71,7 @@ struct AppSessionSnapshot: Codable, Equatable {
 }
 
 /// One physical `NSWindow` worth of structure.
-struct WindowSnapshot: Codable, Equatable {
+struct WindowSnapshot: Codable, Equatable, Sendable {
     /// `BaseTerminalController.physicalUUID`: window identity and sort key.
     let physicalUUID: UUID
 
@@ -86,7 +86,7 @@ struct WindowSnapshot: Codable, Equatable {
 }
 
 /// Value form of `Selection` (workspace + tab).
-struct SelectionSnapshot: Codable, Equatable {
+struct SelectionSnapshot: Codable, Equatable, Sendable {
     let workspaceID: UUID
     let tabID: UUID
 
@@ -97,7 +97,7 @@ struct SelectionSnapshot: Codable, Equatable {
 }
 
 /// Value form of `WorkspaceSession`.
-struct WorkspaceSnapshot: Codable, Equatable {
+struct WorkspaceSnapshot: Codable, Equatable, Sendable {
     let id: UUID
     let name: String
 
@@ -130,7 +130,7 @@ struct WorkspaceSnapshot: Codable, Equatable {
 }
 
 /// Value form of one virtual tab (`TerminalSessionState`).
-struct TabSnapshot: Codable, Equatable {
+struct TabSnapshot: Codable, Equatable, Sendable {
     let id: UUID
 
     /// User-supplied label. It survives the restart; it is not a claim about
@@ -171,19 +171,19 @@ struct TabSnapshot: Codable, Equatable {
 /// would tie the on-disk format to the derived `Codable` of a type
 /// parameterized on `NSView`, where a later case or `CodingKeys` change would
 /// quietly invalidate stored files.
-enum PaneSplitDirection: String, Codable, Equatable {
+enum PaneSplitDirection: String, Codable, Equatable, Sendable {
     case horizontal
     case vertical
 }
 
 /// Value form of a pane tree.
-indirect enum PaneTreeSnapshot: Codable, Equatable {
+indirect enum PaneTreeSnapshot: Codable, Equatable, Sendable {
     case leaf(PaneLeafSnapshot)
     case split(direction: PaneSplitDirection, ratio: Double, left: PaneTreeSnapshot, right: PaneTreeSnapshot)
 }
 
 /// Value form of a single pane.
-struct PaneLeafSnapshot: Codable, Equatable {
+struct PaneLeafSnapshot: Codable, Equatable, Sendable {
     /// Matches `Ghostty.SurfaceView.id`.
     let uuid: UUID
 

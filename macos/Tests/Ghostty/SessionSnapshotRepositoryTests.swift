@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import Ghostty
 
@@ -67,6 +68,29 @@ import Testing
         return try #require(attributes[.modificationDate] as? Date)
     }
 
+    private func policy(
+        instanceID: UUID,
+        pid: Int32,
+        claimEpoch: UInt64? = nil,
+        live: @escaping @Sendable (Int32) -> Bool = { _ in false },
+        now: @escaping @Sendable () -> UInt64 = { 100 },
+        retire: Set<UUID> = []
+    ) -> SessionSnapshotRepository.SavePolicy {
+        .init(
+            claimEpoch: claimEpoch,
+            selfInstanceID: instanceID,
+            selfPID: pid,
+            deferredOwnerIDs: [],
+            isLiveInstance: live,
+            now: now,
+            retire: retire
+        )
+    }
+
+    private var defaultWritePolicy: SessionSnapshotRepository.SavePolicy {
+        policy(instanceID: UUID(), pid: 4242)
+    }
+
     // MARK: - Default location
 
     @Test func defaultDirectoryDerivesFromBundleIdentifier() {
@@ -85,7 +109,7 @@ import Testing
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
 
-        #expect(try repository.save(makeSnapshot()) == .written)
+        #expect(try repository.save(makeSnapshot(), policy: defaultWritePolicy).outcome == .written)
         #expect(FileManager.default.fileExists(atPath: repository.primaryURL.path))
 
         let attributes = try FileManager.default.attributesOfItem(atPath: repository.primaryURL.path)
@@ -99,8 +123,8 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let snapshot = makeSnapshot()
 
-        #expect(try repository.save(makeSnapshot()) == .written)
-        #expect(try repository.save(snapshot) == .written)
+        #expect(try repository.save(makeSnapshot(), policy: defaultWritePolicy).outcome == .written)
+        #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .written)
         let primary = try Data(contentsOf: repository.primaryURL)
         let backup = try Data(contentsOf: repository.backupURL)
         let oldDate = Date(timeIntervalSince1970: 1_000)
@@ -110,8 +134,8 @@ import Testing
         let primaryDate = try modificationDate(repository.primaryURL)
         let backupDate = try modificationDate(repository.backupURL)
 
-        #expect(try repository.save(snapshot) == .skippedIdentical)
-        #expect(try repository.save(snapshot) == .skippedIdentical)
+        #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .skippedIdentical)
+        #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .skippedIdentical)
         #expect(try Data(contentsOf: repository.primaryURL) == primary)
         #expect(try Data(contentsOf: repository.backupURL) == backup)
         #expect(try modificationDate(repository.primaryURL) == primaryDate)
@@ -123,8 +147,8 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let ownerID = UUID()
 
-        #expect(try repository.save(makeSnapshot(ownerInstanceID: ownerID, ownerPID: 1)) == .written)
-        #expect(try repository.save(makeSnapshot(ownerInstanceID: ownerID, ownerPID: 2)) == .written)
+        #expect(try repository.save(makeSnapshot(ownerInstanceID: ownerID, ownerPID: 1), policy: defaultWritePolicy).outcome == .written)
+        #expect(try repository.save(makeSnapshot(ownerInstanceID: ownerID, ownerPID: 2), policy: defaultWritePolicy).outcome == .written)
 
         guard case .loaded(let loaded, _) = repository.load() else {
             Issue.record("expected a usable snapshot")
@@ -137,14 +161,14 @@ import Testing
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let good = makeSnapshot()
-        #expect(try repository.save(good) == .written)
+        #expect(try repository.save(good, policy: defaultWritePolicy).outcome == .written)
 
         let windows = (0..<(SessionSnapshotValidator.Limits.windows + 1)).map { _ in
             WindowSnapshot(physicalUUID: UUID(), selection: nil, workspaces: [makeWorkspace(tabs: [makeTab()])])
         }
         let tooMany = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 9, windows: windows)
 
-        let outcome = try repository.save(tooMany)
+        let outcome = try repository.save(tooMany, policy: defaultWritePolicy).outcome
         #expect(outcome == .refusedInvalid(.limitExceeded(
             kind: "window",
             count: SessionSnapshotValidator.Limits.windows + 1,
@@ -167,11 +191,11 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let good = makeSnapshot()
-        #expect(try repository.save(good) == .written)
+        #expect(try repository.save(good, policy: defaultWritePolicy).outcome == .written)
         let original = try Data(contentsOf: repository.primaryURL)
 
         let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 1, windows: [])
-        #expect(try repository.save(empty) == .refusedInvalid(.noWindows))
+        #expect(try repository.save(empty, policy: defaultWritePolicy).outcome == .refusedInvalid(.noWindows))
         #expect(try Data(contentsOf: repository.primaryURL) == original)
         #expect(repository.load() == .loaded(good, source: .primary))
     }
@@ -195,9 +219,9 @@ import Testing
                 Issue.record("fixture must be valid after selection repair")
                 return
             }
-            #expect(try repository.save(snapshot) == .written)
+            #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .written)
             #expect(repository.load() == .loaded(validated, source: .primary))
-            #expect(try repository.save(snapshot) == .skippedIdentical)
+            #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .skippedIdentical)
             #expect(repository.load() == .loaded(validated, source: .primary))
         }
     }
@@ -207,7 +231,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let good = makeSnapshot()
-        #expect(try repository.save(good) == .written)
+        #expect(try repository.save(good, policy: defaultWritePolicy).outcome == .written)
         let original = try Data(contentsOf: repository.primaryURL)
         let text = String(repeating: "a", count: SessionSnapshotValidator.Limits.stringLength)
         let workspaces = (0..<SessionSnapshotValidator.Limits.workspacesPerWindow).map { _ in
@@ -226,7 +250,7 @@ import Testing
         }
         let byteCount = try SessionSnapshotRepository.encoder.encode(validated).count
         #expect(byteCount > SessionSnapshotRepository.maxFileBytes)
-        #expect(try repository.save(snapshot) == .refusedInvalid(.limitExceeded(
+        #expect(try repository.save(snapshot, policy: defaultWritePolicy).outcome == .refusedInvalid(.limitExceeded(
             kind: "fileBytes", count: byteCount, limit: SessionSnapshotRepository.maxFileBytes
         )))
         #expect(try Data(contentsOf: repository.primaryURL) == original)
@@ -312,7 +336,7 @@ import Testing
     @Test func firstSaveDoesNotRequireBackup() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
-        #expect(try repository.save(makeSnapshot()) == .written)
+        #expect(try repository.save(makeSnapshot(), policy: defaultWritePolicy).outcome == .written)
 
         #expect(!FileManager.default.fileExists(atPath: repository.backupURL.path))
     }
@@ -325,14 +349,14 @@ import Testing
         let second = makeSnapshot(ownerPID: 2)
         let third = makeSnapshot(ownerPID: 3)
 
-        #expect(try repository.save(first) == .written)
+        #expect(try repository.save(first, policy: defaultWritePolicy).outcome == .written)
         let firstBytes = try Data(contentsOf: repository.primaryURL)
-        #expect(try repository.save(second) == .written)
+        #expect(try repository.save(second, policy: defaultWritePolicy).outcome == .written)
         #expect(try Data(contentsOf: repository.backupURL) == firstBytes)
         #expect(repository.load() == .loaded(second, source: .primary))
 
         let secondBytes = try Data(contentsOf: repository.primaryURL)
-        #expect(try repository.save(third) == .written)
+        #expect(try repository.save(third, policy: defaultWritePolicy).outcome == .written)
         #expect(try Data(contentsOf: repository.backupURL) == secondBytes)
         #expect(repository.load() == .loaded(third, source: .primary))
         let attributes = try FileManager.default.attributesOfItem(atPath: repository.backupURL.path)
@@ -347,7 +371,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let good = makeSnapshot()
-        #expect(try repository.save(good) == .written)
+        #expect(try repository.save(good, policy: defaultWritePolicy).outcome == .written)
         try repository.promotePrimaryToBackup()
         let backup = try Data(contentsOf: repository.backupURL)
         let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 1, windows: [])
@@ -365,7 +389,7 @@ import Testing
             #expect(throws: (any Error).self) { try repository.promotePrimaryToBackup() }
             #expect(try Data(contentsOf: repository.backupURL) == backup)
             let next = makeSnapshot()
-            #expect(try repository.save(next) == .written)
+            #expect(try repository.save(next, policy: defaultWritePolicy).outcome == .written)
             #expect(repository.load() == .loaded(next, source: .primary))
             #expect(try Data(contentsOf: repository.backupURL) == backup)
         }
@@ -377,7 +401,7 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let first = makeSnapshot()
         let next = makeSnapshot()
-        #expect(try repository.save(first) == .written)
+        #expect(try repository.save(first, policy: defaultWritePolicy).outcome == .written)
         let primary = try Data(contentsOf: repository.primaryURL)
         let primaryDate = try modificationDate(repository.primaryURL)
 
@@ -386,14 +410,16 @@ import Testing
         try FileManager.default.createDirectory(at: repository.backupURL, withIntermediateDirectories: false)
         let blocker = repository.backupURL.appendingPathComponent("blocker")
         try Data("keep".utf8).write(to: blocker)
-        #expect(throws: (any Error).self) { try repository.save(next) }
+        #expect(throws: (any Error).self) {
+            _ = try repository.save(next, policy: defaultWritePolicy).outcome
+        }
         #expect(try Data(contentsOf: repository.primaryURL) == primary)
         #expect(try modificationDate(repository.primaryURL) == primaryDate)
         #expect(repository.load() == .loaded(first, source: .primary))
         #expect(try Data(contentsOf: blocker) == Data("keep".utf8))
 
         try FileManager.default.removeItem(at: repository.backupURL)
-        #expect(try repository.save(next) == .written)
+        #expect(try repository.save(next, policy: defaultWritePolicy).outcome == .written)
         #expect(try Data(contentsOf: repository.backupURL) == primary)
         #expect(repository.load() == .loaded(next, source: .primary))
     }
@@ -402,7 +428,7 @@ import Testing
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let booted = makeSnapshot(ownerPID: 4321)
-        #expect(try repository.save(booted) == .written)
+        #expect(try repository.save(booted, policy: defaultWritePolicy).outcome == .written)
 
         try repository.promotePrimaryToBackup()
         #expect(FileManager.default.fileExists(atPath: repository.backupURL.path))
@@ -709,5 +735,121 @@ import Testing
             Issue.record("a file without a schema version must not be applied")
             return
         }
+    }
+
+    @Test func saveYieldsUnderTheLockWhenTheOwnerIsAnotherLiveInstance() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let owner = UUID()
+        let stored = makeSnapshot(ownerInstanceID: owner, ownerPID: 777)
+        _ = try repository.save(stored, policy: policy(instanceID: owner, pid: 777))
+        let receipt = try repository.save(
+            makeSnapshot(ownerInstanceID: UUID(), ownerPID: 4242),
+            policy: policy(instanceID: UUID(), pid: 4242, live: { $0 == 777 })
+        )
+        #expect(receipt.outcome == .yielded(.init(ownerInstanceID: owner, ownerPID: 777)))
+    }
+
+    @Test func claimRecordIsWrittenOnlyByAClaimingWrite() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let id = UUID()
+        _ = try repository.save(makeSnapshot(ownerInstanceID: id, ownerPID: 4242), policy: policy(
+            instanceID: id, pid: 4242, claimEpoch: 10, live: { $0 == 4242 }
+        ))
+        let data = try Data(contentsOf: repository.lockURL)
+        #expect(try JSONDecoder().decode(SessionSnapshotRepository.ClaimRecord.self, from: data).epoch == 10)
+    }
+
+    @Test func aClaimOlderThanTheRecordedClaimIsTreatedAsStale() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let newer = UUID()
+        _ = try repository.save(makeSnapshot(ownerInstanceID: newer, ownerPID: 777), policy: policy(
+            instanceID: newer, pid: 777, claimEpoch: 20, live: { $0 == 777 }
+        ))
+        let old = UUID()
+        let receipt = try repository.save(makeSnapshot(ownerInstanceID: old, ownerPID: 4242), policy: policy(
+            instanceID: old, pid: 4242, claimEpoch: 10, live: { $0 == 777 }
+        ))
+        #expect(receipt.outcome == .yielded(.init(ownerInstanceID: newer, ownerPID: 777)))
+    }
+
+    @Test func aRecordFromADeadInstanceOrAPreviousBootIsIgnored() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let dead = UUID()
+        _ = try repository.save(makeSnapshot(ownerInstanceID: dead, ownerPID: 777), policy: policy(
+            instanceID: dead, pid: 777, claimEpoch: 200, live: { _ in false }, now: { 100 }
+        ))
+        let current = UUID()
+        let receipt = try repository.save(makeSnapshot(ownerInstanceID: current, ownerPID: 4242), policy: policy(
+            instanceID: current, pid: 4242, claimEpoch: 10, live: { $0 == 4242 }
+        ))
+        #expect(receipt.outcome == .written)
+    }
+
+    @Test func retireOnlyWriteRemovesOnlyTheRetiredWindowsAndKeepsTheOwner() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let owner = UUID()
+        let first = makeSnapshot(ownerInstanceID: owner, ownerPID: 777)
+        let second = makeSnapshot(ownerInstanceID: owner, ownerPID: 777)
+        let stored = AppSessionSnapshot(ownerInstanceID: owner, ownerPID: 777, windows: first.windows + second.windows)
+        _ = try repository.save(stored, policy: policy(instanceID: owner, pid: 777))
+        let receipt = try repository.save(nil, policy: policy(
+            instanceID: UUID(), pid: 4242, live: { $0 == 777 }, retire: [first.windows[0].physicalUUID]
+        ))
+        #expect(receipt.outcome == .retired(1))
+        let loaded = try Data(contentsOf: repository.primaryURL)
+        let snapshot = try JSONDecoder().decode(AppSessionSnapshot.self, from: loaded)
+        #expect(snapshot.ownerInstanceID == owner)
+        #expect(snapshot.windows == second.windows)
+    }
+
+    @Test func retireThatWouldEmptyTheFileWritesNothing() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let owner = UUID()
+        let stored = makeSnapshot(ownerInstanceID: owner, ownerPID: 777)
+        _ = try repository.save(stored, policy: policy(instanceID: owner, pid: 777))
+        let original = try Data(contentsOf: repository.primaryURL)
+        let receipt = try repository.save(nil, policy: policy(
+            instanceID: UUID(), pid: 4242, live: { $0 == 777 }, retire: [stored.windows[0].physicalUUID]
+        ))
+        #expect(receipt.outcome == .yielded(.init(ownerInstanceID: owner, ownerPID: 777)))
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+    }
+
+    @Test func lockFileIsOwnerOnly() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let id = UUID()
+        _ = try repository.save(makeSnapshot(ownerInstanceID: id, ownerPID: 4242), policy: policy(
+            instanceID: id, pid: 4242, claimEpoch: 1, live: { $0 == 4242 }
+        ))
+        let attributes = try FileManager.default.attributesOfItem(atPath: repository.lockURL.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.int16Value == 0o600)
+    }
+
+    @Test func aHeldLockFailsTheSaveWithoutTouchingThePrimary() throws {
+        let repository = SessionSnapshotRepository(directory: try makeTemporaryDirectory())
+        let id = UUID()
+        _ = try repository.save(makeSnapshot(ownerInstanceID: id, ownerPID: 4242), policy: policy(instanceID: id, pid: 4242))
+        let original = try Data(contentsOf: repository.primaryURL)
+        let descriptor = open(repository.lockURL.path, O_RDWR)
+        defer { close(descriptor) }
+        #expect(flock(descriptor, LOCK_EX | LOCK_NB) == 0)
+        #expect(throws: (any Error).self) {
+            _ = try repository.save(makeSnapshot(ownerInstanceID: id, ownerPID: 4242), policy: policy(instanceID: id, pid: 4242))
+        }
+        #expect(try Data(contentsOf: repository.primaryURL) == original)
+    }
+
+    @Test func lockUnsupportedFallsBackToAnUnlockedSave() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(
+            directory: directory,
+            sessionLock: { _, _ in
+                errno = ENOTSUP
+                return -1
+            }
+        )
+        let id = UUID()
+        let receipt = try repository.save(makeSnapshot(ownerInstanceID: id, ownerPID: 4242), policy: policy(instanceID: id, pid: 4242))
+        #expect(receipt.outcome == .written)
     }
 }

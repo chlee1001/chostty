@@ -389,6 +389,7 @@ class AppDelegate: NSObject,
                 undoManager.enableUndoRegistration()
             }
         }
+        sessionPersistence?.noteActivation()
     }
 
     /// - Returns: `true` when at least one window was created. `false` means
