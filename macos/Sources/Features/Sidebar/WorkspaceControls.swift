@@ -73,7 +73,7 @@ struct WorkspaceControls: View {
     /// controller, so a click carries the same authority as `⌘N` / `⌘⇧T`.
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
-    var filesPanelController: FilesPanelController? = nil
+    var filesPanelController: FilesPanelController?
 
     /// The same key `TerminalView` binds, so toggling from any host moves the
     /// same sidebar.
@@ -96,7 +96,9 @@ struct WorkspaceControls: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: { sidebarVisible.toggle() }) {
+            Button {
+                sidebarVisible.toggle()
+            } label: {
                 Image(systemName: "sidebar.left")
             }
             .buttonStyle(.plain)
@@ -482,7 +484,7 @@ struct WorkspaceControlsStrip: View {
     let representedURL: URL?
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
-    var filesPanelController: FilesPanelController? = nil
+    var filesPanelController: FilesPanelController?
 
     /// One standard titlebar height, so the strip stands in for the titlebar
     /// rather than reading as an extra band of content.

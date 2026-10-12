@@ -77,23 +77,12 @@ struct WindowSnapshot: Codable, Equatable, Sendable {
 
     let selection: SelectionSnapshot?
     let workspaces: [WorkspaceSnapshot]
-
-    init(physicalUUID: UUID, selection: SelectionSnapshot?, workspaces: [WorkspaceSnapshot]) {
-        self.physicalUUID = physicalUUID
-        self.selection = selection
-        self.workspaces = workspaces
-    }
 }
 
 /// Value form of `Selection` (workspace + tab).
 struct SelectionSnapshot: Codable, Equatable, Sendable {
     let workspaceID: UUID
     let tabID: UUID
-
-    init(workspaceID: UUID, tabID: UUID) {
-        self.workspaceID = workspaceID
-        self.tabID = tabID
-    }
 }
 
 /// Value form of `WorkspaceSession`.
@@ -109,24 +98,6 @@ struct WorkspaceSnapshot: Codable, Equatable, Sendable {
     let defaultDirectory: String?
     let tabs: [TabSnapshot]
     let selectedTabID: UUID?
-
-    init(
-        id: UUID,
-        name: String,
-        color: TerminalTabColor,
-        isCollapsed: Bool,
-        defaultDirectory: String?,
-        tabs: [TabSnapshot],
-        selectedTabID: UUID?
-    ) {
-        self.id = id
-        self.name = name
-        self.color = color
-        self.isCollapsed = isCollapsed
-        self.defaultDirectory = defaultDirectory
-        self.tabs = tabs
-        self.selectedTabID = selectedTabID
-    }
 }
 
 /// Value form of one virtual tab (`TerminalSessionState`).
@@ -147,22 +118,6 @@ struct TabSnapshot: Codable, Equatable, Sendable {
     /// `SplitTree.zoomed` by leaf UUID, so this layer never mirrors
     /// `SplitTree`'s path encoding.
     let zoomedPaneID: UUID?
-
-    init(
-        id: UUID,
-        titleOverride: String?,
-        tabColor: String?,
-        paneTree: PaneTreeSnapshot?,
-        focusedPaneID: UUID?,
-        zoomedPaneID: UUID?
-    ) {
-        self.id = id
-        self.titleOverride = titleOverride
-        self.tabColor = tabColor
-        self.paneTree = paneTree
-        self.focusedPaneID = focusedPaneID
-        self.zoomedPaneID = zoomedPaneID
-    }
 }
 
 /// Split axis.
@@ -195,12 +150,6 @@ struct PaneLeafSnapshot: Codable, Equatable, Sendable {
     /// and then replaced by the new shell's own first title, so it never
     /// impersonates the old process.
     let title: String?
-
-    init(uuid: UUID, cwd: String?, title: String?) {
-        self.uuid = uuid
-        self.cwd = cwd
-        self.title = title
-    }
 }
 
 // MARK: - Convenience

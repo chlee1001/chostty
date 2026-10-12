@@ -905,6 +905,7 @@ final class WorkspaceSessionStore: ObservableObject {
     /// Cmd+Z quietly discarded the user's directory, color and collapse
     /// choices. Those fields are therefore parameters rather than defaults.
     @discardableResult
+    // swiftlint:disable:next function_parameter_count
     func insertWorkspace(
         id workspaceID: UUID,
         name: String,

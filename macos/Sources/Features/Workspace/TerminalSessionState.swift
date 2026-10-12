@@ -106,7 +106,6 @@ final class TerminalSessionState: ObservableObject, Identifiable {
         self.titleOverride = nil
     }
 
-
     // MARK: - Teardown
 
     // MARK: - Presentation lifecycle

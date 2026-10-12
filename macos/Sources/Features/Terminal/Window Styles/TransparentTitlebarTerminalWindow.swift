@@ -40,7 +40,6 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
         // Save our config in case we need to reapply
         lastSurfaceConfig = surfaceConfig
 
-
         if #available(macOS 26.0, *) {
             syncAppearanceTahoe(surfaceConfig)
         } else {
@@ -95,7 +94,6 @@ class TransparentTitlebarTerminalWindow: TerminalWindow {
     private var titlebarBackgroundView: NSView? {
         titlebarContainer?.firstDescendant(withClassName: "NSTitlebarBackgroundView")
     }
-
 
     // MARK: macOS 13 to 15
 

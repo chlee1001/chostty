@@ -353,15 +353,15 @@ import Testing
         #expect(moving.isTornDown == false)
     }
 
-    @Test func dragThresholdRejectsJitter() {
+    @Test func dragThresholdRejectsJitter() throws {
         typealias Source = VirtualTabDragSource.DragSourceView
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 400, height: 200),
             styleMask: [.titled], backing: .buffered, defer: false)
         let press = NSPoint(x: 200, y: 150)
 
-        func dragged(at point: NSPoint) -> NSEvent {
-            try! #require(NSEvent.mouseEvent(
+        func dragged(at point: NSPoint) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(
                 with: .leftMouseDragged,
                 location: point,
                 modifierFlags: [],
@@ -374,14 +374,15 @@ import Testing
         }
 
         // Sub-threshold jitter never starts a session…
-        #expect(Source.crossedThreshold(
-            from: press, to: dragged(at: NSPoint(x: 201, y: 151))) == false)
+        let jitter = try dragged(at: NSPoint(x: 201, y: 151))
+        #expect(Source.crossedThreshold(from: press, to: jitter) == false)
         // …at exactly the threshold it does…
-        #expect(Source.crossedThreshold(
-            from: press, to: dragged(at: NSPoint(x: 203, y: 150))))
+        let threshold = try dragged(at: NSPoint(x: 203, y: 150))
+        #expect(Source.crossedThreshold(from: press, to: threshold))
         // …and with no recorded press (missed mouseDown) it fails open so a
         // drag is never silently swallowed.
-        #expect(Source.crossedThreshold(from: nil, to: dragged(at: press)))
+        let unpressed = try dragged(at: press)
+        #expect(Source.crossedThreshold(from: nil, to: unpressed))
     }
 
     @Test func undoRestoresEmptiedWorkspaceIdentity() throws {

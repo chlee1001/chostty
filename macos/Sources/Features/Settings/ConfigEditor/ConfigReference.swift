@@ -75,7 +75,7 @@ enum ConfigReference {
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return [] }
-            return parse(String(decoding: data, as: UTF8.self))
+            return parse(String(bytes: data, encoding: .utf8) ?? "")
         }.value
     }
 

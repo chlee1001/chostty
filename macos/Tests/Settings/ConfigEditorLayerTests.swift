@@ -174,8 +174,8 @@ struct ConfigReferenceTests {
     # The font families to use.
     #
     # Repeat it for fallbacks.
-    font-family = 
-    font-family-bold = 
+    font-family =
+    font-family-bold =
 
     # Font size in points.
     font-size = 13

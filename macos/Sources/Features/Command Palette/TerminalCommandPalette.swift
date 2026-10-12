@@ -285,7 +285,6 @@ struct TerminalCommandPaletteView: View {
         }
     }
 
-
 }
 
 /// This is done to ensure that the given view is in the responder chain.

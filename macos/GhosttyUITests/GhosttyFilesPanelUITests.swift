@@ -1,7 +1,7 @@
 import XCTest
 
 final class GhosttyFilesPanelUITests: GhosttyCustomConfigCase {
-    override class var defaultTestSuite: XCTestSuite {
+    override static var defaultTestSuite: XCTestSuite {
         XCTestSuite(forTestCaseClass: Self.self)
     }
 

@@ -686,7 +686,6 @@ class AppDelegate: NSObject,
             return nil
         }
 
-
         // Intercept reserved workspace/tab-switch shortcuts
         // (Cmd+1-9, Cmd+Shift+[/], Ctrl+Tab/Ctrl+Shift+Tab) BEFORE any
         // configured Ghostty binding dispatch or main-window guard, same as
@@ -825,7 +824,6 @@ class AppDelegate: NSObject,
         }
         return collisions
     }
-
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         syncFloatOnTopMenu(notification.object as? NSWindow)

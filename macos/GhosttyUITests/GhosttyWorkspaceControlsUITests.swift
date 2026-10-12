@@ -10,7 +10,7 @@ final class GhosttyWorkspaceControlsUITests: GhosttyCustomConfigCase {
     /// subclasses never run under a plain `xcodebuild test`. This suite opts
     /// back in — it is a handful of launches, and no unit test can see where
     /// these buttons actually render.
-    override class var defaultTestSuite: XCTestSuite {
+    override static var defaultTestSuite: XCTestSuite {
         XCTestSuite(forTestCaseClass: Self.self)
     }
 

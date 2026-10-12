@@ -347,8 +347,8 @@ class BaseTerminalController: NSWindowController,
     /// initializer. Provided for call sites that still construct a controller
     /// from an optional base config and/or an existing surface tree.
     convenience init(_ ghostty: Ghostty.App,
-         baseConfig base: Ghostty.SurfaceConfiguration? = nil,
-         surfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil
+                     baseConfig base: Ghostty.SurfaceConfiguration? = nil,
+                     surfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil
     ) {
         let graph: TerminalControllerGraphFactory.InitialGraph
         if let tree {
@@ -366,7 +366,6 @@ class BaseTerminalController: NSWindowController,
             NSEvent.removeMonitor(eventMonitor)
         }
     }
-
 
     // MARK: Virtual workspace support
 
@@ -1156,7 +1155,6 @@ class BaseTerminalController: NSWindowController,
 
         return newSession.id
     }
-
 
     /// Create a new split.
     @discardableResult

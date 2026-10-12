@@ -334,7 +334,6 @@ enum TerminalControllerGraphFactory {
     }
 }
 
-
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController {
     override var windowNibName: NSNib.Name? {
@@ -381,7 +380,7 @@ class TerminalController: BaseTerminalController {
 
     /// Designated initializer that adopts an already-built normalized graph.
     override init(_ ghostty: Ghostty.App,
-         graph: TerminalControllerGraphFactory.InitialGraph
+                  graph: TerminalControllerGraphFactory.InitialGraph
     ) {
         self.derivedConfig = DerivedConfig(ghostty.config)
         super.init(ghostty, graph: graph)
@@ -1159,7 +1158,6 @@ class TerminalController: BaseTerminalController {
                 }
             }
         }
-
 
         // Apply any additional appearance-related properties to the new window. We
         // apply this based on the root config but change it later based on surface

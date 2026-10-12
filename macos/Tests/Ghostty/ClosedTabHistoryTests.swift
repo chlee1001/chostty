@@ -190,7 +190,7 @@ struct ClosedTabHistoryTests {
         #expect(leaseA.state == .detached)
     }
 
-    @Test func finalizeAllTearsDownEveryStillDetachedLeaseExactlyOnce() {
+    @Test func finalizeAllTearsDownEveryStillDetachedLeaseExactlyOnce() throws {
         let history = ClosedTabHistory()
         var tornDown: Set<UUID> = []
         let a = makeSession()
@@ -202,7 +202,7 @@ struct ClosedTabHistoryTests {
             (record(), leaseB),
         ])
 
-        let entry = try! #require(history.popNewest())
+        let entry = try #require(history.popNewest())
         entry.leaseGroup.finalizeAll()
         #expect(tornDown == [a.id, b.id])
 

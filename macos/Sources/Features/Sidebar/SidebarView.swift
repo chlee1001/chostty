@@ -88,10 +88,10 @@ struct SidebarView: View {
     var onSelectTab: (UUID, UUID) -> Void
 
     /// Called when the user closes a tab.
-    var onCloseTab: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
 
     /// Called when the user closes a workspace.
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseWorkspace: ((UUID) -> Void)?
     /// Called when the user picks "Reopen Closed Tab" from the empty-area
     /// context menu. The owning controller resolves `ClosedTabHistory`;
     /// presentation never touches it directly.
@@ -99,13 +99,11 @@ struct SidebarView: View {
     /// Called when a tab dragged in from ANOTHER window is dropped on a
     /// workspace row. The tab joins that workspace and becomes presented.
     /// Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
+    var onReceiveForeignTab: ((UUID, UUID) -> Bool)?
 
     /// The sidebar search/filter query. Private view state — filtering is
     /// presentation-only and never reaches the store.
     @State private var filterText: String = ""
-
-
 
     init(
         workspaceSessionStore: WorkspaceSessionStore,
@@ -192,7 +190,9 @@ struct SidebarView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
             if !filterText.isEmpty {
-                Button(action: { filterText = "" }) {
+                Button {
+                    filterText = ""
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -257,13 +257,13 @@ struct SidebarDivider: View {
 struct WorkspaceSessionList: View {
     @ObservedObject var store: WorkspaceSessionStore
     var onSelectTab: (UUID, UUID) -> Void
-    var onCloseTab: ((UUID) -> Void)? = nil
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
+    var onCloseWorkspace: ((UUID) -> Void)?
     var onNewWorkspace: () -> Void = {}
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window lands on a workspace
     /// row. Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
+    var onReceiveForeignTab: ((UUID, UUID) -> Bool)?
 
     /// Search/filter query from the sidebar header. Empty means "show
     /// everything", reproducing unfiltered rendering exactly.
@@ -282,7 +282,6 @@ struct WorkspaceSessionList: View {
     private func toggleSingleWorkspacePolicy() {
         singleWorkspacePolicyRaw = singleWorkspacePolicy.toggled.rawValue
     }
-
 
     /// Row currently under the pointer during a drag, used to draw the
     /// insertion indicator.
@@ -429,7 +428,6 @@ struct WorkspaceSessionList: View {
                 _ = onReceiveForeignTab?(moving, wsID)
                 return
             }
-        case let (.tab(moving), .workspace(wsID)):
             // Append to the end of the target workspace.
             guard let ws = store.snapshot.workspaces.first(where: { $0.id == wsID })
             else { return }
@@ -469,8 +467,8 @@ private struct WorkspaceSessionRow: View {
     @ObservedObject var store: WorkspaceSessionStore
     @Binding var dropTarget: WorkspaceDragPayload?
     var onSelectTab: (UUID, UUID) -> Void
-    var onCloseTab: ((UUID) -> Void)? = nil
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
+    var onCloseWorkspace: ((UUID) -> Void)?
     var onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
 
     /// Search/filter query, used only to compute `effectiveCollapsed`
@@ -596,7 +594,9 @@ private struct WorkspaceSessionRow: View {
                 if let onCloseWorkspace, store.snapshot.workspaces.count > 1 {
                     // Always laid out, revealed on hover. Inserting it on hover
                     // would reflow the row just as the pointer arrives.
-                    Button(action: { onCloseWorkspace(workspace.id) }) {
+                    Button {
+                        onCloseWorkspace(workspace.id)
+                    } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.secondary)
@@ -718,7 +718,7 @@ private struct TabSessionRow: View {
     let isSelected: Bool
     @Binding var dropTarget: WorkspaceDragPayload?
     let onTap: () -> Void
-    var onClose: (() -> Void)? = nil
+    var onClose: (() -> Void)?
     var onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
     @State private var hover = false
     @State private var branch: String?

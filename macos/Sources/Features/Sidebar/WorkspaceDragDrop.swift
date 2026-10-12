@@ -210,7 +210,7 @@ struct VirtualTabDragSource: NSViewRepresentable {
         private func handleMouseDown(_ event: NSEvent) {
             guard let window = window,
                   event.windowNumber == window.windowNumber,
-                  NSPointInRect(convert(event.locationInWindow, from: nil), bounds) else { return }
+                  bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
             pressPoint = event.locationInWindow
         }
 
@@ -228,7 +228,7 @@ struct VirtualTabDragSource: NSViewRepresentable {
                   !dragDisabled,
                   let window = window,
                   event.windowNumber == window.windowNumber,
-                  NSPointInRect(convert(event.locationInWindow, from: nil), bounds),
+                  bounds.contains(convert(event.locationInWindow, from: nil)),
                   Self.crossedThreshold(from: pressPoint, to: event),
                   let payload else { return }
             pressPoint = nil

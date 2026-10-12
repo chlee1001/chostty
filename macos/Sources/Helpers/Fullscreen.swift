@@ -271,10 +271,9 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
 
         // Removing the "titled" style also derefs all our accessory view controllers
         // so we need to restore those.
-        for c in savedState.titlebarAccessoryViewControllers {
-            if window.titlebarAccessoryViewControllers.firstIndex(of: c) == nil {
-                window.addTitlebarAccessoryViewController(c)
-            }
+        for c in savedState.titlebarAccessoryViewControllers
+        where window.titlebarAccessoryViewControllers.firstIndex(of: c) == nil {
+            window.addTitlebarAccessoryViewController(c)
         }
 
         // Removing "titled" also clears our toolbar

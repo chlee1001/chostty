@@ -4,12 +4,12 @@ import Foundation
 import Testing
 @testable import Ghostty
 
-/// Tests for the foundational workspace model types:
-/// `TerminalSessionState`, `SurfaceOwnerRegistry`, and `TerminalCommandRouter`.
-///
-/// These tests exercise the pure-model behavior that does not require a live
-/// `ghostty_app_t` / running AppDelegate. Surface-creation initializers and live
-/// controller resolution are validated in integration tests once the app is running.
+// Tests for the foundational workspace model types:
+// `TerminalSessionState`, `SurfaceOwnerRegistry`, and `TerminalCommandRouter`.
+//
+// These tests exercise the pure-model behavior that does not require a live
+// `ghostty_app_t` / running AppDelegate. Surface-creation initializers and live
+// controller resolution are validated in integration tests once the app is running.
 
 // MARK: - TerminalSessionState
 
