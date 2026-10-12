@@ -40,6 +40,7 @@ class BaseTerminalController: NSWindowController,
     /// of the controller and is the value surfaced to accessibility, undo, and
     /// (in later phases) the owner registry.
     let physicalUUID: UUID
+    var isWindowClosed = false
 
     /// The currently focused surface.
     var focusedSurface: Ghostty.SurfaceView? {
@@ -235,6 +236,9 @@ class BaseTerminalController: NSWindowController,
         self.workspaceStore.willCommit = { [weak self] workspaces, _ in
             self?.replaceRegistryIndex(for: workspaces)
         }
+        self.workspaceStore.didEditMetadata = { [weak self] in
+            self?.sessionPersistence?.scheduleSave()
+        }
 
         // Subscribe every session to its own surface metadata, and re-subscribe
         // whenever the roster changes, so a newly created or background tab
@@ -243,6 +247,7 @@ class BaseTerminalController: NSWindowController,
         sessionRosterCancellable = self.workspaceStore.$snapshot
             .sink { [weak self] _ in
                 self?.rebuildSessionMetadataSubscriptions()
+                self?.sessionPersistence?.scheduleSave()
                 // A tab created in the background owns a surface that is not
                 // in the presented tree, so it has to be told it is hidden
                 // even though the presented tree did not change.
@@ -1228,6 +1233,7 @@ class BaseTerminalController: NSWindowController,
             // in `commit`, so `mountGeneration` does not move for them and the
             // periodic save would otherwise never see the pane layout.
             session.bumpMetadataGeneration()
+            sessionPersistence?.scheduleSave()
 
             // A split created a pane nothing is subscribed to yet; a close
             // removed one.
@@ -2874,6 +2880,7 @@ class BaseTerminalController: NSWindowController,
     }
 
     func windowWillClose(_ notification: Notification) {
+        isWindowClosed = true
         guard let window else { return }
 
         // Unregister surfaces from the owner registry before any

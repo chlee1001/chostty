@@ -14,6 +14,23 @@ import Testing
 @Suite struct SessionPersistenceControllerTests {
     // MARK: - Fixtures
 
+    @MainActor
+    private final class ManualScheduler {
+        private var actions: [(@MainActor () -> Void)] = []
+
+        func schedule(_ delay: TimeInterval, _ action: @escaping @MainActor () -> Void) {
+            actions.append(action)
+        }
+
+        func runAll() {
+            let scheduled = actions
+            actions.removeAll()
+            scheduled.forEach { $0() }
+        }
+
+        var count: Int { actions.count }
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("chostty-persist-tests-\(UUID().uuidString)", isDirectory: true)
@@ -89,6 +106,7 @@ import Testing
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = 4242,
         isLiveInstance: @escaping (Int32) -> Bool = { _ in false },
+        scheduler: ManualScheduler? = nil,
         controllers: @escaping () -> [TerminalController]
     ) -> SessionPersistenceController {
         SessionPersistenceController(
@@ -98,8 +116,27 @@ import Testing
             ownerInstanceID: ownerInstanceID,
             ownerPID: ownerPID,
             isLiveInstance: isLiveInstance,
+            scheduleAfter: { delay, action in
+                if let scheduler {
+                    scheduler.schedule(delay, action)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+                }
+            },
             controllersProvider: controllers
         )
+    }
+
+    private func inject(
+        _ persistence: SessionPersistenceController,
+        into controller: TerminalController,
+        registry: PendingHydrationRegistry? = nil
+    ) {
+        controller.injectRestoreBindings(.init(
+            registry: registry ?? PendingHydrationRegistry(),
+            construct: nil,
+            persistence: persistence
+        ))
     }
 
     private func decode(_ repository: SessionSnapshotRepository) throws -> AppSessionSnapshot {
@@ -732,6 +769,188 @@ import Testing
             try decode(repository).windows[0].workspaces[0].tabs[0].tabColor
                 == String(TerminalTabColor.green.rawValue)
         )
+    }
+
+    // MARK: - Debounced structural saves
+
+    @Test func scheduledSavesWithinTheDebounceWindowCoalesceIntoOneWrite() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+
+        persistence.scheduleSave()
+        persistence.scheduleSave()
+        scheduler.runAll()
+        persistence.flush()
+
+        #expect(FileManager.default.fileExists(atPath: repository.primaryURL.path))
+    }
+
+    @Test func closingATabSchedulesASaveThatLandsWithoutTheTimer() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController(tabCount: 2)
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+        inject(persistence, into: controller)
+
+        let closingID = controller.workspaceStore.snapshot.workspaces[0].tabs[1].id
+        _ = controller.workspaceStore.removeTab(closingID)
+        scheduler.runAll()
+        persistence.flush()
+
+        let snapshot = try decode(repository)
+        #expect(snapshot.windows[0].workspaces[0].tabs.count == 1)
+    }
+
+    @Test func switchingTabsSchedulesASave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController(tabCount: 2)
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+        inject(persistence, into: controller)
+
+        let selectedID = controller.workspaceStore.snapshot.workspaces[0].tabs[1].id
+        controller.workspaceStore.selectTab(selectedID)
+        scheduler.runAll()
+        persistence.flush()
+
+        let saved = try decode(repository)
+        let selection = try #require(saved.windows[0].selection)
+        #expect(selection.tabID == selectedID)
+    }
+
+    @Test func renamingATabSchedulesASaveThroughTheStoreHook() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+        inject(persistence, into: controller)
+
+        let tabID = controller.workspaceStore.snapshot.selection.tabID
+        controller.workspaceStore.renameTab(tabID, to: "Renamed")
+        scheduler.runAll()
+        persistence.flush()
+
+        let titleOverride = try decode(repository).windows[0].workspaces[0].tabs[0].titleOverride
+        #expect(titleOverride == "Renamed")
+    }
+
+    @Test func splittingAPaneSchedulesASave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+        inject(persistence, into: controller)
+
+        let existing = try #require(controller.surfaceTree.root)
+        let added = try #require(makeSurface(pwd: "/added"))
+        controller.surfaceTree = SplitTree<Ghostty.SurfaceView>(
+            root: .split(.init(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: existing,
+                right: .leaf(view: added)
+            )),
+            zoomed: nil
+        )
+        scheduler.runAll()
+        persistence.flush()
+
+        #expect(paneCount(try decode(repository)) == 2)
+    }
+
+    @Test func terminalTitleOrPwdChangesNeverScheduleASave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scheduler = ManualScheduler()
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+        inject(persistence, into: controller)
+        let surface = try #require(controller.surfaceTree.first)
+
+        surface.setTitle("title")
+        surface.pwd = "/tmp/changed"
+        settleTitles()
+
+        #expect(scheduler.count == 0)
+    }
+
+    @Test func closedControllersAreExcludedFromTheDefaultProjection() throws {
+        let controller = try makeController()
+        #expect(TerminalController.all.contains { $0 === controller })
+        controller.isWindowClosed = true
+
+        #expect(!TerminalController.open.contains { $0 === controller })
+    }
+
+    @Test func terminationWritesOnceWithTheFullWindowSetAndFreezesLaterWrites() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let first = try makeController()
+        let second = try makeController()
+        var controllers = [first, second]
+        let persistence = makePersistence(directory: directory) { controllers }
+
+        persistence.beginTermination()
+        let before = try Data(contentsOf: repository.primaryURL)
+        controllers = [first]
+        first.workspaceStore.renameWorkspace(first.workspaceStore.snapshot.selection.workspaceID, to: "After")
+        persistence.scheduleSave()
+        persistence.persistNow()
+
+        let snapshot = try decode(repository)
+        let after = try Data(contentsOf: repository.primaryURL)
+        #expect(snapshot.windows.count == 2)
+        #expect(after == before)
+    }
+
+    @Test func cancelledTerminationResumesSaving() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let scheduler = ManualScheduler()
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory, scheduler: scheduler) { [controller] }
+
+        persistence.beginTermination()
+        persistence.cancelTermination()
+        controller.workspaceStore.renameWorkspace(
+            controller.workspaceStore.snapshot.selection.workspaceID,
+            to: "After"
+        )
+        scheduler.runAll()
+        persistence.flush()
+
+        let snapshot = try decode(repository)
+        #expect(snapshot.windows[0].workspaces[0].name == "After")
+    }
+
+    @Test func restoredTitlesSurviveTheTerminationSave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let controller = try makeRestoredController(
+            restoredWindow(cwd: directory.path, titles: ["restored"])
+        )
+        let persistence = makePersistence(directory: directory) { [controller] }
+
+        persistence.beginTermination()
+
+        let title = try decode(repository).windows[0].workspaces[0].tabs[0]
+            .paneTree?.leaves.first?.title
+        #expect(title == "restored")
     }
 
     // MARK: - Splits are captured even though they bypass commit

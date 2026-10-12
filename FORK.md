@@ -104,13 +104,14 @@ and no terminal contents are ever written to disk. A recorded directory that no
 longer exists is dropped rather than silently swapped for your home directory,
 matching every other tab-creating path in this fork.
 
-Saving is driven by an eight-second timer, never by terminal output: a save
-happens only when a generation counter shows something actually changed, and it
-is skipped entirely when the encoded bytes match the file already on disk, so an
-idle window writes nothing. Quitting normally writes once more, synchronously, so
-an ordinary quit loses nothing; a crash or a force quit can lose at most eight
-seconds of structural change. The file is written atomically with owner-only
-(`0600`) permissions.
+Structural changes — tabs, workspaces, names, colors, windows, and splits — are
+saved about one second later. Titles and directories reported by the shell are
+saved at most every eight seconds. A save happens only when a generation counter
+shows something actually changed, and it is skipped entirely when the encoded
+bytes match the file already on disk, so an idle window writes nothing. Quitting
+normally saves once more before closing windows; a crash or force quit can lose
+up to that interval. The file is written atomically with owner-only (`0600`)
+permissions.
 
 Saved sessions support up to 32 physical windows. If a save is refused or keeps
 failing, the workspace-actions button shows an orange warning badge and

@@ -486,6 +486,7 @@ class AppDelegate: NSObject,
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        sessionPersistence?.beginTermination()
         pendingHydration?.cancelAllHydration()
         let windows = NSApplication.shared.windows
         if windows.isEmpty { return .terminateNow }
@@ -532,9 +533,9 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronous: an ordinary quit must lose nothing. The timer interval
-        // only bounds a crash or SIGKILL, where this never runs.
-        sessionPersistence?.persistNow()
+        // Synchronous: an ordinary quit captures the live graph before any
+        // close notifications can remove controllers.
+        sessionPersistence?.beginTermination()
         sessionPersistence?.finishOwnRestoreAttempts()
 
         // We have no notifications we want to persist after death,
@@ -1779,6 +1780,7 @@ extension AppDelegate {
                 if [.OK, .alertFirstButtonReturn].contains(response) {
                     await NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
+                    await resumeAfterCancelledTermination()
                     await NSApp.reply(toApplicationShouldTerminate: false)
                 }
             }
@@ -1800,6 +1802,7 @@ extension AppDelegate {
             case .alertSecondButtonReturn:
                 return .terminateNow
             default:
+                MainActor.assumeIsolated { resumeAfterCancelledTermination() }
                 return .terminateCancel
             }
         }
@@ -1819,12 +1822,23 @@ extension AppDelegate {
                     await controller.window?.close()
                     continue
                 } else {
+                    await resumeAfterCancelledTermination()
                     await NSApp.reply(toApplicationShouldTerminate: false)
                     // Cancel the review
                     return
                 }
             }
             await NSApp.reply(toApplicationShouldTerminate: true)
+        }
+    }
+
+    @MainActor
+    func resumeAfterCancelledTermination() {
+        sessionPersistence?.cancelTermination()
+        TerminalController.open.forEach {
+            $0.scheduleWorkspaceHydration(
+                workspaceID: $0.workspaceStore.snapshot.selection.workspaceID
+            )
         }
     }
 }

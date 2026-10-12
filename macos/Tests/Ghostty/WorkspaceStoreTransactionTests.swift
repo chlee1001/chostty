@@ -522,6 +522,19 @@ struct WorkspaceStoreTransactionTests {
         #expect(TerminalTabColor.fromStored(s.tabColor) == .none)
     }
 
+    @Test func renameTabAndSetTabColorInvokeDidEditMetadataOnce() {
+        let session = makeSession()
+        let store = WorkspaceSessionStore(initialSession: session)
+        var edits = 0
+        store.didEditMetadata = { edits += 1 }
+
+        store.renameTab(session.id, to: "deploy")
+        #expect(edits == 1)
+
+        store.setTabColor(session.id, to: .red)
+        #expect(edits == 2)
+    }
+
     @Test func newWorkspaceNamesDoNotDuplicateAfterAMiddleClose() {
         let store = WorkspaceSessionStore(initialSession: makeSession())
         let wsB = store.addWorkspace(initialSession: makeSession())

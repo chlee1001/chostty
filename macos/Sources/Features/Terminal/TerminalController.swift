@@ -544,6 +544,10 @@ class TerminalController: BaseTerminalController {
         }
     }
 
+    static var open: [TerminalController] {
+        all.filter { !$0.isWindowClosed }
+    }
+
     // Keep track of the last point that our window was launched at so that new
     // windows "cascade" over each other and don't just launch directly on top
     // of each other.
@@ -1228,6 +1232,7 @@ class TerminalController: BaseTerminalController {
     override func windowWillClose(_ notification: Notification) {
         pendingHydration?.cancelHydration(owner: self)
         super.windowWillClose(notification)
+        sessionPersistence?.scheduleSave()
         cancelPendingInitialPresentation()
         filesPanelController?.teardown()
 

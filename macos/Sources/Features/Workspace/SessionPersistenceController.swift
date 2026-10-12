@@ -4,11 +4,9 @@ import OSLog
 
 /// Decides when a session snapshot is written, and writes it.
 ///
-/// The trigger is a timer, never a shell event. That is the difference against
-/// the two restoration attempts this fork removed: those re-serialized the
-/// whole graph on every title and working-directory change a shell emitted.
-/// Here the save rate has a hard ceiling of once per ``interval`` no matter how
-/// noisy the terminal is.
+/// Structural edits use a trailing debounce. The periodic timer captures
+/// terminal title and working-directory metadata without serializing every
+/// shell event.
 ///
 /// Change detection never touches `commit(_:)`. Two counters that already exist
 /// answer the question: `WorkspaceSessionStore.mountGeneration` covers
@@ -18,12 +16,13 @@ import OSLog
 /// zoom) that bypass `commit` entirely through `surfaceTree`'s `didSet`.
 ///
 /// When neither counter moved since the last successful save and the window
-/// set is unchanged, a tick does no projection at all.
+/// set is unchanged, a triggered save does no projection at all.
 @MainActor
 final class SessionPersistenceController {
     /// Target save cadence, not a durability guarantee: failed writes keep the
     /// last valid snapshot and retry on later ticks.
     static let interval: TimeInterval = 8.0
+    static let saveDebounce: TimeInterval = 1.0
     static let healthDidChange = Notification.Name("kr.co.devch.chostty.sessionPersistence.healthDidChange")
 
     enum SaveHealth: Equatable {
@@ -49,6 +48,9 @@ final class SessionPersistenceController {
     private let queue: DispatchQueue
 
     private var timer: Timer?
+    private var scheduledSaveGeneration: UInt = 0
+    private var pendingSaveGeneration: UInt?
+    private var isTerminating = false
 
     private struct SaveCursor: Equatable, Sendable {
         var mountGenerations: [UUID: UInt64] = [:]
@@ -141,7 +143,7 @@ final class SessionPersistenceController {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
         },
         uptime: @escaping () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) },
-        controllersProvider: @escaping () -> [TerminalController] = { TerminalController.all }
+        controllersProvider: @escaping () -> [TerminalController] = { TerminalController.open }
     ) {
         self.repository = repository
         self.gate = gate
@@ -301,6 +303,39 @@ final class SessionPersistenceController {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// Schedules a structural save after changes have stopped arriving.
+    func scheduleSave() {
+        guard gate.shouldPersist, !isTerminating else { return }
+        scheduledSaveGeneration &+= 1
+        let generation = scheduledSaveGeneration
+        pendingSaveGeneration = generation
+        scheduleAfter(Self.saveDebounce) { [weak self] in
+            guard let self,
+                  self.pendingSaveGeneration == generation,
+                  !self.isTerminating else { return }
+            self.pendingSaveGeneration = nil
+            _ = self.persistIfNeeded()
+        }
+    }
+
+    /// Captures the complete live window projection before close notifications
+    /// can remove any controllers, then prevents later lifecycle events from
+    /// replacing it with a partial projection.
+    func beginTermination() {
+        guard !isTerminating else { return }
+        pendingSaveGeneration = nil
+        scheduledSaveGeneration &+= 1
+        persistNow()
+        isTerminating = true
+    }
+
+    /// Reopens structural persistence after AppKit cancels termination.
+    func cancelTermination() {
+        guard isTerminating else { return }
+        isTerminating = false
+        scheduleSave()
     }
 
     /// The timer keeps running while passive: its ticks are what notice the
@@ -497,6 +532,7 @@ final class SessionPersistenceController {
     ///   skipped because the bytes matched.
     @discardableResult
     func persistIfNeeded() -> Bool {
+        guard !isTerminating else { return false }
         reconcileOwnership()
         guard canPersist else { return false }
 
@@ -520,6 +556,7 @@ final class SessionPersistenceController {
     /// Blocks until the save attempt finishes. Invalid projections and I/O
     /// failures leave the previous valid snapshot in place.
     func persistNow() {
+        guard !isTerminating else { return }
         reconcileOwnership()
         guard canPersist else { return }
         let controllers = controllersProvider()

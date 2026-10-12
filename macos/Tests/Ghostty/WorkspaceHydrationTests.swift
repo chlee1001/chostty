@@ -525,7 +525,11 @@ import Testing
 
         controller.selectSession(workspaceID: workspace.id, tabID: selected.id)
         #expect(held.isHeldBack)
-        scheduler.runNext()
+        // The selection also schedules a debounced save on the same scheduler;
+        // run due actions until the settle has fired.
+        for _ in 0..<10 where held.isHeldBack && scheduler.hasPendingAction {
+            scheduler.runNext()
+        }
         #expect(!held.isHeldBack)
     }
 
@@ -807,5 +811,31 @@ import Testing
         controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor(), persistence: persistence))
         controller.selectSession(workspaceID: workspace.id, tabID: pending.id)
         #expect(!state.hydrationFailed)
+    }
+
+    @Test func cancelledTerminationResumesTheSelectedWorkspaceDrain() throws {
+        let scheduler = ManualScheduler()
+        let registry = PendingHydrationRegistry(scheduleAfter: scheduler.schedule)
+        let selected = tab()
+        let pending = tab()
+        let workspace = workspace([selected, pending])
+        let persistence = persistence(directory: try directory(), registry: registry, scheduler: scheduler)
+        let controller = try controller(
+            workspaces: [workspace],
+            selectedWorkspace: workspace.id,
+            registry: registry,
+            persistence: persistence,
+            construct: inertConstructor()
+        )
+
+        controller.scheduleWorkspaceHydration(workspaceID: workspace.id)
+        registry.cancelAllHydration()
+        controller.scheduleWorkspaceHydration(
+            workspaceID: controller.workspaceStore.snapshot.selection.workspaceID
+        )
+        scheduler.runNext()
+
+        #expect(!registry.contains(pending.id))
+        #expect(!(try session(pending.id, in: controller).surfaceTree.isEmpty))
     }
 }

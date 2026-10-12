@@ -3313,10 +3313,11 @@ keybind: Keybinds = .{},
 /// are ever written to disk.
 ///
 /// The file lives in `~/Library/Application Support/<bundle id>/session.json`
-/// with owner-only permissions, is rewritten at most once every eight
-/// seconds and only when something actually changed, and is written once more
-/// when the app quits normally. A crash or a force quit can therefore lose at
-/// most eight seconds of structural change.
+/// with owner-only permissions. Structural changes to tabs, workspaces, names,
+/// colors, windows, and splits are saved about one second later. Titles and
+/// directories reported by the shell are saved at most every eight seconds.
+/// A normal quit saves once more before closing windows. A crash or force quit
+/// can lose up to that interval.
 ///
 /// This is unrelated to `window-save-state`, which is inherited from upstream
 /// and remains ignored on macOS.
