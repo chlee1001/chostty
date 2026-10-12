@@ -153,9 +153,9 @@ enum SessionSnapshotProjection {
         case .leaf(let leaf):
             guard let view = makeSurface(leaf) else { return nil }
             if let title = leaf.title, !title.isEmpty {
-                // `setTitle` coalesces through a 0.075s timer, so this lands
-                // shortly after hydration rather than immediately.
-                view.setTitle(title)
+                // Restored titles must be synchronous so an immediate save
+                // does not erase them. Shell titles keep `setTitle` coalescing.
+                view.restoreTitle(title)
             }
             return .leaf(view: view)
 

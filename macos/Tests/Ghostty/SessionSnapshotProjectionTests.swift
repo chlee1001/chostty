@@ -280,6 +280,18 @@ import Testing
         #expect(tree.isEmpty)
     }
 
+    @Test func restoredTitleIsReadableSynchronously() throws {
+        let title = "restored shell title"
+        let snapshot = PaneTreeSnapshot.leaf(
+            PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: title)
+        )
+
+        let tree = SessionSnapshotProjection.surfaceTree(from: snapshot, makeSurface: testFactory())
+
+        let view = try #require(tree.first)
+        #expect(view.title == title)
+    }
+
     @Test(arguments: [PaneSplitDirection.horizontal, .vertical])
     func roundTripPreservesShapeDirectionRatioAndCwd(direction: PaneSplitDirection) throws {
         let leftID = UUID()

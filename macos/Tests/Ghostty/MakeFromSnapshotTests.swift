@@ -59,12 +59,10 @@ import Testing
         )
     }
 
-    private func inertFactory() -> (PaneLeafSnapshot, WorkspaceSnapshot) -> Ghostty.SurfaceView? {
-        { leaf, _ in
+    private func inertConstructor() -> TerminalControllerGraphFactory.SurfaceConstructor {
+        { _, uuid in
             guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
-            let view = Ghostty.SurfaceView(app, baseConfig: nil, uuid: leaf.uuid, spawnsSurface: false)
-            view.pwd = leaf.cwd
-            return view
+            return Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
         }
     }
 
@@ -75,8 +73,7 @@ import Testing
         TerminalControllerGraphFactory.makeFromSnapshot(
             ghostty: TerminalControllerTestHarness.sharedApp,
             window: window,
-            registry: registry,
-            makeSurface: inertFactory()
+            bindings: .init(registry: registry, construct: inertConstructor())
         )
     }
 
@@ -274,7 +271,7 @@ import Testing
         let workspace = makeWorkspace(tabs: [makeTab()], defaultDirectory: nil)
         let config = TerminalControllerGraphFactory.surfaceConfiguration(
             forLeaf: makeLeaf(cwd: directory.path),
-            in: workspace
+            workspaceDefaultDirectory: workspace.defaultDirectory
         )
 
         #expect(config.workingDirectory == directory.path)
@@ -292,7 +289,7 @@ import Testing
         let workspace = makeWorkspace(tabs: [makeTab()], defaultDirectory: fallback.path)
         let config = TerminalControllerGraphFactory.surfaceConfiguration(
             forLeaf: makeLeaf(cwd: "/nonexistent/\(UUID().uuidString)"),
-            in: workspace
+            workspaceDefaultDirectory: workspace.defaultDirectory
         )
 
         #expect(config.workingDirectory == fallback.path)
@@ -305,7 +302,7 @@ import Testing
         )
         let config = TerminalControllerGraphFactory.surfaceConfiguration(
             forLeaf: makeLeaf(cwd: "/nonexistent/\(UUID().uuidString)"),
-            in: workspace
+            workspaceDefaultDirectory: workspace.defaultDirectory
         )
 
         #expect(config.workingDirectory == nil)
@@ -315,7 +312,7 @@ import Testing
         let workspace = makeWorkspace(tabs: [makeTab()], defaultDirectory: nil)
         let config = TerminalControllerGraphFactory.surfaceConfiguration(
             forLeaf: makeLeaf(cwd: "/nonexistent/\(UUID().uuidString)"),
-            in: workspace
+            workspaceDefaultDirectory: workspace.defaultDirectory
         )
 
         #expect(config.workingDirectory != FileManager.default.homeDirectoryForCurrentUser.path)
@@ -331,10 +328,56 @@ import Testing
         let workspace = makeWorkspace(tabs: [makeTab()], defaultDirectory: nil)
         let config = TerminalControllerGraphFactory.surfaceConfiguration(
             forLeaf: makeLeaf(cwd: file.path),
-            in: workspace
+            workspaceDefaultDirectory: workspace.defaultDirectory
         )
 
         #expect(config.workingDirectory == nil)
+    }
+
+    @Test func restoredPaneSeedsItsRecordedWorkingDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-restored-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let tab = makeTab(cwd: directory.path)
+        let workspace = makeWorkspace(tabs: [tab])
+        let graph = try #require(build(makeWindow(workspaces: [workspace]), registry: PendingHydrationRegistry()))
+
+        #expect(graph.initialSurfaceTree.first?.pwd == directory.path)
+    }
+
+    @Test func restoredPaneWithDeadDirectorySeedsTheWorkspaceDefault() throws {
+        let fallback = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-restored-default-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fallback) }
+
+        let tab = makeTab(cwd: "/nonexistent/\(UUID().uuidString)")
+        let workspace = makeWorkspace(tabs: [tab], defaultDirectory: fallback.path)
+        let graph = try #require(build(makeWindow(workspaces: [workspace]), registry: PendingHydrationRegistry()))
+
+        #expect(graph.initialSurfaceTree.first?.pwd == fallback.path)
+    }
+
+    @Test func restoredPaneWithNoLiveDirectoryStaysNil() throws {
+        let tab = makeTab(cwd: "/nonexistent/\(UUID().uuidString)")
+        let workspace = makeWorkspace(
+            tabs: [tab],
+            defaultDirectory: "/nonexistent/\(UUID().uuidString)"
+        )
+        let graph = try #require(build(makeWindow(workspaces: [workspace]), registry: PendingHydrationRegistry()))
+
+        #expect(graph.initialSurfaceTree.first?.pwd == nil)
+    }
+
+    @Test func restoredGraphCarriesItsRestoreBindings() throws {
+        let registry = PendingHydrationRegistry()
+        let workspace = makeWorkspace(tabs: [makeTab()])
+        let graph = try #require(build(makeWindow(workspaces: [workspace]), registry: registry))
+
+        #expect(graph.restoreBindings?.registry === registry)
+        #expect(graph.restoreBindings?.construct != nil)
     }
 
     // MARK: - Registry behavior

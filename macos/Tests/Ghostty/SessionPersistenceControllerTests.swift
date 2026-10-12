@@ -35,6 +35,25 @@ import Testing
         return session
     }
 
+    private func inertRestoreConstructor() -> TerminalControllerGraphFactory.SurfaceConstructor {
+        { config, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
+        }
+    }
+
+    private func makeRestoredController(_ window: WindowSnapshot) throws -> TerminalController {
+        let graph = try #require(TerminalControllerGraphFactory.makeFromSnapshot(
+            ghostty: TerminalControllerTestHarness.sharedApp,
+            window: window,
+            bindings: .init(
+                registry: PendingHydrationRegistry(),
+                construct: inertRestoreConstructor()
+            )
+        ))
+        return TerminalController(TerminalControllerTestHarness.sharedApp, graph: graph)
+    }
+
     private func makeController(
         workspaceName: String = "Workspace 1",
         tabCount: Int = 1
@@ -92,7 +111,91 @@ import Testing
             .reduce(0) { $0 + ($1.paneTree?.paneCount ?? 0) }
     }
 
+    private func restoredWindow(
+        cwd: String?,
+        titles: [String]
+    ) -> WindowSnapshot {
+        let leaves = (titles.isEmpty ? [""] : titles).map {
+            PaneLeafSnapshot(uuid: UUID(), cwd: cwd, title: $0)
+        }
+        var paneTree = PaneTreeSnapshot.leaf(leaves[0])
+        for leaf in leaves.dropFirst() {
+            paneTree = .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: paneTree,
+                right: .leaf(leaf)
+            )
+        }
+        let tab = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: nil,
+            paneTree: paneTree,
+            focusedPaneID: leaves.first?.uuid,
+            zoomedPaneID: nil
+        )
+        let workspace = WorkspaceSnapshot(
+            id: UUID(),
+            name: "Restored",
+            color: .none,
+            isCollapsed: false,
+            defaultDirectory: nil,
+            tabs: [tab],
+            selectedTabID: tab.id
+        )
+        return WindowSnapshot(
+            physicalUUID: UUID(),
+            selection: SelectionSnapshot(workspaceID: workspace.id, tabID: tab.id),
+            workspaces: [workspace]
+        )
+    }
+
     // MARK: - Write scheduling
+
+    @Test func restoredGraphSavedBeforeAnyOSC7KeepsEveryPaneCwd() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeRestoredController(restoredWindow(cwd: directory.path, titles: ["one", "two"]))
+        let repository = SessionSnapshotRepository(directory: directory)
+        let persistence = makePersistence(directory: directory) { [controller] }
+
+        persistence.persistNow()
+
+        let savedCwds = try decode(repository).windows[0].workspaces[0].tabs[0]
+            .paneTree?.leaves.map(\.cwd)
+        #expect(savedCwds == [directory.path, directory.path])
+    }
+
+    @Test func restoredTitlesSurviveAnImmediateFinalSave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeRestoredController(restoredWindow(cwd: directory.path, titles: ["first", "second"]))
+        let repository = SessionSnapshotRepository(directory: directory)
+        let persistence = makePersistence(directory: directory) { [controller] }
+
+        persistence.persistNow()
+
+        let savedTitles = try decode(repository).windows[0].workspaces[0].tabs[0]
+            .paneTree?.leaves.map(\.title)
+        #expect(savedTitles == ["first", "second"])
+    }
+
+    @Test func liveTitleUpdatesSupersedeTheRestoredTitle() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeRestoredController(restoredWindow(cwd: directory.path, titles: ["restored"]))
+        let view = try #require(controller.surfaceTree.first)
+        let repository = SessionSnapshotRepository(directory: directory)
+        let persistence = makePersistence(directory: directory) { [controller] }
+
+        view.setTitle("live")
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        persistence.persistNow()
+
+        #expect(try decode(repository).windows[0].workspaces[0].tabs[0]
+            .paneTree?.leaves.first?.title == "live")
+    }
 
     @Test func duplicateTicksWhileAWriteIsPendingAreCoalesced() throws {
         let directory = try makeTemporaryDirectory()

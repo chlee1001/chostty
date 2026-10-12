@@ -4,9 +4,9 @@ import Testing
 @testable import Ghostty
 
 /// Lazy hydration, the partial-hydration invariants, and the second-instance
-/// ownership decision. No real terminal is created: hydration builds its panes
-/// with `spawnsSurface: false` views, so the path can be asserted without
-/// accumulating PTYs in the test host.
+/// ownership decision. Every hydration path receives an injected constructor
+/// that builds `spawnsSurface: false` views, so no PTY is created in the test
+/// host.
 @MainActor
 @Suite struct LazyHydrationTests {
     // MARK: - Fixtures
@@ -15,10 +15,15 @@ import Testing
         PaneLeafSnapshot(uuid: UUID(), cwd: cwd, title: nil)
     }
 
-    private func makeTab(id: UUID = UUID(), panes: Int = 1) -> TabSnapshot {
-        var tree: PaneTreeSnapshot = .leaf(makeLeaf())
+    private func makeTab(id: UUID = UUID(), panes: Int = 1, cwd: String? = nil) -> TabSnapshot {
+        var tree: PaneTreeSnapshot = .leaf(makeLeaf(cwd: cwd))
         for _ in 1..<max(panes, 1) {
-            tree = .split(direction: .horizontal, ratio: 0.5, left: tree, right: .leaf(makeLeaf()))
+            tree = .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: tree,
+                right: .leaf(makeLeaf(cwd: cwd))
+            )
         }
         return TabSnapshot(
             id: id,
@@ -35,9 +40,17 @@ import Testing
         return Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)
     }
 
+    private func inertConstructor() -> TerminalControllerGraphFactory.SurfaceConstructor {
+        { config, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
+        }
+    }
+
     /// A controller whose second tab is pending hydration, as boot leaves it.
     private func makeControllerWithPendingTab(
-        pendingPanes: Int = 2
+        pendingPanes: Int = 2,
+        pendingCwd: String? = nil
     ) throws -> (TerminalController, PendingHydrationRegistry, TerminalSessionState) {
         let liveView = try #require(inertSurface())
         let live = TerminalSessionState(id: UUID(), surfaceTree: SplitTree(view: liveView))
@@ -58,8 +71,8 @@ import Testing
         ))
 
         let registry = PendingHydrationRegistry()
-        registry.store(makeTab(id: pendingID, panes: pendingPanes), for: pendingID)
-        controller.pendingHydrationOverride = registry
+        registry.store(makeTab(id: pendingID, panes: pendingPanes, cwd: pendingCwd), for: pendingID)
+        controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor()))
 
         return (controller, registry, pending)
     }
@@ -144,6 +157,30 @@ import Testing
         }
     }
 
+    @Test func hydratedPaneKeepsItsRecordedCwdBeforeTheShellReports() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-hydrated-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (controller, _, pending) = try makeControllerWithPendingTab(pendingCwd: directory.path)
+
+        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+
+        #expect(pending.surfaceTree.first?.pwd == directory.path)
+    }
+
+    @Test func hydrationDoesNotBlankTheSidebarPwd() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-sidebar-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (controller, _, pending) = try makeControllerWithPendingTab(pendingCwd: directory.path)
+
+        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+
+        #expect(pending.pwd == directory.path)
+    }
+
     // MARK: - Partial-hydration invariants
 
     @Test func closingAndReopeningAPendingTabKeepsItsPaneCount() throws {
@@ -184,7 +221,7 @@ import Testing
             workspaces: [workspace],
             selection: Selection(workspaceID: workspace.id, tabID: live.id)
         ))
-        controller.pendingHydrationOverride = registry
+        controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor()))
 
         controller.selectSession(workspaceID: workspace.id, tabID: newID)
 

@@ -435,7 +435,7 @@ class AppDelegate: NSObject,
             guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
                 ghostty: ghostty,
                 window: window,
-                registry: pendingHydration
+                bindings: .init(registry: pendingHydration, construct: nil)
             ) else { continue }
 
             let controller = TerminalController(ghostty, graph: graph)

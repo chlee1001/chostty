@@ -18,6 +18,13 @@ import GhosttyKit
 /// The controller receives the graph and never has to lazily bootstrap a
 /// store, surface, or session — `workspaceStore` is therefore nonoptional.
 enum TerminalControllerGraphFactory {
+    typealias SurfaceConstructor = (Ghostty.SurfaceConfiguration, UUID) -> Ghostty.SurfaceView?
+
+    struct RestoreBindings {
+        let registry: PendingHydrationRegistry
+        let construct: SurfaceConstructor?
+    }
+
     /// A fully initialized graph handed to a controller's designated
     /// initializer. Carries the live store and the references the controller
     /// must mount for its initial presentation.
@@ -33,19 +40,23 @@ enum TerminalControllerGraphFactory {
         /// Window identity to adopt, when this graph was restored from a
         /// snapshot. `nil` mints a fresh one.
         let physicalUUID: UUID?
+        /// Restoration dependencies shared with later lazy hydration.
+        let restoreBindings: RestoreBindings?
 
         init(
             store: WorkspaceSessionStore,
             initialSession: TerminalSessionState,
             initialSurfaceTree: SplitTree<Ghostty.SurfaceView>,
             focusedSurface: Ghostty.SurfaceView?,
-            physicalUUID: UUID? = nil
+            physicalUUID: UUID? = nil,
+            restoreBindings: RestoreBindings? = nil
         ) {
             self.store = store
             self.initialSession = initialSession
             self.initialSurfaceTree = initialSurfaceTree
             self.focusedSurface = focusedSurface
             self.physicalUUID = physicalUUID
+            self.restoreBindings = restoreBindings
         }
     }
 
@@ -87,7 +98,8 @@ enum TerminalControllerGraphFactory {
     /// decoded and no surface is created, so no process is spawned.
     static func makeFromWorkspaces(
         _ workspaces: [WorkspaceSession],
-        selection: Selection
+        selection: Selection,
+        restoreBindings: RestoreBindings? = nil
     ) -> InitialGraph? {
         guard !workspaces.isEmpty else { return nil }
 
@@ -111,7 +123,8 @@ enum TerminalControllerGraphFactory {
             store: store,
             initialSession: session,
             initialSurfaceTree: session.surfaceTree,
-            focusedSurface: focused
+            focusedSurface: focused,
+            restoreBindings: restoreBindings
         )
     }
     /// Rebuilds a graph from a stored snapshot.
@@ -126,8 +139,7 @@ enum TerminalControllerGraphFactory {
     static func makeFromSnapshot(
         ghostty: Ghostty.App,
         window: WindowSnapshot,
-        registry: PendingHydrationRegistry,
-        makeSurface: ((PaneLeafSnapshot, WorkspaceSnapshot) -> Ghostty.SurfaceView?)? = nil
+        bindings: RestoreBindings
     ) -> InitialGraph? {
         guard !window.workspaces.isEmpty else { return nil }
 
@@ -142,13 +154,14 @@ enum TerminalControllerGraphFactory {
             ?? selectedWorkspace.tabs.first
         guard let selectedTab else { return nil }
 
-        let factory = makeSurface ?? { leaf, workspace in
-            guard let app = ghostty.app else { return nil }
-            return Ghostty.SurfaceView(
-                app,
-                baseConfig: surfaceConfiguration(forLeaf: leaf, in: workspace),
-                uuid: leaf.uuid
-            )
+        let construct = bindings.construct ?? { config, uuid in
+            ghostty.app.map {
+                Ghostty.SurfaceView(
+                    $0,
+                    baseConfig: config,
+                    uuid: uuid
+                )
+            }
         }
 
         var liveSession: TerminalSessionState?
@@ -164,12 +177,18 @@ enum TerminalControllerGraphFactory {
                     tree = SessionSnapshotProjection.surfaceTree(
                         from: tabSnapshot.paneTree,
                         zoomedPaneID: tabSnapshot.zoomedPaneID,
-                        makeSurface: { factory($0, workspaceSnapshot) }
+                        makeSurface: {
+                            restoredSurface(
+                                forLeaf: $0,
+                                workspaceDefaultDirectory: workspaceSnapshot.defaultDirectory,
+                                construct: construct
+                            )
+                        }
                     )
                     liveTree = tree
                 } else {
                     tree = SplitTree<Ghostty.SurfaceView>()
-                    registry.store(tabSnapshot, for: tabSnapshot.id)
+                    bindings.registry.store(tabSnapshot, for: tabSnapshot.id)
                 }
 
                 // Tab identity is reused, not minted: the sidebar, AppleScript
@@ -213,7 +232,8 @@ enum TerminalControllerGraphFactory {
             initialSession: liveSession,
             initialSurfaceTree: liveTree,
             focusedSurface: focused,
-            physicalUUID: window.physicalUUID
+            physicalUUID: window.physicalUUID,
+            restoreBindings: bindings
         )
     }
 
@@ -267,11 +287,20 @@ enum TerminalControllerGraphFactory {
     }
 
     @MainActor
-    static func surfaceConfiguration(
+    static func restoredSurface(
         forLeaf leaf: PaneLeafSnapshot,
-        in workspace: WorkspaceSnapshot
-    ) -> Ghostty.SurfaceConfiguration {
-        surfaceConfiguration(forLeaf: leaf, workspaceDefaultDirectory: workspace.defaultDirectory)
+        workspaceDefaultDirectory: String?,
+        construct: SurfaceConstructor
+    ) -> Ghostty.SurfaceView? {
+        let config = surfaceConfiguration(
+            forLeaf: leaf,
+            workspaceDefaultDirectory: workspaceDefaultDirectory
+        )
+        guard let view = construct(config, leaf.uuid) else { return nil }
+        if let workingDirectory = config.workingDirectory {
+            view.pwd = workingDirectory
+        }
+        return view
     }
 
     /// Shared builder that constructs the session and committed store from a
@@ -714,12 +743,14 @@ class TerminalController: BaseTerminalController {
         detachedWorkspace workspace: WorkspaceSession,
         position: NSPoint? = nil,
         confirmUndo: Bool = false,
-        undoActionName: String = "Detach Tab"
+        undoActionName: String = "Detach Tab",
+        restoreBindings: TerminalControllerGraphFactory.RestoreBindings? = nil
     ) -> TerminalController? {
         guard let session = workspace.tabs.first,
               let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
                   [workspace],
-                  selection: Selection(workspaceID: workspace.id, tabID: session.id)
+                  selection: Selection(workspaceID: workspace.id, tabID: session.id),
+                  restoreBindings: restoreBindings
               ) else { return nil }
 
         let c = TerminalController(ghostty, graph: graph)

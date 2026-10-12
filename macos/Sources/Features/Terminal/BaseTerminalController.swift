@@ -146,8 +146,8 @@ class BaseTerminalController: NSWindowController,
     /// can be skipped when the pane set did not actually change.
     private var sessionSubscribedLeafIDs: [UUID: Set<UUID>] = [:]
 
-    /// Test seam for ``pendingHydration``.
-    var pendingHydrationOverride: PendingHydrationRegistry?
+    /// Restoration dependencies injected with the initial graph.
+    private(set) var injectedRestoreBindings: TerminalControllerGraphFactory.RestoreBindings?
 
     /// Rebuilds the per-session subscriptions when the roster changes.
     private var sessionRosterCancellable: AnyCancellable?
@@ -205,6 +205,7 @@ class BaseTerminalController: NSWindowController,
     init(_ ghostty: Ghostty.App,
          graph: TerminalControllerGraphFactory.InitialGraph
     ) {
+        self.injectedRestoreBindings = graph.restoreBindings
         self.ghostty = ghostty
         // A window restored from a snapshot keeps its recorded identity rather
         // than minting a new one: this value is the window's stable id, and
@@ -1917,7 +1918,8 @@ class BaseTerminalController: NSWindowController,
         return TerminalController.newWindow(
             ghostty,
             detachedWorkspace: destination,
-            position: screenPoint)
+            position: screenPoint,
+            restoreBindings: injectedRestoreBindings)
     }
 
     /// Receives a live virtual tab dragged in from ANOTHER window's strip or
@@ -2208,9 +2210,20 @@ class BaseTerminalController: NSWindowController,
     // MARK: - Lazy hydration
 
     /// Tabs restored from disk that have not been materialized yet.
-    /// Application-owned; tests assign ``pendingHydrationOverride``.
     var pendingHydration: PendingHydrationRegistry? {
-        pendingHydrationOverride ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
+        injectedRestoreBindings?.registry ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
+    }
+
+    var restoredSurfaceConstructor: TerminalControllerGraphFactory.SurfaceConstructor {
+        injectedRestoreBindings?.construct ?? { [weak self] config, uuid in
+            guard let app = self?.ghostty.app else { return nil }
+            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid)
+        }
+    }
+
+    /// Test seam for restoration dependencies used by lazy hydration.
+    func injectRestoreBindings(_ bindings: TerminalControllerGraphFactory.RestoreBindings?) {
+        injectedRestoreBindings = bindings
     }
 
     /// Idempotent: the registry entry is consumed either way, so a tab is only
@@ -2226,19 +2239,16 @@ class BaseTerminalController: NSWindowController,
         let defaultDirectory = workspaceStore.snapshot.workspaces
             .first { $0.tabs.contains { $0.id == session.id } }?
             .defaultDirectory
+        let construct = restoredSurfaceConstructor
 
         let tree = SessionSnapshotProjection.surfaceTree(
             from: stored.paneTree,
             zoomedPaneID: stored.zoomedPaneID
-        ) { [weak self] leaf in
-            guard let app = self?.ghostty.app else { return nil }
-            return Ghostty.SurfaceView(
-                app,
-                baseConfig: TerminalControllerGraphFactory.surfaceConfiguration(
-                    forLeaf: leaf,
-                    workspaceDefaultDirectory: defaultDirectory
-                ),
-                uuid: leaf.uuid
+        ) { leaf in
+            TerminalControllerGraphFactory.restoredSurface(
+                forLeaf: leaf,
+                workspaceDefaultDirectory: defaultDirectory,
+                construct: construct
             )
         }
 
