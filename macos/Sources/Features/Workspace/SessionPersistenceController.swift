@@ -812,8 +812,8 @@ final class SessionPersistenceController {
         switch receipt.outcome {
         case .yielded(let owner):
             retiredAcknowledged.formUnion(retire.subtracting(receipt.remainingRetireWindowIDs))
-            if enqueuedActivationEpoch == activationEpoch {
-                deferredOwners[owner.ownerInstanceID] = owner.ownerPID
+            if enqueuedActivationEpoch == activationEpoch,
+               deferredOwners.updateValue(owner.ownerPID, forKey: owner.ownerInstanceID) != owner.ownerPID {
                 Self.logger.notice(
                     "session.persist.yielded owner=\(owner.ownerInstanceID.uuidString, privacy: .public) pid=\(owner.ownerPID, privacy: .public)"
                 )

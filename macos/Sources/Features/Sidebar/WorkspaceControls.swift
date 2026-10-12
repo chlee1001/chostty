@@ -161,7 +161,6 @@ struct WorkspaceControls: View {
                 inspection: sidebarSyncInspection,
                 saveHealth: saveHealth,
                 restoreAttemptsUnavailable: restoreAttemptsUnavailable,
-                reopenableWindowCount: reopenableCount,
                 refresh: refreshSidebarSync,
                 saveCurrentState: synchronizeSidebarState
             )
@@ -226,7 +225,6 @@ private struct SidebarSyncSheet: View {
     let inspection: SessionPersistenceController.SidebarSyncInspection?
     let saveHealth: SessionPersistenceController.SaveHealth
     let restoreAttemptsUnavailable: Bool
-    let reopenableWindowCount: Int
     let refresh: () -> Void
     let saveCurrentState: () -> Void
 
@@ -366,10 +364,12 @@ private struct SidebarSyncSheet: View {
             if kind == "window" {
                 let excess = count - limit
                 let noun = excess == 1 ? "window" : "windows"
-                let savedWindows = reopenableWindowCount > 0
-                    ? " (including \(reopenableWindowCount) saved windows not open)"
-                    : ""
-                return "Too many windows are open. Close \(excess) \(noun) and try again.\(savedWindows)"
+                let unopened = inspection?.reopenableWindowCount ?? 0
+                let savedWindows = unopened == 1
+                    ? " (including 1 saved window that is not open)"
+                    : " (including \(unopened) saved windows that are not open)"
+                return "The session has \(count) windows\(unopened > 0 ? savedWindows : ""); "
+                    + "the limit is \(limit). Close \(excess) \(noun) and try again."
             }
             return "The \(kind) limit was exceeded. Reduce the session size and try again."
         case .invalidSplitRatio:

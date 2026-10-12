@@ -352,7 +352,7 @@ import Testing
         let persistence = makePersistence(directory: directory) { [controller] }
 
         view.setTitle("live")
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        settleTitles()
         persistence.persistNow()
 
         #expect(try decode(repository).windows[0].workspaces[0].tabs[0]
@@ -1852,20 +1852,19 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let repository = SessionSnapshotRepository(directory: directory)
         let closed = try makeController(workspaceName: "Closed")
+        let ownerWindow = try makeController(workspaceName: "Owner")
         let added = try makeController(workspaceName: "Added")
         settleTitles()
-        let active = InstanceState(activePIDs: [777])
+        let active = InstanceState(activePIDs: [4242])
         let clock = UptimeState(10)
         let scheduler = ManualScheduler()
-        let ownerID = UUID()
-        let ownerControllers = ControllerList([closed])
+        let ownerControllers = ControllerList([ownerWindow])
         let passiveControllers = ControllerList([closed])
         let owner = makePersistence(
             directory: directory,
-            ownerInstanceID: ownerID,
             ownerPID: 777,
             isActive: { active.contains(777) },
-            isLiveInstance: { active.contains($0) },
+            isLiveInstance: { [777, 4242].contains($0) },
             uptime: { clock.read() },
             scheduler: scheduler,
             controllers: { ownerControllers.controllers }
@@ -1873,19 +1872,28 @@ import Testing
         let passive = makePersistence(
             directory: directory,
             ownerPID: 4242,
-            isActive: { false },
-            isLiveInstance: { active.contains($0) },
+            isActive: { active.contains(4242) },
+            isLiveInstance: { [777, 4242].contains($0) },
             uptime: { clock.read() },
             scheduler: scheduler,
             controllers: { passiveControllers.controllers }
         )
 
+        passive.noteActivation()
+        passive.persistNow()
+        clock.set(20)
+        active.setActive([777])
         owner.noteActivation()
         owner.persistNow()
-        let stored = try decode(repository)
-        let didAdoptOwnership = passive.adoptOwnership(of: stored)
-        #expect(didAdoptOwnership)
-        passive.persistNow()
+        let shared = try decode(repository)
+        let sharedWindowIDs = Set(shared.windows.map(\.physicalUUID))
+        #expect(sharedWindowIDs == [ownerWindow.physicalUUID, closed.physicalUUID])
+
+        ownerControllers.controllers = []
+        owner.persistNow()
+        let afterOwnerClose = try decode(repository)
+        let afterOwnerCloseIDs = Set(afterOwnerClose.windows.map(\.physicalUUID))
+        #expect(afterOwnerCloseIDs == [closed.physicalUUID])
 
         passiveControllers.controllers = []
         passive.persistNow()
@@ -1893,13 +1901,17 @@ import Testing
         let declinedWindowIDs = Set(afterDeclinedRetire.windows.map(\.physicalUUID))
         #expect(declinedWindowIDs == [closed.physicalUUID])
 
-        ownerControllers.controllers = [closed, added]
+        ownerControllers.controllers = [added]
         owner.persistNow()
         passive.persistNow()
-
         let afterRetriedRetire = try decode(repository)
         let retriedWindowIDs = Set(afterRetriedRetire.windows.map(\.physicalUUID))
         #expect(retriedWindowIDs == [added.physicalUUID])
+
+        let settled = try Data(contentsOf: directory.appendingPathComponent(SessionSnapshotRepository.primaryFileName))
+        passive.persistNow()
+        let afterAcknowledgement = try Data(contentsOf: directory.appendingPathComponent(SessionSnapshotRepository.primaryFileName))
+        #expect(afterAcknowledgement == settled)
     }
 
     @Test func finalSaveOfAnInactiveInstanceDoesNotOverwriteAnInstanceItDeferredTo() throws {

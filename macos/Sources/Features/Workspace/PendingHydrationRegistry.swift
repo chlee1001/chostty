@@ -29,10 +29,7 @@ enum HydrationOutcome: Equatable {
 @MainActor
 final class PendingHydrationRegistry {
     private var entries: [UUID: TabSnapshot] = [:]
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
-        category: "session-persistence"
-    )
+    private static var logger: Logger { SessionPersistenceController.logger }
 
     // MARK: - Paced hydration
 
