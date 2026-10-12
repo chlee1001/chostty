@@ -88,10 +88,13 @@ enum SessionSnapshotProjection {
         )
     }
 
-    /// `pendingTabs` covers tabs that have not been hydrated yet. Their live
-    /// `surfaceTree` is empty by construction, so projecting them from the live
-    /// graph would erase their structure. Keep the stored tree and focus while
-    /// taking title and color from the live metadata edited by the sidebar.
+    /// `pendingTabs` covers tabs that have not been hydrated yet. A pending
+    /// entry preserves its stored tree and focus only while its live
+    /// `surfaceTree` is empty; a live tree always wins over a stale entry.
+    ///
+    /// Invariant: a pending tab's stored ``TabSnapshot`` is byte-equivalent in
+    /// the next written snapshot, except for the sidebar-edited
+    /// `titleOverride` and `tabColor`.
     static func workspace(
         from workspace: WorkspaceSession,
         pendingTabs: [UUID: TabSnapshot] = [:]
@@ -103,7 +106,8 @@ enum SessionSnapshotProjection {
             isCollapsed: workspace.isCollapsed,
             defaultDirectory: workspace.defaultDirectory.map(truncatedToStringLimit),
             tabs: workspace.tabs.map { session in
-                guard let pending = pendingTabs[session.id] else {
+                guard let pending = pendingTabs[session.id],
+                      session.surfaceTree.isEmpty else {
                     return tab(from: session)
                 }
                 return TabSnapshot(

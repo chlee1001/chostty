@@ -273,6 +273,39 @@ import Testing
         #expect(snapshot.tabs[1].tabColor == "2")
     }
 
+    @Test func pendingEntryIsIgnoredWhenTheLiveTreeIsNonEmpty() throws {
+        let session = TerminalSessionState(
+            id: UUID(),
+            surfaceTree: SplitTree(view: try #require(makeView(pwd: "/live")))
+        )
+        let stored = TabSnapshot(
+            id: session.id,
+            titleOverride: "stale",
+            tabColor: "1",
+            paneTree: .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-a", title: nil)),
+                right: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-b", title: nil))
+            ),
+            focusedPaneID: UUID(),
+            zoomedPaneID: UUID()
+        )
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [session],
+            selectedTabID: session.id
+        )
+
+        let snapshot = SessionSnapshotProjection.workspace(
+            from: workspace,
+            pendingTabs: [session.id: stored]
+        )
+
+        #expect(snapshot.tabs == [SessionSnapshotProjection.tab(from: session)])
+    }
+
     // MARK: - Value → live
 
     @Test func nilSnapshotRebuildsEmptyTree() {

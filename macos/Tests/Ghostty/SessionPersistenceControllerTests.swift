@@ -111,6 +111,44 @@ import Testing
             .reduce(0) { $0 + ($1.paneTree?.paneCount ?? 0) }
     }
 
+    private func tabSnapshot(_ tabID: UUID, in snapshot: AppSessionSnapshot) -> TabSnapshot? {
+        snapshot.windows
+            .flatMap(\.workspaces)
+            .flatMap(\.tabs)
+            .first { $0.id == tabID }
+    }
+
+    private func encodedTab(_ tab: TabSnapshot) throws -> Data {
+        try SessionSnapshotRepository.encoder.encode(tab)
+    }
+
+    /// A pending tab as restoration builds it: an empty tree carrying the
+    /// stored sidebar metadata.
+    private func pendingSession(restoring stored: TabSnapshot) -> TerminalSessionState {
+        let session = TerminalSessionState(id: stored.id, surfaceTree: SplitTree<Ghostty.SurfaceView>())
+        session.titleOverride = stored.titleOverride
+        session.tabColor = stored.tabColor
+        return session
+    }
+
+    private func storedPendingTab(id: UUID) -> TabSnapshot {
+        let left = PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-a", title: "left")
+        let right = PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-b", title: "right")
+        return TabSnapshot(
+            id: id,
+            titleOverride: "Stored",
+            tabColor: String(TerminalTabColor.blue.rawValue),
+            paneTree: .split(
+                direction: .vertical,
+                ratio: 0.4,
+                left: .leaf(left),
+                right: .leaf(right)
+            ),
+            focusedPaneID: right.uuid,
+            zoomedPaneID: left.uuid
+        )
+    }
+
     private func restoredWindow(
         cwd: String?,
         titles: [String]
@@ -443,12 +481,196 @@ import Testing
             try decode(repository).windows[0].workspaces[0].tabs.first { $0.id == pending.id }
         )
         #expect(saved.paneTree == stored.paneTree)
+        #expect(try encodedTab(saved) == encodedTab(stored))
         for _ in 0..<3 {
             pending.bumpMetadataGeneration()
             #expect(persistence.persistIfNeeded())
             persistence.flush()
             #expect(try Data(contentsOf: repository.primaryURL) == originalData)
         }
+    }
+
+    @Test func pendingTabIsByteIdenticalInTheNextWrittenSnapshot() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let live = try makeSession(pwd: "/live")
+        let stored = storedPendingTab(id: UUID())
+        let pending = pendingSession(restoring: stored)
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [live, pending],
+            selectedTabID: live.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [workspace],
+            selection: Selection(workspaceID: workspace.id, tabID: live.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+
+        let saved = try #require(tabSnapshot(pending.id, in: try decode(repository)))
+        #expect(try encodedTab(saved) == encodedTab(stored))
+    }
+
+    @Test func renamingAPendingTabChangesOnlyItsTitleOverride() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let live = try makeSession(pwd: "/live")
+        let stored = storedPendingTab(id: UUID())
+        let pending = pendingSession(restoring: stored)
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [live, pending],
+            selectedTabID: live.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [workspace],
+            selection: Selection(workspaceID: workspace.id, tabID: live.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        controller.workspaceStore.renameTab(pending.id, to: "Renamed")
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+
+        let expected = TabSnapshot(
+            id: stored.id,
+            titleOverride: "Renamed",
+            tabColor: stored.tabColor,
+            paneTree: stored.paneTree,
+            focusedPaneID: stored.focusedPaneID,
+            zoomedPaneID: stored.zoomedPaneID
+        )
+        let saved = try #require(tabSnapshot(pending.id, in: try decode(repository)))
+        #expect(try encodedTab(saved) == encodedTab(expected))
+    }
+
+    @Test func recoloringAPendingTabChangesOnlyItsTabColor() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let live = try makeSession(pwd: "/live")
+        let stored = storedPendingTab(id: UUID())
+        let pending = pendingSession(restoring: stored)
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [live, pending],
+            selectedTabID: live.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [workspace],
+            selection: Selection(workspaceID: workspace.id, tabID: live.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        controller.workspaceStore.setTabColor(pending.id, to: .green)
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+
+        let expected = TabSnapshot(
+            id: stored.id,
+            titleOverride: stored.titleOverride,
+            tabColor: String(TerminalTabColor.green.rawValue),
+            paneTree: stored.paneTree,
+            focusedPaneID: stored.focusedPaneID,
+            zoomedPaneID: stored.zoomedPaneID
+        )
+        let saved = try #require(tabSnapshot(pending.id, in: try decode(repository)))
+        #expect(try encodedTab(saved) == encodedTab(expected))
+    }
+
+    @Test func neverVisitedWorkspaceSurvivesRepeatedSavesByteIdentical() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let visited = try makeSession(pwd: "/visited")
+        let stored = storedPendingTab(id: UUID())
+        let pending = pendingSession(restoring: stored)
+        let visitedWorkspace = WorkspaceSession(
+            id: UUID(),
+            name: "Visited",
+            tabs: [visited],
+            selectedTabID: visited.id
+        )
+        let neverVisitedWorkspace = WorkspaceSession(
+            id: UUID(),
+            name: "Never visited",
+            tabs: [pending],
+            selectedTabID: pending.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [visitedWorkspace, neverVisitedWorkspace],
+            selection: Selection(workspaceID: visitedWorkspace.id, tabID: visited.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+        let expected = try encodedTab(stored)
+
+        for save in 1...5 {
+            controller.workspaceStore.renameWorkspace(visitedWorkspace.id, to: "Visited \(save)")
+            #expect(persistence.persistIfNeeded())
+            persistence.flush()
+            let saved = try #require(tabSnapshot(pending.id, in: try decode(repository)))
+            #expect(try encodedTab(saved) == expected)
+        }
+    }
+
+    @Test func pendingTabMovedToAnotherWorkspaceKeepsItsStoredSnapshot() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let sourceLive = try makeSession(pwd: "/source")
+        let stored = storedPendingTab(id: UUID())
+        let pending = pendingSession(restoring: stored)
+        let destinationLive = try makeSession(pwd: "/destination")
+        let sourceWorkspace = WorkspaceSession(
+            id: UUID(),
+            name: "Source",
+            tabs: [sourceLive, pending],
+            selectedTabID: sourceLive.id
+        )
+        let destinationWorkspace = WorkspaceSession(
+            id: UUID(),
+            name: "Destination",
+            tabs: [destinationLive],
+            selectedTabID: destinationLive.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [sourceWorkspace, destinationWorkspace],
+            selection: Selection(workspaceID: sourceWorkspace.id, tabID: sourceLive.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+
+        controller.workspaceStore.moveTab(
+            pending.id,
+            toWorkspace: destinationWorkspace.id,
+            at: 0
+        )
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+
+        let snapshot = try decode(repository)
+        let destination = try #require(
+            snapshot.windows[0].workspaces.first { $0.id == destinationWorkspace.id }
+        )
+        let saved = try #require(destination.tabs.first { $0.id == pending.id })
+        #expect(try encodedTab(saved) == encodedTab(stored))
     }
 
     // MARK: - Metadata changes move the counter; one write per tick

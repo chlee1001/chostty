@@ -437,6 +437,16 @@ final class SessionPersistenceController {
     /// to the background queue.
     func snapshot(from controllers: [TerminalController]) -> AppSessionSnapshot {
         let pending = registry.allPending
+        for controller in controllers {
+            for workspace in controller.workspaceStore.snapshot.workspaces {
+                for session in workspace.tabs
+                where session.surfaceTree.isEmpty && pending[session.id] == nil {
+                    // Observation only: test fixtures can deliberately create
+                    // this state even though normal restoration should not.
+                    Self.logger.warning("session.persist.emptyLiveTab tab=\(session.id, privacy: .public)")
+                }
+            }
+        }
         let windows = controllers
             .map { controller -> WindowSnapshot in
                 let store = controller.workspaceStore
