@@ -87,34 +87,6 @@ import Testing
         #expect(SessionPersistenceGate.killSwitchVariable.hasPrefix("GHOSTTY_"))
     }
 
-    // MARK: - Crash-loop marker
-
-    @Test func markerRoundTripsWhenTheGateIsOpen() throws {
-        let defaults = try #require(UserDefaults(suiteName: "chostty.gate.tests.\(UUID().uuidString)"))
-        defer { defaults.removePersistentDomain(forName: defaults.description) }
-        let gate = gate()
-
-        #expect(!gate.crashLoopMarkerIsSet(defaults: defaults))
-        gate.setCrashLoopMarker(true, defaults: defaults)
-        #expect(gate.crashLoopMarkerIsSet(defaults: defaults))
-        gate.setCrashLoopMarker(false, defaults: defaults)
-        #expect(!gate.crashLoopMarkerIsSet(defaults: defaults))
-    }
-
-    /// A gated process must not create the key, or every test run leaves
-    /// persistence bookkeeping in the shared defaults.
-    @Test func closedGateNeverCreatesTheMarkerKey() throws {
-        let suiteName = "chostty.gate.tests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let closed = gate(environment: ["XCTestConfigurationFilePath": "/x"])
-        closed.setCrashLoopMarker(true, defaults: defaults)
-
-        #expect(defaults.object(forKey: SessionPersistenceGate.crashLoopMarkerKey) == nil)
-        #expect(!closed.crashLoopMarkerIsSet(defaults: defaults))
-    }
-
     /// This process is an XCTest host, so the process-backed default must be
     /// closed. The injected cases above prove it is not simply `false`.
     @Test func processDefaultsAreClosedInsideTheTestHost() {

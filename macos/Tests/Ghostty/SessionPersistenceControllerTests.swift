@@ -159,6 +159,7 @@ import Testing
         queue: DispatchQueue = DispatchQueue(label: "chostty-tests.persistence"),
         isActive: @escaping () -> Bool = { true },
         isLiveInstance: @escaping @Sendable (Int32) -> Bool = { _ in false },
+        otherInstanceRunning: @escaping () -> Bool = { false },
         uptime: @escaping @Sendable () -> UInt64 = { 100 },
         scheduler: ManualScheduler? = nil,
         controllers: @escaping () -> [TerminalController]
@@ -172,6 +173,7 @@ import Testing
             queue: queue,
             isActive: isActive,
             isLiveInstance: isLiveInstance,
+            otherInstanceRunning: otherInstanceRunning,
             scheduleAfter: { delay, action in
                 if let scheduler {
                     scheduler.schedule(delay, action)
@@ -199,6 +201,23 @@ import Testing
     private func decode(_ repository: SessionSnapshotRepository) throws -> AppSessionSnapshot {
         let data = try Data(contentsOf: repository.primaryURL)
         return try JSONDecoder().decode(AppSessionSnapshot.self, from: data)
+    }
+
+    private func save(
+        _ snapshot: AppSessionSnapshot,
+        to repository: SessionSnapshotRepository
+    ) throws {
+        let policy = SessionSnapshotRepository.SavePolicy(
+            claimEpoch: nil,
+            selfInstanceID: snapshot.ownerInstanceID,
+            selfPID: snapshot.ownerPID,
+            deferredOwnerIDs: [],
+            isLiveInstance: { _ in false },
+            now: { 100 },
+            retire: [],
+            preserveStoredWindowsExcept: nil
+        )
+        _ = try repository.save(snapshot, policy: policy)
     }
 
     private func modificationDate(_ url: URL) throws -> Date {
@@ -1233,9 +1252,12 @@ import Testing
         let original = try Data(contentsOf: repository.primaryURL)
         #expect(!persistence.persistIfNeeded())
 
+        // With no unopened windows the empty projection is offered once and
+        // the repository leaves the last snapshot in place.
         controllers = []
-        #expect(!persistence.persistIfNeeded())
+        #expect(persistence.persistIfNeeded())
         persistence.flush()
+        #expect(!persistence.persistIfNeeded())
         #expect(try Data(contentsOf: repository.primaryURL) == original)
 
         persistence.persistNow()
@@ -1933,5 +1955,345 @@ import Testing
         #expect(snapshot.windows.count == 2)
         #expect(allTabIDs.filter { $0 == moving.id }.count == 1)
         #expect(allTabIDs.count == 2)
+    }
+
+    // MARK: - Dormant windows
+
+    @Test func bootDecisionAppliesEveryWindowOnAnOrdinaryLaunch() {
+        let windows = [
+            restoredWindow(cwd: "/tmp", titles: ["one"]),
+            restoredWindow(cwd: "/tmp", titles: ["two"]),
+        ]
+        let decision = SessionPersistenceController.bootDecision(
+            windows: windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: false,
+            hasOpenWindow: false,
+            initialWindow: true
+        )
+        #expect(decision.apply == windows)
+        #expect(decision.keepDormant.isEmpty)
+        #expect(decision.reason == nil)
+    }
+
+    @Test func bootDecisionKeepsEveryWindowDormantWhenAWindowIsAlreadyOpen() {
+        let windows = [restoredWindow(cwd: "/tmp", titles: ["one"])]
+        let decision = SessionPersistenceController.bootDecision(
+            windows: windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: false,
+            hasOpenWindow: true,
+            initialWindow: true
+        )
+        #expect(decision.apply.isEmpty)
+        #expect(decision.keepDormant == windows)
+        #expect(decision.reason == .windowAlreadyOpen)
+    }
+
+    @Test func bootDecisionKeepsEveryWindowDormantWhenInitialWindowIsOff() {
+        let windows = [restoredWindow(cwd: "/tmp", titles: ["one"])]
+        let decision = SessionPersistenceController.bootDecision(
+            windows: windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: false,
+            hasOpenWindow: false,
+            initialWindow: false
+        )
+        #expect(decision.keepDormant == windows)
+        #expect(decision.reason == .initialWindowDisabled)
+    }
+
+    @Test func bootDecisionKeepsEveryWindowDormantForAnExplicitOpenIntent() {
+        let windows = [restoredWindow(cwd: "/tmp", titles: ["one"])]
+        let decision = SessionPersistenceController.bootDecision(
+            windows: windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: false,
+            anotherInstanceRunning: false,
+            hasOpenWindow: false,
+            initialWindow: true
+        )
+        #expect(decision.keepDormant == windows)
+        #expect(decision.reason == .explicitOpenIntent)
+    }
+
+    @Test func bootDecisionKeepsEveryWindowDormantWhileAnotherInstanceRuns() {
+        let windows = [restoredWindow(cwd: "/tmp", titles: ["one"])]
+        let decision = SessionPersistenceController.bootDecision(
+            windows: windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: true,
+            hasOpenWindow: false,
+            initialWindow: true
+        )
+        #expect(decision.keepDormant == windows)
+        #expect(decision.reason == .anotherInstanceRunning)
+    }
+
+    @Test func bootDecisionNeverAppliesAQuarantinedWindow() {
+        let healthy = restoredWindow(cwd: "/tmp", titles: ["healthy"])
+        let quarantined = restoredWindow(cwd: "/tmp", titles: ["quarantined"])
+        let decision = SessionPersistenceController.bootDecision(
+            windows: [healthy, quarantined],
+            quarantinedWindows: [quarantined.physicalUUID],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: false,
+            hasOpenWindow: false,
+            initialWindow: true
+        )
+        #expect(decision.apply == [healthy])
+        #expect(decision.keepDormant == [quarantined])
+        #expect(decision.reason == .quarantined)
+    }
+
+    @Test func fileFirstLaunchKeepsTheStoredWindowsByteIdenticalNextToTheNewWindow() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let storedBytes = try SessionSnapshotRepository.encoder.encode(stored)
+        let new = try makeController(workspaceName: "New")
+        let persistence = makePersistence(directory: directory) { [new] }
+
+        persistence.persistNow()
+
+        let saved = try decode(repository)
+        let retained = try #require(saved.windows.first { $0.physicalUUID == stored.physicalUUID })
+        let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
+        #expect(retainedBytes == storedBytes)
+        #expect(saved.windows.count == 2)
+    }
+
+    @Test func unopenedWindowsSurviveRepeatedSavesByteIdentical() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let storedBytes = try SessionSnapshotRepository.encoder.encode(stored)
+        let live = try makeController(workspaceName: "Live")
+        let persistence = makePersistence(directory: directory) { [live] }
+
+        persistence.persistNow()
+        persistence.persistNow()
+
+        let saved = try decode(repository)
+        let retained = try #require(saved.windows.first {
+            $0.physicalUUID == stored.physicalUUID
+        })
+        let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
+        #expect(retainedBytes == storedBytes)
+    }
+
+    @Test func closingAPromotedWindowRemovesItFromTheFile() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let promoted = restoredWindow(cwd: directory.path, titles: ["promoted"])
+        let unopened = restoredWindow(cwd: directory.path, titles: ["unopened"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [promoted, unopened]), to: repository)
+        let controller = try makeRestoredController(promoted)
+        let controllers = ControllerList([controller])
+        let persistence = makePersistence(directory: directory, controllers: { controllers.controllers })
+        _ = persistence.adoptStoredSession(liveWindowIDs: [])
+        persistence.claimDormant(promoted.physicalUUID)
+        persistence.persistNow()
+        controllers.controllers = []
+
+        persistence.persistNow()
+
+        let saved = try decode(repository)
+        #expect(saved.windows == [unopened])
+    }
+
+    @Test func closingTheLastLiveWindowLeavesOnlyTheUnopenedWindows() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let promoted = restoredWindow(cwd: directory.path, titles: ["promoted"])
+        let unopened = restoredWindow(cwd: directory.path, titles: ["unopened"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [promoted, unopened]), to: repository)
+        let controller = try makeRestoredController(promoted)
+        let controllers = ControllerList([controller])
+        let persistence = makePersistence(directory: directory, controllers: { controllers.controllers })
+        _ = persistence.adoptStoredSession(liveWindowIDs: [])
+        persistence.claimDormant(promoted.physicalUUID)
+        controllers.controllers = []
+
+        persistence.persistNow()
+
+        let saved = try decode(repository)
+        #expect(saved.windows == [unopened])
+    }
+
+    @Test func closingTheLastLiveWindowWithNothingUnopenedKeepsTheLastSnapshot() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["only"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let controller = try makeRestoredController(stored)
+        let controllers = ControllerList([controller])
+        let persistence = makePersistence(directory: directory, controllers: { controllers.controllers })
+        _ = persistence.adoptStoredSession(liveWindowIDs: [])
+        persistence.claimDormant(stored.physicalUUID)
+        persistence.persistNow()
+        let beforeClose = try Data(contentsOf: repository.primaryURL)
+        controllers.controllers = []
+
+        persistence.persistNow()
+
+        let afterClose = try Data(contentsOf: repository.primaryURL)
+        #expect(afterClose == beforeClose)
+    }
+
+    @Test func aWriterNeverReplacesAWindowItNeverHadLiveWithAnOlderCopy() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try makeController(workspaceName: "First")
+        let second = try makeController(workspaceName: "Second")
+        let a = makePersistence(directory: directory, controllers: { [first] })
+        let b = makePersistence(directory: directory, controllers: { [second] })
+        a.persistNow()
+        b.persistNow()
+        let afterSecondWriter = try decode(SessionSnapshotRepository(directory: directory))
+        let secondWindow = try #require(afterSecondWriter.windows.first {
+            $0.physicalUUID == second.physicalUUID
+        })
+        let secondBytes = try SessionSnapshotRepository.encoder.encode(secondWindow)
+
+        a.persistNow()
+
+        let saved = try decode(SessionSnapshotRepository(directory: directory))
+        let retained = try #require(saved.windows.first { $0.physicalUUID == second.physicalUUID })
+        let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
+        #expect(retainedBytes == secondBytes)
+    }
+
+    @Test func detachedTabWithAUniqueSiblingSurvivesAConflictingWriter() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try makeController(tabCount: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let sibling = try #require(source.workspaceStore.allSessions.first { $0.id != moving.id })
+        let detached = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let writerA = makePersistence(directory: directory) { [source, detached] }
+        writerA.persistNow()
+        let stale = try makeController(tabCount: 1, paneUUID: moving.surfaceTree.first?.id)
+        let writerB = makePersistence(directory: directory) { [stale] }
+
+        writerB.persistNow()
+
+        let restarted = SessionSnapshotRepository(directory: directory)
+        let load = restarted.load()
+        let saved: AppSessionSnapshot?
+        if case .loaded(let snapshot, _) = load {
+            saved = snapshot
+        } else {
+            saved = nil
+        }
+        let snapshot = try #require(saved)
+        #expect(snapshot.windows.contains { $0.physicalUUID == detached.physicalUUID })
+        #expect(snapshot.windows.flatMap(\.workspaces).flatMap(\.tabs).contains { $0.id == moving.id })
+        #expect(snapshot.windows.flatMap(\.workspaces).flatMap(\.tabs).contains { $0.id == sibling.id })
+    }
+
+    @Test func inspectionCountsPreservedWindowsAsSynchronized() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let live = try makeController(workspaceName: "Live")
+        let persistence = makePersistence(directory: directory) { [live] }
+        persistence.persistNow()
+
+        let inspection = persistence.sidebarSyncInspection()
+        #expect(inspection.status == .synchronized)
+        #expect(inspection.current?.windows.count == 2)
+        #expect(inspection.reopenableWindowCount == 1)
+    }
+
+    @Test func adoptingAStoredSessionRecordsDormantWindowsWithoutBuildingAnything() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let persistence = makePersistence(directory: directory) { [] }
+
+        let adopted = persistence.adoptStoredSession(liveWindowIDs: [])
+
+        #expect(adopted?.snapshot.windows == [stored])
+        #expect(persistence.dormantWindowIDs == [stored.physicalUUID])
+        #expect(persistence.claimedWindowIDs.isEmpty)
+    }
+
+    @Test func reopenIsNotOfferedWhileAnotherInstanceRuns() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let persistence = makePersistence(
+            directory: directory,
+            otherInstanceRunning: { true },
+            controllers: { [] }
+        )
+        _ = persistence.adoptStoredSession(liveWindowIDs: [])
+
+        #expect(persistence.reopenableWindowIDs.isEmpty)
+        #expect(persistence.dockReopenCandidateIDs.isEmpty)
+    }
+
+    @Test func aSecondInstanceNeverAppliesWindowsOwnedByALiveInstance() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let persistence = makePersistence(
+            directory: directory,
+            otherInstanceRunning: { true },
+            controllers: { [] }
+        )
+        let adopted = try #require(persistence.adoptStoredSession(liveWindowIDs: []))
+
+        let decision = SessionPersistenceController.bootDecision(
+            windows: adopted.snapshot.windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: true,
+            anotherInstanceRunning: true,
+            hasOpenWindow: false,
+            initialWindow: true
+        )
+        #expect(decision.apply.isEmpty)
+        #expect(decision.keepDormant == [stored])
+    }
+
+    @Test func dormantListRefreshesWhenAnotherInstanceQuits() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        var otherInstanceRunning = true
+        let persistence = makePersistence(
+            directory: directory,
+            otherInstanceRunning: { otherInstanceRunning },
+            controllers: { [] }
+        )
+        _ = persistence.adoptStoredSession(liveWindowIDs: [])
+        #expect(persistence.reopenableWindowIDs.isEmpty)
+
+        otherInstanceRunning = false
+        persistence.refreshDormantWindows()
+
+        #expect(persistence.reopenableWindowIDs == [stored.physicalUUID])
     }
 }

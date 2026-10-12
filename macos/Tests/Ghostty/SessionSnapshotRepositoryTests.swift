@@ -74,7 +74,8 @@ import Testing
         claimEpoch: UInt64? = nil,
         live: @escaping @Sendable (Int32) -> Bool = { _ in false },
         now: @escaping @Sendable () -> UInt64 = { 100 },
-        retire: Set<UUID> = []
+        retire: Set<UUID> = [],
+        preserveStoredWindowsExcept: Set<UUID>? = nil
     ) -> SessionSnapshotRepository.SavePolicy {
         .init(
             claimEpoch: claimEpoch,
@@ -83,7 +84,8 @@ import Testing
             deferredOwnerIDs: [],
             isLiveInstance: live,
             now: now,
-            retire: retire
+            retire: retire,
+            preserveStoredWindowsExcept: preserveStoredWindowsExcept
         )
     }
 
@@ -184,6 +186,302 @@ import Testing
         #expect(loaded.windows.count == 1)
     }
 
+    @Test func preservedStoredWindowIsByteIdenticalAfterAMergedSave() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = makeSnapshot()
+        let storedWindow = try #require(stored.windows.first)
+        let storedBytes = try SessionSnapshotRepository.encoder.encode(storedWindow)
+        let live = makeSnapshot()
+        let policy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: []
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let receipt = try repository.save(live, policy: policy)
+        #expect(receipt.outcome == .written)
+        #expect(receipt.preservedWindowIDs == [storedWindow.physicalUUID])
+
+        guard case .loaded(let merged, _) = repository.load(),
+              let preserved = merged.windows.first(where: {
+                  $0.physicalUUID == storedWindow.physicalUUID
+              }) else {
+            Issue.record("expected the stored window to be preserved")
+            return
+        }
+        let preservedBytes = try SessionSnapshotRepository.encoder.encode(preserved)
+        #expect(preservedBytes == storedBytes)
+    }
+
+    @Test func excludedWindowsAreNotCopiedFromTheFile() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let excluded = try #require(makeSnapshot().windows.first)
+        let preserved = try #require(makeSnapshot().windows.first)
+        let stored = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 1,
+            windows: [excluded, preserved]
+        )
+        let live = makeSnapshot()
+        let policy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: [excluded.physicalUUID]
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let receipt = try repository.save(live, policy: policy)
+        #expect(receipt.outcome == .written)
+        #expect(receipt.preservedWindowIDs == [preserved.physicalUUID])
+
+        guard case .loaded(let merged, _) = repository.load() else {
+            Issue.record("expected the merged snapshot to load")
+            return
+        }
+        let windowIDs = Set(merged.windows.map(\.physicalUUID))
+        let expectedWindowIDs: Set<UUID> = [
+            live.windows[0].physicalUUID,
+            preserved.physicalUUID,
+        ]
+        #expect(windowIDs == expectedWindowIDs)
+    }
+
+    @Test func aStoredWindowSharingAnIdentifierIsRekeyedNotDropped() throws {
+        let sharedWorkspaceID = UUID()
+        let sharedTabID = UUID()
+        let sharedPaneID = UUID()
+        let storedTab = TabSnapshot(
+            id: sharedTabID,
+            titleOverride: "stored tab",
+            tabColor: "blue",
+            paneTree: .leaf(PaneLeafSnapshot(
+                uuid: sharedPaneID,
+                cwd: "/stored",
+                title: "stored pane"
+            )),
+            focusedPaneID: sharedPaneID,
+            zoomedPaneID: sharedPaneID
+        )
+        let storedWorkspace = WorkspaceSnapshot(
+            id: sharedWorkspaceID,
+            name: "stored workspace",
+            color: .red,
+            isCollapsed: true,
+            defaultDirectory: "/stored",
+            tabs: [storedTab],
+            selectedTabID: sharedTabID
+        )
+        let storedWindow = WindowSnapshot(
+            physicalUUID: UUID(),
+            selection: SelectionSnapshot(workspaceID: sharedWorkspaceID, tabID: sharedTabID),
+            workspaces: [storedWorkspace]
+        )
+        let stored = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 1,
+            windows: [storedWindow]
+        )
+        let liveTab = TabSnapshot(
+            id: sharedTabID,
+            titleOverride: "live tab",
+            tabColor: nil,
+            paneTree: .leaf(PaneLeafSnapshot(uuid: sharedPaneID, cwd: "/live", title: "live pane")),
+            focusedPaneID: sharedPaneID,
+            zoomedPaneID: nil
+        )
+        let liveWorkspace = WorkspaceSnapshot(
+            id: sharedWorkspaceID,
+            name: "live workspace",
+            color: .none,
+            isCollapsed: false,
+            defaultDirectory: nil,
+            tabs: [liveTab],
+            selectedTabID: sharedTabID
+        )
+        let live = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 2,
+            windows: [WindowSnapshot(
+                physicalUUID: UUID(),
+                selection: SelectionSnapshot(workspaceID: sharedWorkspaceID, tabID: sharedTabID),
+                workspaces: [liveWorkspace]
+            )]
+        )
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let mergePolicy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: []
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let receipt = try repository.save(live, policy: mergePolicy)
+        #expect(receipt.outcome == .written)
+        #expect(receipt.preservedWindowIDs.count == 1)
+
+        guard case .loaded(let merged, _) = repository.load(),
+              let preserved = merged.windows.first(where: {
+                  $0.physicalUUID == storedWindow.physicalUUID
+              }),
+              let selection = preserved.selection,
+              let workspace = preserved.workspaces.first,
+              let tab = workspace.tabs.first,
+              let leaf = tab.paneTree?.leaves.first else {
+            Issue.record("expected the rekeyed stored window to load")
+            return
+        }
+        #expect(workspace.name == "stored workspace")
+        #expect(workspace.isCollapsed)
+        #expect(workspace.defaultDirectory == "/stored")
+        #expect(tab.titleOverride == "stored tab")
+        #expect(tab.tabColor == "blue")
+        #expect(leaf.cwd == "/stored")
+        #expect(leaf.title == "stored pane")
+        #expect(workspace.id != sharedWorkspaceID)
+        #expect(tab.id != sharedTabID)
+        #expect(leaf.uuid != sharedPaneID)
+        #expect(selection.workspaceID == workspace.id)
+        #expect(selection.tabID == tab.id)
+        #expect(workspace.selectedTabID == tab.id)
+        #expect(tab.focusedPaneID == leaf.uuid)
+        #expect(tab.zoomedPaneID == leaf.uuid)
+
+        let physicalRekey = SessionSnapshotRepository.rekeyed(
+            storedWindow,
+            conflicting: [storedWindow.physicalUUID]
+        )
+        #expect(physicalRekey.physicalUUID != storedWindow.physicalUUID)
+    }
+
+    @Test func rekeyedWindowIsByteStableOnTheNextSave() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = makeSnapshot()
+        let storedWindow = try #require(stored.windows.first)
+        let live = makeSnapshot(workspaces: storedWindow.workspaces)
+        let mergePolicy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: []
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let mergedReceipt = try repository.save(live, policy: mergePolicy)
+        #expect(mergedReceipt.outcome == .written)
+        let firstBytes = try Data(contentsOf: repository.primaryURL)
+
+        let secondReceipt = try repository.save(live, policy: mergePolicy)
+        let secondBytes = try Data(contentsOf: repository.primaryURL)
+        #expect(secondReceipt.outcome == .skippedIdentical)
+        #expect(secondBytes == firstBytes)
+    }
+
+    @Test func preservedWindowsCountAgainstTheWindowLimit() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = AppSessionSnapshot(
+            ownerInstanceID: UUID(),
+            ownerPID: 1,
+            windows: (0..<SessionSnapshotValidator.Limits.windows).map { _ in
+                makeSnapshot().windows[0]
+            }
+        )
+        let live = makeSnapshot()
+        let mergePolicy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: []
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let original = try Data(contentsOf: repository.primaryURL)
+        let receipt = try repository.save(live, policy: mergePolicy)
+        #expect(receipt.outcome == .refusedInvalid(.limitExceeded(
+            kind: "window",
+            count: SessionSnapshotValidator.Limits.windows + 1,
+            limit: SessionSnapshotValidator.Limits.windows
+        )))
+        let current = try Data(contentsOf: repository.primaryURL)
+        #expect(current == original)
+    }
+
+    @Test func mergeFallsBackToTheBackupWhenThePrimaryIsUnusable() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = makeSnapshot()
+        let storedWindow = try #require(stored.windows.first)
+        let live = makeSnapshot()
+        let mergePolicy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: []
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try SessionSnapshotRepository.encoder.encode(stored).write(to: repository.backupURL)
+        try Data("{ not json".utf8).write(to: repository.primaryURL)
+
+        let receipt = try repository.save(live, policy: mergePolicy)
+        #expect(receipt.outcome == .written)
+        guard case .loaded(let merged, let source) = repository.load() else {
+            Issue.record("expected the merged primary snapshot to load")
+            return
+        }
+        #expect(source == .primary)
+        let windowIDs = Set(merged.windows.map(\.physicalUUID))
+        let expectedWindowIDs: Set<UUID> = [
+            live.windows[0].physicalUUID,
+            storedWindow.physicalUUID,
+        ]
+        #expect(windowIDs == expectedWindowIDs)
+    }
+
+    @Test func withoutAMergePolicyOnlyTheLiveSnapshotIsWritten() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = makeSnapshot()
+        let live = makeSnapshot()
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let receipt = try repository.save(live, policy: defaultWritePolicy)
+        #expect(receipt.outcome == .written)
+        guard case .loaded(let loaded, _) = repository.load() else {
+            Issue.record("expected the live snapshot to load")
+            return
+        }
+        #expect(loaded.windows == live.windows)
+    }
+
+    @Test func anEmptyMergeWritesNothingAndIsNotARefusal() throws {
+        let directory = try makeTemporaryDirectory()
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = makeSnapshot()
+        let storedWindow = try #require(stored.windows.first)
+        let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 2, windows: [])
+        let mergePolicy = policy(
+            instanceID: UUID(),
+            pid: 4242,
+            preserveStoredWindowsExcept: [storedWindow.physicalUUID]
+        )
+
+        let firstReceipt = try repository.save(stored, policy: defaultWritePolicy)
+        #expect(firstReceipt.outcome == .written)
+        let original = try Data(contentsOf: repository.primaryURL)
+        let receipt = try repository.save(empty, policy: mergePolicy)
+        #expect(receipt.outcome == .nothingToWrite)
+        let current = try Data(contentsOf: repository.primaryURL)
+        #expect(current == original)
+    }
+
     // MARK: - Loading and fallback
 
     @Test func emptySavePreservesValidPrimaryBytes() throws {
@@ -195,7 +493,7 @@ import Testing
         let original = try Data(contentsOf: repository.primaryURL)
 
         let empty = AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 1, windows: [])
-        #expect(try repository.save(empty, policy: defaultWritePolicy).outcome == .refusedInvalid(.noWindows))
+        #expect(try repository.save(empty, policy: defaultWritePolicy).outcome == .nothingToWrite)
         #expect(try Data(contentsOf: repository.primaryURL) == original)
         #expect(repository.load() == .loaded(good, source: .primary))
     }

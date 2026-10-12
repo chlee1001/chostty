@@ -17,10 +17,6 @@ import Foundation
 struct SessionPersistenceGate: Sendable {
     static let killSwitchVariable = "GHOSTTY_MAC_DISABLE_SESSION_RESTORE"
 
-    /// Records that a boot began applying a snapshot. Only touched while the
-    /// gate is open, so a gated process never creates the key.
-    static let crashLoopMarkerKey = "chostty.sessionRestoreInProgress"
-
     private let environment: [String: String]
     private let arguments: [String]
     private let configEnabled: Bool
@@ -52,22 +48,4 @@ struct SessionPersistenceGate: Sendable {
         arguments.contains { !$0.hasPrefix("-psn_") }
     }
 
-    // MARK: - Crash-loop marker
-
-    /// Whether the previous launch died while applying a snapshot.
-    func crashLoopMarkerIsSet(defaults: UserDefaults = .ghostty) -> Bool {
-        guard isEnabled else { return false }
-        return defaults.bool(forKey: Self.crashLoopMarkerKey)
-    }
-
-    /// A no-op when the gate is closed, which keeps a test host from writing
-    /// the key into the shared defaults.
-    func setCrashLoopMarker(_ value: Bool, defaults: UserDefaults = .ghostty) {
-        guard isEnabled else { return }
-        if value {
-            defaults.set(true, forKey: Self.crashLoopMarkerKey)
-        } else {
-            defaults.removeObject(forKey: Self.crashLoopMarkerKey)
-        }
-    }
 }

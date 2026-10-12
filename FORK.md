@@ -147,7 +147,13 @@ If Chostty cannot record restore attempts, the warning badge and **Check Sidebar
 Sync…** report that restore protection is unavailable. Saved windows and tabs
 then open only when you select them.
 
-Set `macos-session-persistence = false` to turn all of this off, or export
+File- and URL-first launches, and `initial-window = false`, keep saved windows
+unopened in the session file. Open them with **Reopen Saved Windows** or by
+clicking the Dock when no window is open. Windows and tabs whose restore crashed
+stay held back until opened explicitly. A new instance does not restore saved
+windows while another instance is running.
+
+Set `macos-session-persistence = false` to turn persistence off, or export
 `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also
 disables itself for test hosts and for launches that carry an explicit open
 intent (`ghostty -e …`, `open --args`).

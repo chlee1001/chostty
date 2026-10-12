@@ -88,6 +88,8 @@ struct WorkspaceControls: View {
     @State private var showingSidebarSync = false
     @State private var saveHealth: SessionPersistenceController.SaveHealth = .healthy
     @State private var restoreAttemptsUnavailable = false
+    @State private var reopenableCount = 0
+    @State private var heldBackCount = 0
 
     private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
         SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
@@ -106,6 +108,15 @@ struct WorkspaceControls: View {
                 FilesPanelToggleButton(controller: filesPanelController)
             }
 
+            if reopenableCount > 0 {
+                Button(action: reopenSavedWindows) {
+                    Image(systemName: "macwindow.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .help("\(reopenableCount) saved windows are not open. Click to reopen them.")
+                .accessibilityLabel("Reopen Saved Windows")
+            }
+
             Menu {
                 WorkspaceActionsMenuItems(
                     store: store,
@@ -119,6 +130,9 @@ struct WorkspaceControls: View {
                         singleWorkspacePolicyRaw = singleWorkspacePolicy.toggled.rawValue
                     })
                 Divider()
+                if reopenableCount > 0 {
+                    Button("Reopen Saved Windows (\(reopenableCount))", action: reopenSavedWindows)
+                }
                 Button("Check Sidebar Sync…") {
                     refreshSidebarSync()
                     showingSidebarSync = true
@@ -159,6 +173,12 @@ struct WorkspaceControls: View {
                   source === persistence else { return }
             refreshPersistenceHealth()
         }
+        .onReceive(NotificationCenter.default.publisher(for: SessionPersistenceController.dormantWindowsDidChange)) { notification in
+            guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence,
+                  let source = notification.object as? SessionPersistenceController,
+                  source === persistence else { return }
+            refreshDormantWindowCounts()
+        }
     }
 
     private var accessibilityValue: String {
@@ -168,9 +188,24 @@ struct WorkspaceControls: View {
     }
 
     private func refreshPersistenceHealth() {
-        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else { return }
+        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
+            reopenableCount = 0
+            heldBackCount = 0
+            return
+        }
         saveHealth = persistence.saveHealth
         restoreAttemptsUnavailable = persistence.restoreAttemptsUnavailable
+        refreshDormantWindowCounts()
+    }
+
+    private func refreshDormantWindowCounts() {
+        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
+            reopenableCount = 0
+            heldBackCount = 0
+            return
+        }
+        reopenableCount = persistence.reopenableWindowIDs.count
+        heldBackCount = persistence.restoreQuarantine().windows.count
     }
 
     private func refreshSidebarSync() {
@@ -183,6 +218,10 @@ struct WorkspaceControls: View {
         sidebarSyncInspection = (NSApp.delegate as? AppDelegate)?
             .sessionPersistence?
             .synchronizeSidebarState()
+    }
+
+    private func reopenSavedWindows() {
+        (NSApp.delegate as? AppDelegate)?.reopenSavedWindows()
     }
 }
 
@@ -216,6 +255,27 @@ private struct SidebarSyncSheet: View {
                 Text(statusText(for: inspection.status))
                     .font(.subheadline)
                     .foregroundStyle(statusColor(for: inspection.status))
+
+                Text("Saved windows not open: \(inspection.reopenableWindowCount)")
+                    .font(.subheadline)
+
+                if inspection.heldBackWindowCount > 0 {
+                    Text("\(inspection.heldBackWindowCount) of them were held back because Chostty quit while restoring them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if inspection.heldBackTabCount > 0 {
+                    Text("Tabs held back: \(inspection.heldBackTabCount). Select a tab to open it.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if inspection.anotherInstanceRunning {
+                    Text("Another Chostty window session is running; saved windows can be reopened after it quits.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 HStack(alignment: .top, spacing: 20) {
                     SidebarSyncSnapshotOutline(title: "Current", snapshot: inspection.current)

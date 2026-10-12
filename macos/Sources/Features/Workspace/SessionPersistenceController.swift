@@ -24,6 +24,7 @@ final class SessionPersistenceController {
     static let interval: TimeInterval = 8.0
     static let saveDebounce: TimeInterval = 1.0
     static let healthDidChange = Notification.Name("kr.co.devch.chostty.sessionPersistence.healthDidChange")
+    static let dormantWindowsDidChange = Notification.Name("kr.co.devch.chostty.sessionPersistence.dormantWindowsDidChange")
 
     enum SaveHealth: Equatable {
         case healthy
@@ -118,19 +119,23 @@ final class SessionPersistenceController {
 
     private(set) var deferredOwners: [UUID: Int32] = [:]
     private(set) var activationEpoch: UInt64?
-    private(set) var claimedWindowIDs = Set<UUID>()
+    private(set) var claimedWindowIDs: Set<UUID> = []
     private var retiredAcknowledged = Set<UUID>()
 
     var isPassive: Bool { !deferredOwners.isEmpty }
 
     private let isActive: () -> Bool
     private let isLiveInstance: @Sendable (Int32) -> Bool
+    private let otherInstanceRunningProvider: () -> Bool
     private let scheduleAfter: MainScheduler
     private let uptime: @Sendable () -> UInt64
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var lastPublishedReopenableWindowIDs: [UUID] = []
 
     static let restoreAttemptSettleDelay: TimeInterval = 2.0
     private(set) var restoreAttemptsUnavailable = false
     private(set) var restoreAttemptStarts = 0
+    private(set) var dormantWindowIDs: [UUID] = []
 
     init(
         repository: SessionSnapshotRepository,
@@ -141,6 +146,7 @@ final class SessionPersistenceController {
         queue: DispatchQueue = DispatchQueue(label: "kr.co.devch.chostty.session-persistence", qos: .utility),
         isActive: @escaping () -> Bool = { NSApp.isActive },
         isLiveInstance: @escaping @Sendable (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
+        otherInstanceRunning: @escaping () -> Bool = SessionPersistenceController.anotherAppInstanceIsRunning,
         scheduleAfter: @escaping MainScheduler = { delay, action in
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
         },
@@ -155,6 +161,7 @@ final class SessionPersistenceController {
         self.queue = queue
         self.isActive = isActive
         self.isLiveInstance = isLiveInstance
+        self.otherInstanceRunningProvider = otherInstanceRunning
         self.scheduleAfter = scheduleAfter
         self.uptime = uptime
         self.controllersProvider = controllersProvider
@@ -287,6 +294,9 @@ final class SessionPersistenceController {
 
     deinit {
         timer?.invalidate()
+        workspaceObservers.forEach {
+            NSWorkspace.shared.notificationCenter.removeObserver($0)
+        }
     }
 
     // MARK: - Lifecycle
@@ -301,6 +311,7 @@ final class SessionPersistenceController {
         // Saving must keep up while a menu or a resize is tracking the run loop.
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        observeWorkspaceLifecycle()
     }
 
     func stop() {
@@ -355,6 +366,36 @@ final class SessionPersistenceController {
         return app.bundleIdentifier == bundleIdentifier
     }
 
+    static func anotherAppInstanceIsRunning() -> Bool {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return false }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+            .contains { $0.processIdentifier != ownPID && !$0.isTerminated }
+    }
+
+    func otherInstanceRunning() -> Bool {
+        otherInstanceRunningProvider()
+    }
+
+    private func observeWorkspaceLifecycle() {
+        guard workspaceObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        let names: [Notification.Name] = [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+        ]
+        workspaceObservers = names.map { name in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self,
+                          let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                          application.bundleIdentifier == Bundle.main.bundleIdentifier else { return }
+                    self.refreshDormantWindows()
+                }
+            }
+        }
+    }
+
     /// Records a live owner when an inactive launch must defer its first write.
     @discardableResult
     func adoptOwnership(of stored: AppSessionSnapshot?) -> Bool {
@@ -383,6 +424,119 @@ final class SessionPersistenceController {
         scheduleSave()
     }
 
+    func noteLive(_ ids: Set<UUID>) {
+        claimedWindowIDs.formUnion(ids)
+        dormantWindowIDs.removeAll { ids.contains($0) }
+        postDormantWindowsDidChange()
+    }
+
+    func claimDormant(_ id: UUID) {
+        noteLive([id])
+    }
+
+    func storeDormant(_ ids: [UUID]) {
+        dormantWindowIDs = ids.filter { !claimedWindowIDs.contains($0) }
+        postDormantWindowsDidChange()
+    }
+
+    var reopenableWindowIDs: [UUID] {
+        otherInstanceRunning() ? [] : dormantWindowIDs
+    }
+
+    var dockReopenCandidateIDs: [UUID] {
+        let quarantined = restoreQuarantine().windows
+        return reopenableWindowIDs.filter { !quarantined.contains($0) }
+    }
+
+    func refreshDormantWindows() {
+        switch repository.load() {
+        case .loaded(let snapshot, _):
+            storeDormant(snapshot.windows.map(\.physicalUUID))
+        case .absent, .unusable:
+            storeDormant([])
+        }
+    }
+
+    func adoptStoredSession(
+        liveWindowIDs: Set<UUID>
+    ) -> (snapshot: AppSessionSnapshot, source: SessionSnapshotRepository.Source)? {
+        guard gate.shouldPersist else { return nil }
+        switch repository.load() {
+        case .absent:
+            Self.logger.notice("session.restore.skipped reason=noSnapshot")
+            return nil
+        case .unusable(let reason):
+            Self.logger.warning("session.restore.skipped reason=unusable detail=\(reason, privacy: .public)")
+            return nil
+        case .loaded(let snapshot, let source):
+            _ = adoptOwnership(of: snapshot)
+            let ids = Set(snapshot.windows.flatMap { window in
+                [window.physicalUUID] + window.workspaces.flatMap(\.tabs).map(\.id)
+            })
+            pruneRestoreAttempts(keeping: ids)
+            noteLive(liveWindowIDs)
+            storeDormant(snapshot.windows.map(\.physicalUUID))
+            return (snapshot, source)
+        }
+    }
+
+    func storedWindows(matching ids: Set<UUID>) -> [WindowSnapshot] {
+        guard case .loaded(let snapshot, _) = repository.load() else { return [] }
+        return snapshot.windows.filter {
+            ids.contains($0.physicalUUID) && !claimedWindowIDs.contains($0.physicalUUID)
+        }
+    }
+
+    enum KeepDormantReason: Equatable {
+        case explicitOpenIntent
+        case anotherInstanceRunning
+        case windowAlreadyOpen
+        case initialWindowDisabled
+        case quarantined
+    }
+
+    struct BootDecision: Equatable {
+        var apply: [WindowSnapshot]
+        var keepDormant: [WindowSnapshot]
+        var reason: KeepDormantReason?
+    }
+
+    static func bootDecision(
+        windows: [WindowSnapshot],
+        quarantinedWindows: Set<UUID>,
+        mayApplyOnBoot: Bool,
+        anotherInstanceRunning: Bool,
+        hasOpenWindow: Bool,
+        initialWindow: Bool
+    ) -> BootDecision {
+        if !mayApplyOnBoot {
+            return BootDecision(apply: [], keepDormant: windows, reason: .explicitOpenIntent)
+        }
+        if anotherInstanceRunning {
+            return BootDecision(apply: [], keepDormant: windows, reason: .anotherInstanceRunning)
+        }
+        if hasOpenWindow {
+            return BootDecision(apply: [], keepDormant: windows, reason: .windowAlreadyOpen)
+        }
+        if !initialWindow {
+            return BootDecision(apply: [], keepDormant: windows, reason: .initialWindowDisabled)
+        }
+        let quarantined = windows.filter { quarantinedWindows.contains($0.physicalUUID) }
+        let apply = windows.filter { !quarantinedWindows.contains($0.physicalUUID) }
+        return BootDecision(
+            apply: apply,
+            keepDormant: quarantined,
+            reason: quarantined.isEmpty ? nil : .quarantined
+        )
+    }
+
+    private func postDormantWindowsDidChange() {
+        let current = reopenableWindowIDs
+        guard lastPublishedReopenableWindowIDs != current else { return }
+        lastPublishedReopenableWindowIDs = current
+        NotificationCenter.default.post(name: Self.dormantWindowsDidChange, object: self)
+    }
+
     // MARK: - Sidebar sync inspection
 
     struct SidebarSyncInspection: Equatable {
@@ -404,6 +558,10 @@ final class SessionPersistenceController {
         let saved: AppSessionSnapshot?
         let status: Status
         let synchronizationAvailability: SynchronizationAvailability
+        let reopenableWindowCount: Int
+        let heldBackWindowCount: Int
+        let heldBackTabCount: Int
+        let anotherInstanceRunning: Bool
 
         var canSynchronize: Bool {
             synchronizationAvailability == .available
@@ -415,40 +573,70 @@ final class SessionPersistenceController {
     /// describe the writer, not the workspace graph the sidebar displays.
     func sidebarSyncInspection() -> SidebarSyncInspection {
         let controllers = controllersProvider()
-        let current = controllers.isEmpty ? nil : snapshot(from: controllers)
-        let availability = synchronizationAvailability(hasLiveState: current != nil)
+        let live = controllers.isEmpty ? nil : snapshot(from: controllers)
+        let quarantine = restoreQuarantine()
+        let anotherInstanceRunning = otherInstanceRunning()
+        let reopenableWindowCount = anotherInstanceRunning ? 0 : dormantWindowIDs.count
+        let availability = synchronizationAvailability(hasLiveState: live != nil)
 
         switch repository.load() {
         case .absent:
             return SidebarSyncInspection(
-                current: current,
+                current: live,
                 saved: nil,
-                status: current == nil ? .liveStateUnavailable : .absent,
-                synchronizationAvailability: availability
+                status: live == nil ? .liveStateUnavailable : .absent,
+                synchronizationAvailability: availability,
+                reopenableWindowCount: reopenableWindowCount,
+                heldBackWindowCount: 0,
+                heldBackTabCount: 0,
+                anotherInstanceRunning: anotherInstanceRunning
             )
 
         case .loaded(let saved, _):
+            let current = live.map {
+                AppSessionSnapshot(
+                    ownerInstanceID: $0.ownerInstanceID,
+                    ownerPID: $0.ownerPID,
+                    windows: ($0.windows + saved.windows.filter {
+                        !claimedWindowIDs.contains($0.physicalUUID)
+                    }).sorted { $0.physicalUUID.uuidString < $1.physicalUUID.uuidString }
+                )
+            }
+            let savedWindowIDs = Set(saved.windows.map(\.physicalUUID))
+            let savedTabIDs = Set(saved.windows.flatMap(\.workspaces).flatMap(\.tabs).map(\.id))
             guard let current else {
                 return SidebarSyncInspection(
                     current: nil,
                     saved: saved,
                     status: .liveStateUnavailable,
-                    synchronizationAvailability: availability
+                    synchronizationAvailability: availability,
+                    reopenableWindowCount: reopenableWindowCount,
+                    heldBackWindowCount: quarantine.windows.intersection(savedWindowIDs).count,
+                    heldBackTabCount: quarantine.tabs.intersection(savedTabIDs).count,
+                    anotherInstanceRunning: anotherInstanceRunning
                 )
             }
             return SidebarSyncInspection(
                 current: current,
                 saved: saved,
                 status: current.windows == saved.windows ? .synchronized : .outOfSync,
-                synchronizationAvailability: availability
+                synchronizationAvailability: availability,
+                reopenableWindowCount: reopenableWindowCount,
+                heldBackWindowCount: quarantine.windows.intersection(savedWindowIDs).count,
+                heldBackTabCount: quarantine.tabs.intersection(savedTabIDs).count,
+                anotherInstanceRunning: anotherInstanceRunning
             )
 
         case .unusable(let reason):
             return SidebarSyncInspection(
-                current: current,
+                current: live,
                 saved: nil,
-                status: current == nil ? .liveStateUnavailable : .unusable(reason),
-                synchronizationAvailability: availability
+                status: live == nil ? .liveStateUnavailable : .unusable(reason),
+                synchronizationAvailability: availability,
+                reopenableWindowCount: reopenableWindowCount,
+                heldBackWindowCount: 0,
+                heldBackTabCount: 0,
+                anotherInstanceRunning: anotherInstanceRunning
             )
         }
     }
@@ -482,7 +670,7 @@ final class SessionPersistenceController {
 
         let controllers = controllersProvider()
         let live = Set(controllers.map(\.physicalUUID))
-        claimedWindowIDs.formUnion(live)
+        noteLive(live)
         let retire = claimedWindowIDs.subtracting(live)
 
         if isPassive && !isActive() {
@@ -497,7 +685,6 @@ final class SessionPersistenceController {
             return true
         }
 
-        guard !controllers.isEmpty else { return false }
         let cursor = saveCursor(from: controllers)
         guard saveState.reserve(cursor) else { return false }
         write(
@@ -516,13 +703,13 @@ final class SessionPersistenceController {
         guard gate.shouldPersist else { return }
         let controllers = controllersProvider()
         let live = Set(controllers.map(\.physicalUUID))
-        claimedWindowIDs.formUnion(live)
+        noteLive(live)
         let retire = claimedWindowIDs.subtracting(live)
         if isPassive && !isActive() {
             let unacknowledged = retire.subtracting(retiredAcknowledged)
             guard !unacknowledged.isEmpty else { return }
             write(nil, cursor: nil, retire: unacknowledged, synchronously: true)
-        } else if !controllers.isEmpty {
+        } else {
             write(
                 snapshot(from: controllers),
                 cursor: saveCursor(from: controllers),
@@ -554,7 +741,8 @@ final class SessionPersistenceController {
             deferredOwnerIDs: Set(deferredOwners.keys),
             isLiveInstance: isLiveInstance,
             now: uptime,
-            retire: retire
+            retire: retire,
+            preserveStoredWindowsExcept: claimedWindowIDs
         )
         let work = { () -> SessionSnapshotRepository.SaveReceipt? in
             do {
@@ -567,8 +755,10 @@ final class SessionPersistenceController {
                         saveState.finish(cursor, result: .rejected(rejection))
                     case .yielded:
                         saveState.finish(cursor, result: .yielded)
-                    case .retired, .nothingToWrite:
+                    case .retired:
                         saveState.finish(cursor, result: .failed)
+                    case .nothingToWrite:
+                        saveState.finish(cursor, result: .saved)
                     }
                 }
                 return receipt
@@ -628,6 +818,7 @@ final class SessionPersistenceController {
             retiredAcknowledged.formUnion(retire)
             applySaveResult(.saved)
         case .written, .skippedIdentical:
+            storeDormant(receipt.preservedWindowIDs)
             applySaveResult(.saved)
         case .refusedInvalid(let rejection):
             applySaveResult(.rejected(rejection))
@@ -681,7 +872,7 @@ final class SessionPersistenceController {
     /// Reads live `NSView` state, so main-thread only; the encode and write go
     /// to the background queue.
     func snapshot(from controllers: [TerminalController]) -> AppSessionSnapshot {
-        claimedWindowIDs.formUnion(controllers.map(\.physicalUUID))
+        noteLive(Set(controllers.map(\.physicalUUID)))
         let pending = registry.allPending
         for controller in controllers {
             for workspace in controller.workspaceStore.snapshot.workspaces {

@@ -6,9 +6,9 @@ import Foundation
 /// This exists because `WorkspaceSessionStore.init(restoredWorkspaces:selection:)`
 /// defends its invariants with `precondition`, not optionals. The session file
 /// is an ordinary file a user can edit, so an empty workspace list would
-/// otherwise take the process down during launch - the one moment the
-/// crash-loop marker cannot help, since it is cleared only after a successful
-/// boot.
+/// otherwise take the process down during launch. Restore-attempt ledger
+/// records keep a failed restoration from being retried automatically, but the
+/// ledger cannot make an invalid snapshot safe to construct.
 ///
 /// Identity and resource violations reject the whole file; a selection pointing
 /// at something that no longer exists is clamped, because losing which tab was

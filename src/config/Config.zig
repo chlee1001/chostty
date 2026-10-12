@@ -3319,6 +3319,17 @@ keybind: Keybinds = .{},
 /// A normal quit saves once more before closing windows. A crash or force quit
 /// can lose up to that interval.
 ///
+/// A launch that opens a file or URL first, and a launch with
+/// `initial-window = false`, leave saved windows unopened in the file. Open
+/// them with Reopen Saved Windows or by clicking the Dock when no window is
+/// open. Windows and tabs whose restore crashed stay held back until opened
+/// explicitly. A new instance does not restore saved windows while another
+/// instance is running.
+///
+/// Test hosts, `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1`, and launches that
+/// carry an explicit open intent (`ghostty -e …`, `open --args`) disable
+/// saving.
+///
 /// This is unrelated to `window-save-state`, which is inherited from upstream
 /// and remains ignored on macOS.
 ///

@@ -1603,6 +1603,78 @@ class TerminalController: BaseTerminalController {
     }
 }
 
+extension TerminalController {
+    enum PromotionTrigger {
+        case boot
+        case dockReopen
+        case userReopen
+    }
+
+    @MainActor
+    static func promoteStoredWindows(
+        _ windows: [WindowSnapshot],
+        ghostty: Ghostty.App,
+        bindings: TerminalControllerGraphFactory.RestoreBindings,
+        heldBackTabIDs: Set<UUID>,
+        trigger: PromotionTrigger,
+        present: (TerminalController) -> Void
+    ) -> [TerminalController] {
+        guard let persistence = bindings.persistence else {
+            preconditionFailure("Stored-window promotion requires session persistence")
+        }
+
+        let windowIDs = Set(windows.map(\.physicalUUID))
+        let attempt = persistence.beginRestoreAttempt(.window, windowIDs)
+        let token: SessionPersistenceController.RestoreAttemptToken?
+        switch attempt {
+        case .recorded(let recorded):
+            token = recorded
+        case .notTracked:
+            token = nil
+        case .unrecorded:
+            guard case .userReopen = trigger else {
+                Ghostty.logger.warning(
+                    "session.restore.keptDormant reason=attemptNotRecorded windows=\(windows.count, privacy: .public)"
+                )
+                return []
+            }
+            token = nil
+        }
+
+        var controllers: [TerminalController] = []
+        for window in windows {
+            guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
+                ghostty: ghostty,
+                window: window,
+                bindings: bindings,
+                heldBackTabIDs: heldBackTabIDs
+            ) else {
+                Ghostty.logger.warning(
+                    "session.restore.promoteFailed window=\(window.physicalUUID.uuidString, privacy: .public)"
+                )
+                continue
+            }
+
+            persistence.claimDormant(window.physicalUUID)
+            let controller = TerminalController(ghostty, graph: graph)
+            present(controller)
+            controller.scheduleWorkspaceHydration(
+                workspaceID: controller.workspaceStore.snapshot.selection.workspaceID
+            )
+            controllers.append(controller)
+        }
+
+        if let token {
+            persistence.settleRestoreAttempt(
+                token,
+                recovered: Set(controllers.map(\.physicalUUID))
+            )
+        }
+        persistence.scheduleSave()
+        return controllers
+    }
+}
+
 // MARK: NSMenuItemValidation
 
 extension TerminalController {

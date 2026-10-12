@@ -8,6 +8,10 @@ import Darwin
 /// before returning, and a synchronous AppKit callback cannot await an actor.
 /// Callers serialize themselves.
 ///
+/// A write never drops or replaces with an older copy a stored window the
+/// writer never had live. It removes only windows the writer itself had live
+/// and closed.
+///
 /// The directory is injectable so tests never touch real Application Support,
 /// and the default derives from the bundle identifier. A Debug build is
 /// `kr.co.devch.chostty.debug` and would otherwise overwrite the release app's
@@ -170,6 +174,27 @@ struct SessionSnapshotRepository: Sendable {
         let isLiveInstance: @Sendable (Int32) -> Bool
         let now: @Sendable () -> UInt64
         let retire: Set<UUID>
+        let preserveStoredWindowsExcept: Set<UUID>?
+
+        init(
+            claimEpoch: UInt64?,
+            selfInstanceID: UUID,
+            selfPID: Int32,
+            deferredOwnerIDs: Set<UUID>,
+            isLiveInstance: @escaping @Sendable (Int32) -> Bool,
+            now: @escaping @Sendable () -> UInt64,
+            retire: Set<UUID>,
+            preserveStoredWindowsExcept: Set<UUID>? = nil
+        ) {
+            self.claimEpoch = claimEpoch
+            self.selfInstanceID = selfInstanceID
+            self.selfPID = selfPID
+            self.deferredOwnerIDs = deferredOwnerIDs
+            self.isLiveInstance = isLiveInstance
+            self.now = now
+            self.retire = retire
+            self.preserveStoredWindowsExcept = preserveStoredWindowsExcept
+        }
     }
 
     struct SaveReceipt: Equatable, Sendable {
@@ -210,7 +235,7 @@ struct SessionSnapshotRepository: Sendable {
                     ),
                     to: descriptor
                 )
-                return try write(snapshot, existingOwner: owner)
+                return try write(snapshot, policy: policy, existingOwner: owner)
             }
 
             let mayWrite = owner == nil
@@ -218,7 +243,7 @@ struct SessionSnapshotRepository: Sendable {
                 || (!policy.isLiveInstance(owner!.ownerPID)
                     && !policy.deferredOwnerIDs.contains(owner!.ownerInstanceID))
             if mayWrite {
-                return try write(snapshot, existingOwner: owner)
+                return try write(snapshot, policy: policy, existingOwner: owner)
             }
 
             guard let owner else {
@@ -249,13 +274,47 @@ struct SessionSnapshotRepository: Sendable {
 
     private func write(
         _ snapshot: AppSessionSnapshot?,
+        policy: SavePolicy,
         existingOwner: StoredOwner?
     ) throws -> SaveReceipt {
         guard let snapshot else {
             return SaveReceipt(outcome: .nothingToWrite)
         }
+
+        let liveWindowIDs = Set(snapshot.windows.map(\.physicalUUID))
+        let liveIdentifiers = Self.identifiers(in: snapshot)
+        var preserved: [WindowSnapshot] = []
+        var rekeyedCount = 0
+        if let excludedWindowIDs = policy.preserveStoredWindowsExcept,
+           case .loaded(let stored, _) = load() {
+            let excluded = excludedWindowIDs.union(liveWindowIDs)
+            preserved = stored.windows.compactMap { window in
+                guard !excluded.contains(window.physicalUUID) else { return nil }
+                let conflicts = Self.identifiers(in: window).intersection(liveIdentifiers)
+                guard !conflicts.isEmpty else { return window }
+                rekeyedCount += 1
+                let rekeyed = Self.rekeyed(window, conflicting: conflicts)
+                Self.logger.notice(
+                    "session.persist.preservedWindowRekeyed window=\(rekeyed.physicalUUID.uuidString, privacy: .public) ids=\(conflicts.count, privacy: .public)"
+                )
+                return rekeyed
+            }
+        }
+
+        let merged = AppSessionSnapshot(
+            version: snapshot.version,
+            ownerInstanceID: snapshot.ownerInstanceID,
+            ownerPID: snapshot.ownerPID,
+            windows: (snapshot.windows + preserved).sorted {
+                $0.physicalUUID.uuidString < $1.physicalUUID.uuidString
+            }
+        )
+        guard !merged.windows.isEmpty else {
+            return SaveReceipt(outcome: .nothingToWrite)
+        }
+
         let validated: AppSessionSnapshot
-        switch SessionSnapshotValidator.validate(snapshot) {
+        switch SessionSnapshotValidator.validate(merged) {
         case .success(let snapshot):
             validated = snapshot
         case .failure(let rejection):
@@ -269,13 +328,106 @@ struct SessionSnapshotRepository: Sendable {
             return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
         let existing = try? Data(contentsOf: primaryURL)
+        let preservedWindowIDs = preserved.map(\.physicalUUID)
         if existing == encoded {
-            return SaveReceipt(outcome: .skippedIdentical)
+            return SaveReceipt(
+                outcome: .skippedIdentical,
+                preservedWindowIDs: preservedWindowIDs
+            )
         }
 
         try replacePrimary(encoded, existing: existing)
         _ = existingOwner
-        return SaveReceipt(outcome: .written)
+        if !preserved.isEmpty {
+            Self.logger.notice(
+                "session.persist.preserved windows=\(preserved.count, privacy: .public) rekeyed=\(rekeyedCount, privacy: .public)"
+            )
+        }
+        Self.logger.debug(
+            "session.persist.written windows=\(validated.windows.count, privacy: .public) preserved=\(preserved.count, privacy: .public)"
+        )
+        return SaveReceipt(outcome: .written, preservedWindowIDs: preservedWindowIDs)
+    }
+
+    static func rekeyed(_ window: WindowSnapshot, conflicting: Set<UUID>) -> WindowSnapshot {
+        var replacements: [UUID: UUID] = [:]
+        for identifier in conflicting {
+            var replacement = UUID()
+            while replacements.values.contains(replacement) {
+                replacement = UUID()
+            }
+            replacements[identifier] = replacement
+        }
+
+        func replacing(_ identifier: UUID) -> UUID {
+            replacements[identifier] ?? identifier
+        }
+
+        func rekeying(_ tree: PaneTreeSnapshot) -> PaneTreeSnapshot {
+            switch tree {
+            case .leaf(let leaf):
+                return .leaf(PaneLeafSnapshot(
+                    uuid: replacing(leaf.uuid),
+                    cwd: leaf.cwd,
+                    title: leaf.title
+                ))
+            case .split(let direction, let ratio, let left, let right):
+                return .split(
+                    direction: direction,
+                    ratio: ratio,
+                    left: rekeying(left),
+                    right: rekeying(right)
+                )
+            }
+        }
+
+        return WindowSnapshot(
+            physicalUUID: replacing(window.physicalUUID),
+            selection: window.selection.map {
+                SelectionSnapshot(
+                    workspaceID: replacing($0.workspaceID),
+                    tabID: replacing($0.tabID)
+                )
+            },
+            workspaces: window.workspaces.map { workspace in
+                WorkspaceSnapshot(
+                    id: replacing(workspace.id),
+                    name: workspace.name,
+                    color: workspace.color,
+                    isCollapsed: workspace.isCollapsed,
+                    defaultDirectory: workspace.defaultDirectory,
+                    tabs: workspace.tabs.map { tab in
+                        TabSnapshot(
+                            id: replacing(tab.id),
+                            titleOverride: tab.titleOverride,
+                            tabColor: tab.tabColor,
+                            paneTree: tab.paneTree.map(rekeying),
+                            focusedPaneID: tab.focusedPaneID.map(replacing),
+                            zoomedPaneID: tab.zoomedPaneID.map(replacing)
+                        )
+                    },
+                    selectedTabID: workspace.selectedTabID.map(replacing)
+                )
+            }
+        )
+    }
+
+    private static func identifiers(in snapshot: AppSessionSnapshot) -> Set<UUID> {
+        Set(snapshot.windows.flatMap { identifiers(in: $0) })
+    }
+
+    private static func identifiers(in window: WindowSnapshot) -> Set<UUID> {
+        var identifiers = Set([window.physicalUUID])
+        for workspace in window.workspaces {
+            identifiers.insert(workspace.id)
+            for tab in workspace.tabs {
+                identifiers.insert(tab.id)
+                if let paneTree = tab.paneTree {
+                    identifiers.formUnion(paneTree.leaves.map(\.uuid))
+                }
+            }
+        }
+        return identifiers
     }
 
     private func retire(_ windowIDs: Set<UUID>) throws -> Int {
