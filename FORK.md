@@ -61,6 +61,33 @@ views; other formats use an embedded Quick Look preview. Static HTML runs with
 JavaScript and network resources disabled. Open document tabs are intentionally
 not restored after an app restart.
 
+**Configuration editor.** `⌘,` (Preferences…) and the `open_config` action now
+open a GUI editor instead of handing the config file straight to an external
+editor. It covers the common keys (fonts, colors, cursor, window behavior, and
+repeatable keys like `keybind` and `font-feature`) with inline help, and
+rewrites only the lines it changes: comments, ordering, unknown keys and
+repeated keys survive a save byte for byte. **Save & Apply** writes the file
+atomically and reloads the app configuration; **Edit in External Editor** keeps
+the raw-file workflow one click away, and per-row **Reset** removes a key so its
+default applies again. Setting a control writes the value explicitly — a value
+equal to the default is not auto-removed; Reset (or clearing a text field) is
+the removal path. Every edit is checked with libghostty's own parser, so problems
+show on their row before saving. Saving writes through a symlinked config to its
+target, and refuses to silently overwrite a file edited elsewhere since it was
+loaded. Save & Apply is `⌘S`, not Return. The `open_config` keybinding keeps
+working and now routes to the editor.
+
+The `theme` row opens a gallery of the bundled themes and any in
+`~/.config/ghostty/themes` (user themes shadow bundled ones of the same name),
+with a preview per theme, search, a dark/light filter, and a separate pick per
+appearance written as `light:…,dark:…`. Rows a theme or a `config-file` include
+sets show the value that actually applies and where it comes from, following
+Ghostty's precedence (include > this file > theme > default); a key this file
+sets but an include overrides is flagged. **All Settings** lists every key the
+running binary reports through `+show-config --default --docs`, with the full
+upstream doc behind **More…**, so keys outside the curated pages are editable
+too; settings for other platforms are hidden there unless the file sets them.
+
 **Structure persistence, not window restoration.** Chostty still registers no
 `NSWindowRestoration` class and still pins `NSQuitAlwaysKeepsWindows` to false,
 so AppKit's window archive plays no part here. Instead the app keeps a single
@@ -302,6 +329,12 @@ still resolve; only the artwork changed.
 
 ## Known gaps
 
+- Only the curated keys in
+  `macos/Sources/Features/Settings/ConfigEditor/ConfigSchema.swift` get
+  type-specific controls (pickers, color wells, sliders). Every other key in
+  All Settings is a text field, a switch for `bool` fields, or a list for
+  repeatable ones. Effective values are resolved from the file, its includes
+  and its theme; CLI arguments are not considered.
 - `new tab` is only dispatched when the `in` parameter is present. `new tab in
   window 1` and `new tab in front window` work; `new tab` alone fails with
   errAEEventNotHandled (-1708), and so does `new tab with configuration …`

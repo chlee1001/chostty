@@ -124,8 +124,30 @@ extension Ghostty {
             app.openConfig()
         }
 
+        /// The configuration file the GUI editor and the external editor act
+        /// on: the preferred config path (e.g. `GHOSTTY_CONFIG_PATH` in debug
+        /// builds) or the file `ghostty_config_open_path()` resolves.
+        var configFilePath: String {
+            configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+        }
+
+        /// Present the GUI configuration editor for `configFilePath`.
         func openConfig() {
-            let str = configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+            #if os(macOS)
+            guard !configFilePath.isEmpty else { return }
+            NotificationCenter.default.post(
+                name: .chosttyPresentConfigEditor,
+                object: self,
+                userInfo: [ConfigEditorController.pathKey: configFilePath]
+            )
+            #else
+            fatalError("Unsupported platform for opening config file")
+            #endif
+        }
+
+        /// Open the raw configuration file in the external editor.
+        func openConfigExternally() {
+            let str = configFilePath
             guard !str.isEmpty else { return }
             #if os(macOS)
             let fileURL = URL(fileURLWithPath: str).absoluteString

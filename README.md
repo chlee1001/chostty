@@ -57,6 +57,16 @@ Configuration is unchanged from Ghostty — `~/.config/ghostty/config`, the same
 keybind and theme syntax, `TERM=xterm-ghostty`. An existing Ghostty setup works
 as-is, and the two can be installed side by side.
 
+Configuration can also be edited without touching text: `⌘,` (Preferences…)
+opens a built-in editor for the common settings — fonts, colors, cursor,
+window behavior, keybinds — with inline help per setting. It rewrites only the
+lines it changes, so comments, ordering and keys it does not know survive a
+save untouched. **Save & Apply** writes the file and reloads immediately;
+**Edit in External Editor** opens the same file as plain text. Themes are
+picked from a previewed gallery, values that come from a theme or an included
+file are shown with their source, and **All Settings** reaches every Ghostty
+key. The `open_config` action and keybinding open this editor too.
+
 Shortcuts this fork reserves are taken only from chords upstream left unbound or
 already broken; live Ghostty bindings such as `⌘⌥←/→` and `⌘0` are untouched.
 
