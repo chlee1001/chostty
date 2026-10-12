@@ -2173,13 +2173,34 @@ class BaseTerminalController: NSWindowController,
                 ?? panes.first else { continue }
 
             var set: Set<AnyCancellable> = []
+            // The session's display title follows the representative pane.
             representative.$title
                 .combineLatest(representative.$bell)
                 .sink { [weak self, weak session] title, bell in
                     guard let self, let session else { return }
                     session.title = self.computeTitle(title: title, bell: bell)
-                    session.bell = bell
-                    session.bumpMetadataGeneration()
+                }
+                .store(in: &set)
+
+            // Every pane's title is saved, so a title change on any pane,
+            // including one in a background tab, has to reach the next save.
+            // The initial snapshot is dropped after duplicates are folded, so
+            // subscribing alone never counts as a change.
+            tree.valuesPublisher(valueKeyPath: \.title, publisherKeyPath: \.$title)
+                .removeDuplicates()
+                .dropFirst()
+                .sink { [weak session] _ in
+                    session?.bumpMetadataGeneration()
+                }
+                .store(in: &set)
+
+            // The sidebar bell shows when any pane rings. A bell is transient
+            // and never saved, so it does not move the metadata generation.
+            tree.valuesPublisher(valueKeyPath: \.bell, publisherKeyPath: \.$bell)
+                .map { $0.values.contains(true) }
+                .removeDuplicates()
+                .sink { [weak session] bell in
+                    session?.bell = bell
                 }
                 .store(in: &set)
 

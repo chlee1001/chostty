@@ -809,6 +809,133 @@ import Testing
         #expect(session.pwd == sessionPwdBefore)
     }
 
+    // MARK: - Non-representative pane titles
+
+    /// Lets the surface title timer fire and the subscriptions deliver.
+    private func settleTitles() {
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+    }
+
+    /// A controller whose presented tab is split into the focused pane and a
+    /// second, non-representative pane.
+    private func makeSplitController() throws -> (TerminalController, Ghostty.SurfaceView, Ghostty.SurfaceView) {
+        let controller = try makeController()
+        let focused = try #require(controller.surfaceTree.first)
+        let background = try #require(makeSurface(pwd: "/tmp"))
+        controller.surfaceTree = SplitTree<Ghostty.SurfaceView>(
+            root: .split(.init(
+                direction: .vertical,
+                ratio: 0.5,
+                left: .leaf(view: focused),
+                right: .leaf(view: background)
+            )),
+            zoomed: nil
+        )
+        return (controller, focused, background)
+    }
+
+    @Test func backgroundPaneTitleChangeIsSavedOnTheNextTick() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let (controller, _, background) = try makeSplitController()
+        let persistence = makePersistence(directory: directory) { [controller] }
+        settleTitles()
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(!persistence.persistIfNeeded())
+
+        background.setTitle("background title")
+        settleTitles()
+
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        let leaves = try #require(
+            try decode(repository).windows[0].workspaces[0].tabs[0].paneTree?.leaves
+        )
+        #expect(leaves.first(where: { $0.uuid == background.id })?.title == "background title")
+    }
+
+    @Test func backgroundPaneTitleNeverOverwritesTheSessionTitle() throws {
+        let (controller, focused, background) = try makeSplitController()
+        focused.setTitle("focused title")
+        settleTitles()
+        let presentedID = try #require(controller.presentedSessionID)
+        let session = try #require(controller.workspaceStore.session(forTabID: presentedID))
+        let titleBefore = session.title
+        #expect(titleBefore.contains("focused title"))
+
+        background.setTitle("background title")
+        settleTitles()
+
+        #expect(session.title == titleBefore)
+    }
+
+    @Test func backgroundTabNonRepresentativePaneTitleIsSaved() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let presented = try makeSession(pwd: "/tmp")
+        let representative = try #require(makeSurface(pwd: "/tmp"))
+        let second = try #require(makeSurface(pwd: "/tmp"))
+        let background = TerminalSessionState(
+            id: UUID(),
+            surfaceTree: SplitTree<Ghostty.SurfaceView>(
+                root: .split(.init(
+                    direction: .horizontal,
+                    ratio: 0.5,
+                    left: .leaf(view: representative),
+                    right: .leaf(view: second)
+                )),
+                zoomed: nil
+            )
+        )
+        background.focusedSurfaceID = representative.id
+        var workspace = WorkspaceSession(
+            id: UUID(),
+            name: "Workspace 1",
+            tabs: [presented, background],
+            selectedTabID: presented.id
+        )
+        workspace.color = .none
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [workspace],
+            selection: Selection(workspaceID: workspace.id, tabID: presented.id)
+        ))
+        let persistence = makePersistence(directory: directory) { [controller] }
+        settleTitles()
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        #expect(!persistence.persistIfNeeded())
+        let generationBefore = background.metadataGeneration
+
+        second.setTitle("background tab pane")
+        settleTitles()
+
+        #expect(background.metadataGeneration == generationBefore + 1)
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        let leaves = try #require(
+            try tabSnapshot(background.id, in: decode(repository))?.paneTree?.leaves
+        )
+        #expect(leaves.first(where: { $0.uuid == second.id })?.title == "background tab pane")
+    }
+
+    @Test func representativeTitleChangeBumpsTheGenerationExactlyOnce() throws {
+        let controller = try makeController()
+        let representative = try #require(controller.surfaceTree.first)
+        settleTitles()
+        let presentedID = try #require(controller.presentedSessionID)
+        let session = try #require(controller.workspaceStore.session(forTabID: presentedID))
+        let generationBefore = session.metadataGeneration
+
+        representative.setTitle("representative title")
+        settleTitles()
+
+        #expect(session.metadataGeneration == generationBefore + 1)
+        #expect(session.title.contains("representative title"))
+    }
+
     // MARK: - Write rejection and retry
 
     @Test func emptyControllersCannotOverwritePrimaryOrScheduleInvalidWrites() throws {
