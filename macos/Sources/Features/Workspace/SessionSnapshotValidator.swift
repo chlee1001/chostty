@@ -16,7 +16,7 @@ import Foundation
 enum SessionSnapshotValidator {
     /// Shared resource bounds for live projections and decoded files.
     enum Limits {
-        static let windows = 12
+        static let windows = 32
         static let workspacesPerWindow = 128
         static let panesPerWorkspace = 512
         static let paneTreeDepth = 32
@@ -25,7 +25,7 @@ enum SessionSnapshotValidator {
         static let stringLength = 4096
     }
 
-    enum Rejection: Error, Equatable, CustomStringConvertible {
+    enum Rejection: Error, Equatable, CustomStringConvertible, Sendable {
         case schemaVersion(found: Int, expected: Int)
         case noWindows
         case windowWithoutWorkspaces(windowID: UUID)

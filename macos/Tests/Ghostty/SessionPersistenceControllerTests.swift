@@ -21,15 +21,20 @@ import Testing
         return url
     }
 
-    private func makeSurface(pwd: String? = nil) -> Ghostty.SurfaceView? {
+    private func makeSurface(pwd: String? = nil, uuid: UUID = UUID()) -> Ghostty.SurfaceView? {
         guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
-        let view = Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)
+        let view = Ghostty.SurfaceView(
+            app,
+            baseConfig: nil,
+            uuid: uuid,
+            spawnsSurface: false
+        )
         view.pwd = pwd
         return view
     }
 
-    private func makeSession(pwd: String? = nil) throws -> TerminalSessionState {
-        let view = try #require(makeSurface(pwd: pwd))
+    private func makeSession(pwd: String? = nil, paneUUID: UUID = UUID()) throws -> TerminalSessionState {
+        let view = try #require(makeSurface(pwd: pwd, uuid: paneUUID))
         let session = TerminalSessionState(id: UUID(), surfaceTree: SplitTree(view: view))
         session.focusedSurfaceID = view.id
         return session
@@ -56,9 +61,12 @@ import Testing
 
     private func makeController(
         workspaceName: String = "Workspace 1",
-        tabCount: Int = 1
+        tabCount: Int = 1,
+        paneUUID: UUID? = nil
     ) throws -> TerminalController {
-        let tabs = try (0..<tabCount).map { _ in try makeSession(pwd: "/tmp") }
+        let tabs = try (0..<tabCount).map { _ in
+            try makeSession(pwd: "/tmp", paneUUID: paneUUID ?? UUID())
+        }
         var workspace = WorkspaceSession(
             id: UUID(),
             name: workspaceName,
@@ -988,12 +996,74 @@ import Testing
         #expect(!persistence.persistIfNeeded())
     }
 
+    @Test func refusalIsReportedAsSaveHealthAndClearsAfterTheNextSuccessfulSave() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paneUUID = UUID()
+        let first = try makeController(paneUUID: paneUUID)
+        let duplicate = try makeController(paneUUID: paneUUID)
+        var controllers = [first, duplicate]
+        let persistence = makePersistence(directory: directory) { controllers }
+
+        persistence.persistNow()
+        let refusedHealth = persistence.saveHealth
+        #expect(refusedHealth == .refused(.duplicateIdentifier(paneUUID)))
+
+        controllers = [first]
+        let session = try #require(first.workspaceStore.allSessions.first)
+        session.bumpMetadataGeneration()
+        persistence.persistNow()
+        let recoveredHealth = persistence.saveHealth
+        #expect(recoveredHealth == .healthy)
+    }
+
+    /// Suspends the test so the main queue can deliver queued save results;
+    /// a nested run loop would not drain it while this test runs on it.
+    private func waitForSaveResults(
+        _ persistence: SessionPersistenceController,
+        until done: @MainActor () -> Bool = { false }
+    ) async throws {
+        persistence.flush()
+        for _ in 0..<40 {
+            try await Task.sleep(for: .milliseconds(25))
+            if done() { return }
+        }
+    }
+
+    @Test func aSingleWriteFailureIsNotSurfacedButThreeInARowAre() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let blockedDirectory = directory.appendingPathComponent("blocked")
+        try Data("not a directory".utf8).write(to: blockedDirectory)
+        let controller = try makeController()
+        let persistence = makePersistence(directory: blockedDirectory) { [controller] }
+        let session = try #require(controller.workspaceStore.allSessions.first)
+
+        #expect(persistence.persistIfNeeded())
+        try await waitForSaveResults(persistence)
+        let firstFailureHealth = persistence.saveHealth
+        #expect(firstFailureHealth == .healthy)
+
+        session.bumpMetadataGeneration()
+        #expect(persistence.persistIfNeeded())
+        try await waitForSaveResults(persistence)
+        let secondFailureHealth = persistence.saveHealth
+        #expect(secondFailureHealth == .healthy)
+
+        session.bumpMetadataGeneration()
+        #expect(persistence.persistIfNeeded())
+        try await waitForSaveResults(persistence) { persistence.saveHealth != .healthy }
+        let thirdFailureHealth = persistence.saveHealth
+        #expect(thirdFailureHealth == .failing(consecutiveFailures: 3))
+    }
+
     @Test func refusedSnapshotWaitsForStateChangeBeforeRetrying() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        var controllers = try (0...SessionSnapshotValidator.Limits.windows).map { index in
-            try makeController(workspaceName: "Window \(index)")
-        }
+        let paneUUID = UUID()
+        let first = try makeController(paneUUID: paneUUID)
+        let duplicate = try makeController(paneUUID: paneUUID)
+        var controllers = [first, duplicate]
         let repository = SessionSnapshotRepository(directory: directory)
         let persistence = makePersistence(directory: directory) { controllers }
 
@@ -1002,15 +1072,78 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: repository.primaryURL.path))
         #expect(!persistence.persistIfNeeded())
 
-        controllers.removeLast()
+        controllers = [first]
         #expect(persistence.persistIfNeeded())
         persistence.flush()
         guard case .loaded(let snapshot, source: .primary) = repository.load() else {
             Issue.record("a changed valid cursor must save after a refusal")
             return
         }
-        #expect(snapshot.windows.count == SessionSnapshotValidator.Limits.windows)
+        #expect(snapshot.windows.map(\.physicalUUID) == [first.physicalUUID])
         #expect(!persistence.persistIfNeeded())
+    }
+
+    @Test func healthChangesPostOneNotificationPerTransition() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paneUUID = UUID()
+        let first = try makeController(paneUUID: paneUUID)
+        let duplicate = try makeController(paneUUID: paneUUID)
+        var controllers = [first, duplicate]
+        let persistence = makePersistence(directory: directory) { controllers }
+        var notifications = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: SessionPersistenceController.healthDidChange,
+            object: persistence,
+            queue: .main
+        ) { _ in
+            notifications += 1
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        persistence.persistNow()
+        persistence.persistNow()
+        controllers = [first]
+        let session = try #require(first.workspaceStore.allSessions.first)
+        session.bumpMetadataGeneration()
+        persistence.persistNow()
+
+        #expect(notifications == 2)
+    }
+
+    @Test func anUnrecordableLedgerIsReportedUntilARecordSucceeds() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lockDirectory = directory.appendingPathComponent(
+            SessionSnapshotRepository.restoreAttemptsLockFileName,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: lockDirectory, withIntermediateDirectories: true)
+        let controller = try makeController()
+        let persistence = makePersistence(directory: directory) { [controller] }
+        var notifications = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: SessionPersistenceController.healthDidChange,
+            object: persistence,
+            queue: .main
+        ) { _ in
+            notifications += 1
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let firstAttempt = persistence.beginRestoreAttempt(.window, [UUID()])
+        #expect(firstAttempt == .unrecorded)
+        #expect(persistence.restoreAttemptsUnavailable)
+        #expect(notifications == 1)
+
+        try FileManager.default.removeItem(at: lockDirectory)
+        let secondAttempt = persistence.beginRestoreAttempt(.window, [UUID()])
+        guard case .recorded = secondAttempt else {
+            Issue.record("the restore attempt should be recorded after the lock path is fixed")
+            return
+        }
+        #expect(!persistence.restoreAttemptsUnavailable)
+        #expect(notifications == 2)
     }
 
     // MARK: - Gate and second-instance behavior

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - Placement
@@ -85,6 +86,8 @@ struct WorkspaceControls: View {
 
     @State private var sidebarSyncInspection: SessionPersistenceController.SidebarSyncInspection?
     @State private var showingSidebarSync = false
+    @State private var saveHealth: SessionPersistenceController.SaveHealth = .healthy
+    @State private var restoreAttemptsUnavailable = false
 
     private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
         SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
@@ -121,24 +124,54 @@ struct WorkspaceControls: View {
                     showingSidebarSync = true
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "ellipsis.circle")
+                    if saveHealth != .healthy || restoreAttemptsUnavailable {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.orange)
+                            .offset(x: 4, y: -4)
+                    }
+                }
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Workspace actions")
             .accessibilityLabel("Workspace Actions")
+            .accessibilityValue(accessibilityValue)
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
         .sheet(isPresented: $showingSidebarSync) {
             SidebarSyncSheet(
                 inspection: sidebarSyncInspection,
+                saveHealth: saveHealth,
+                restoreAttemptsUnavailable: restoreAttemptsUnavailable,
                 refresh: refreshSidebarSync,
                 saveCurrentState: synchronizeSidebarState,
                 takeOver: takeOverSidebarSync
             )
         }
+        .onAppear(perform: refreshPersistenceHealth)
+        .onReceive(NotificationCenter.default.publisher(for: SessionPersistenceController.healthDidChange)) { notification in
+            guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence,
+                  let source = notification.object as? SessionPersistenceController,
+                  source === persistence else { return }
+            refreshPersistenceHealth()
+        }
+    }
+
+    private var accessibilityValue: String {
+        if saveHealth != .healthy { return "Session saving paused" }
+        if restoreAttemptsUnavailable { return "Restore protection unavailable" }
+        return ""
+    }
+
+    private func refreshPersistenceHealth() {
+        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else { return }
+        saveHealth = persistence.saveHealth
+        restoreAttemptsUnavailable = persistence.restoreAttemptsUnavailable
     }
 
     private func refreshSidebarSync() {
@@ -162,6 +195,8 @@ struct WorkspaceControls: View {
 
 private struct SidebarSyncSheet: View {
     let inspection: SessionPersistenceController.SidebarSyncInspection?
+    let saveHealth: SessionPersistenceController.SaveHealth
+    let restoreAttemptsUnavailable: Bool
     let refresh: () -> Void
     let saveCurrentState: () -> Void
     let takeOver: () -> Void
@@ -172,6 +207,18 @@ private struct SidebarSyncSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Sidebar Sync")
                 .font(.headline)
+
+            if saveHealth != .healthy {
+                Text("Saving paused: \(saveHealthText)")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+            }
+
+            if restoreAttemptsUnavailable {
+                Text("Restore protection unavailable: Chostty couldn't record restore attempts, so saved windows and tabs open only when you select them.")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+            }
 
             if let inspection {
                 Text(statusText(for: inspection.status))
@@ -243,6 +290,45 @@ private struct SidebarSyncSheet: View {
             return .green
         case .outOfSync, .absent, .unusable, .liveStateUnavailable:
             return .secondary
+        }
+    }
+
+    private var saveHealthText: String {
+        switch saveHealth {
+        case .healthy:
+            return ""
+        case .refused(let rejection):
+            return refusalText(for: rejection)
+        case .failing:
+            return "Session saves keep failing, usually because of disk space or permissions. They will retry on the next change."
+        }
+    }
+
+    private func refusalText(for rejection: SessionSnapshotValidator.Rejection) -> String {
+        switch rejection {
+        case .schemaVersion:
+            return "The session format is unsupported. Update Chostty or remove the saved session."
+        case .noWindows:
+            return "There are no windows to save. Open a window and try again."
+        case .windowWithoutWorkspaces:
+            return "A window has no workspace. Create a workspace before saving."
+        case .workspaceWithoutTabs:
+            return "A workspace has no tabs. Create a tab before saving."
+        case .duplicateIdentifier:
+            return "Two panes have the same identifier. Close the duplicate pane and try again."
+        case .paneTreeTooDeep:
+            return "A pane layout is too deeply nested. Close or rearrange panes and try again."
+        case .limitExceeded(let kind, let count, let limit):
+            if kind == "window" {
+                let excess = count - limit
+                let noun = excess == 1 ? "window" : "windows"
+                return "Too many windows are open. Close \(excess) \(noun) and try again."
+            }
+            return "The \(kind) limit was exceeded. Reduce the session size and try again."
+        case .invalidSplitRatio:
+            return "A pane split has an invalid size. Resize or close the affected pane and try again."
+        case .stringTooLong:
+            return "A saved name or title is too long. Shorten it and try again."
         }
     }
 

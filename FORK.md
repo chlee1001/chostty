@@ -112,6 +112,10 @@ an ordinary quit loses nothing; a crash or a force quit can lose at most eight
 seconds of structural change. The file is written atomically with owner-only
 (`0600`) permissions.
 
+Saved sessions support up to 32 physical windows. If a save is refused or keeps
+failing, the workspace-actions button shows an orange warning badge and
+**Check Sidebar Sync…** explains the cause and how to resolve it.
+
 The backup is seeded after a successful launch, then refreshed before each
 changed save with the existing primary only if it passes the same checks as
 loading. Recovery from a damaged primary therefore falls back by one successful
@@ -139,6 +143,10 @@ restoring twenty tabs from starting twenty terminals at once. If Chostty quit
 while opening a tab, that tab is held back: it shows an indicator and opens only
 when you select it. A tab that fails to open shows a warning and retries when you
 select it.
+
+If Chostty cannot record restore attempts, the warning badge and **Check Sidebar
+Sync…** report that restore protection is unavailable. Saved windows and tabs
+then open only when you select them.
 
 Set `macos-session-persistence = false` to turn all of this off, or export
 `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also

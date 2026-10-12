@@ -21,9 +21,16 @@ import OSLog
 /// set is unchanged, a tick does no projection at all.
 @MainActor
 final class SessionPersistenceController {
-    /// Target save cadence, not a durability guarantee: refused or failed
-    /// writes keep the last valid snapshot and retry on later ticks.
+    /// Target save cadence, not a durability guarantee: failed writes keep the
+    /// last valid snapshot and retry on later ticks.
     static let interval: TimeInterval = 8.0
+    static let healthDidChange = Notification.Name("kr.co.devch.chostty.sessionPersistence.healthDidChange")
+
+    enum SaveHealth: Equatable {
+        case healthy
+        case refused(SessionSnapshotValidator.Rejection)
+        case failing(consecutiveFailures: Int)
+    }
 
     private let repository: SessionSnapshotRepository
     private let gate: SessionPersistenceGate
@@ -51,11 +58,14 @@ final class SessionPersistenceController {
 
     /// The main actor reserves cursors without waiting for filesystem I/O.
     /// Queue completions acknowledge only their own cursor, under the same lock.
+    /// A refused cursor is not retried until it changes, at which point it is
+    /// evaluated again.
     private final class SaveState: @unchecked Sendable {
-        enum Result {
+        enum Result: Sendable {
             case saved
-            case rejected
+            case rejected(SessionSnapshotValidator.Rejection)
             case failed
+            case yielded
         }
 
         private let lock = NSLock()
@@ -93,7 +103,7 @@ final class SessionPersistenceController {
                 rejectedCursor = nil
             case .rejected:
                 rejectedCursor = cursor
-            case .failed:
+            case .failed, .yielded:
                 break
             }
             inFlightCursors.removeAll { $0 == cursor }
@@ -101,6 +111,8 @@ final class SessionPersistenceController {
     }
 
     private let saveState = SaveState()
+    private var consecutiveSaveFailures = 0
+    private(set) var saveHealth: SaveHealth = .healthy
 
     /// PID of the other live instance that owns the file. While set, this
     /// process neither saves nor overwrites until that owner exits or the user
@@ -178,10 +190,10 @@ final class SessionPersistenceController {
                     )
                 })
             }
-            restoreAttemptsUnavailable = false
+            setRestoreAttemptsUnavailable(false)
             return .recorded(token)
         } catch {
-            restoreAttemptsUnavailable = true
+            setRestoreAttemptsUnavailable(true)
             Self.logger.warning(
                 "session.restore.attemptNotRecorded kind=\(kind.rawValue, privacy: .public) ids=\(ids.count, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
@@ -260,6 +272,12 @@ final class SessionPersistenceController {
     private func isDeadRestoreAttempt(_ attempt: SessionSnapshotRepository.RestoreAttempt) -> Bool {
         attempt.ownerInstanceID != ownerInstanceID
             && (!isLiveInstance(attempt.ownerPID) || attempt.startedAtUptime > uptime())
+    }
+
+    private func setRestoreAttemptsUnavailable(_ unavailable: Bool) {
+        guard restoreAttemptsUnavailable != unavailable else { return }
+        restoreAttemptsUnavailable = unavailable
+        NotificationCenter.default.post(name: Self.healthDidChange, object: self)
     }
 
     deinit {
@@ -523,28 +541,61 @@ final class SessionPersistenceController {
     private func write(_ snapshot: AppSessionSnapshot, cursor: SaveCursor, synchronously: Bool) {
         let repository = self.repository
         let saveState = self.saveState
-        let work = {
+        let work = { () -> SaveState.Result in
             var result = SaveState.Result.failed
-            defer { saveState.finish(cursor, result: result) }
             do {
                 switch try repository.save(snapshot) {
                 case .written, .skippedIdentical:
                     result = .saved
-                case .refusedInvalid:
-                    result = .rejected
+                case .refusedInvalid(let rejection):
+                    result = .rejected(rejection)
                 }
             } catch {
                 // A failed write is retried on the next tick; the previous file
                 // is still on disk and still usable.
                 Self.logger.warning("session.persist.writeFailed \(String(describing: error), privacy: .public)")
             }
+            saveState.finish(cursor, result: result)
+            return result
         }
 
         if synchronously {
-            queue.sync(execute: work)
+            applySaveResult(queue.sync(execute: work))
         } else {
-            queue.async(execute: work)
+            queue.async { [weak self] in
+                let result = work()
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self?.applySaveResult(result)
+                    }
+                }
+            }
         }
+    }
+
+    private func applySaveResult(_ result: SaveState.Result) {
+        let oldHealth = saveHealth
+        switch result {
+        case .saved:
+            consecutiveSaveFailures = 0
+            saveHealth = .healthy
+        case .rejected(let rejection):
+            saveHealth = .refused(rejection)
+        case .failed:
+            consecutiveSaveFailures += 1
+            if consecutiveSaveFailures >= 3 {
+                saveHealth = .failing(consecutiveFailures: consecutiveSaveFailures)
+            }
+        case .yielded:
+            break
+        }
+
+        let newHealth = saveHealth
+        guard oldHealth != newHealth else { return }
+        Self.logger.notice(
+            "session.persist.health from=\(String(describing: oldHealth), privacy: .public) to=\(String(describing: newHealth), privacy: .public)"
+        )
+        NotificationCenter.default.post(name: Self.healthDidChange, object: self)
     }
 
     // MARK: - Change detection
