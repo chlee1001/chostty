@@ -1,5 +1,15 @@
 import Foundation
 
+enum HydrationOutcome: Equatable {
+    case hydrated(panes: Int)
+    case notPending
+    case alreadyLive
+    case notInStore
+    case heldBack
+    case unrecorded
+    case failed
+}
+
 /// Pane trees for tabs that were restored from disk but not yet turned into
 /// live surfaces.
 ///
@@ -34,6 +44,8 @@ final class PendingHydrationRegistry {
         entries[tabID] != nil
     }
 
+    /// Called only after successful hydration, or to discard a stale entry
+    /// whose tab already owns a live tree.
     @discardableResult
     func take(_ tabID: UUID) -> TabSnapshot? {
         entries.removeValue(forKey: tabID)

@@ -68,12 +68,13 @@ import Testing
 
     private func build(
         _ window: WindowSnapshot,
-        registry: PendingHydrationRegistry
+        registry: PendingHydrationRegistry,
+        construct: TerminalControllerGraphFactory.SurfaceConstructor? = nil
     ) -> TerminalControllerGraphFactory.InitialGraph? {
         TerminalControllerGraphFactory.makeFromSnapshot(
             ghostty: TerminalControllerTestHarness.sharedApp,
             window: window,
-            bindings: .init(registry: registry, construct: inertConstructor())
+            bindings: .init(registry: registry, construct: construct ?? inertConstructor())
         )
     }
 
@@ -118,6 +119,50 @@ import Testing
         #expect(!registry.contains(selected.id))
         #expect(registry.snapshot(for: workspace.tabs[1].id)?.paneTree?.paneCount == 2)
         #expect(registry.snapshot(for: workspace.tabs[2].id)?.paneTree?.paneCount == 3)
+    }
+
+    @Test func bootSelectedTabWithAFailedLeafStaysPending() throws {
+        let tab = makeTab(panes: 2)
+        let workspace = makeWorkspace(tabs: [tab])
+        let window = makeWindow(workspaces: [workspace])
+        let registry = PendingHydrationRegistry()
+
+        let graph = try #require(build(
+            window,
+            registry: registry,
+            construct: { _, uuid in
+                guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+                let view = Ghostty.SurfaceView(
+                    app,
+                    baseConfig: nil,
+                    uuid: uuid,
+                    spawnsSurface: false
+                )
+                view.error = Ghostty.Error.apiFailed
+                return view
+            }
+        ))
+
+        #expect(graph.initialSession.surfaceTree.isEmpty)
+        #expect(registry.snapshot(for: tab.id) == tab)
+    }
+
+    @Test func bootSelectedTabWithoutPanesGetsOneFreshPane() throws {
+        let tab = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: nil,
+            paneTree: nil,
+            focusedPaneID: nil,
+            zoomedPaneID: nil
+        )
+        let workspace = makeWorkspace(tabs: [tab])
+        let graph = try #require(build(
+            makeWindow(workspaces: [workspace]),
+            registry: PendingHydrationRegistry()
+        ))
+
+        #expect(Array(graph.initialSurfaceTree).count == 1)
     }
 
     // MARK: - Identity and metadata

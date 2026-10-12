@@ -378,21 +378,17 @@ class BaseTerminalController: NSWindowController,
         let store = workspaceStore
         guard let session = store.session(forTabID: tabID) else { return }
 
+        // This must precede the already-presented guard: a boot-selected tab
+        // can be empty after a failed restore and needs another selection to
+        // retry in place.
+        _ = hydratePendingSession(session)
+
         // Skip if already presenting this session at or beyond the candidate
         // generation — this guards against stale mounts and feedback loops.
         if presentedSessionID == tabID,
            store.snapshot.mountGeneration <= presentedMountGeneration {
             return
         }
-
-        // Materialize a tab that was restored from disk but never opened.
-        //
-        // Unconditional, and before the selection-commit block below, because
-        // several callers arrive with the selection ALREADY committed:
-        // `ReservedShortcutDispatcher.select(workspace:on:)` commits through
-        // `selectWorkspace` first, so a hydration placed inside that block
-        // would mount an empty tab for the workspace-switch shortcuts.
-        hydratePendingSessionIfNeeded(session)
 
         // Save the currently presented tree/focus back into the previously
         // presented session so re-selecting it restores exactly this state.
@@ -1819,6 +1815,8 @@ class BaseTerminalController: NSWindowController,
               let restoreIndex = owning.tabs.firstIndex(where: { $0.id == tabID }),
               let session = store.liveSession(forTabID: tabID) else { return nil }
 
+        _ = hydratePendingSession(session)
+
         let wasPresented = presentedSessionID == tabID
         let restoreWorkspaceID = owning.id
         // Captured for the empty-workspace undo path: if the detach removed
@@ -2226,33 +2224,50 @@ class BaseTerminalController: NSWindowController,
         injectedRestoreBindings = bindings
     }
 
-    /// Idempotent: the registry entry is consumed either way, so a tab is only
-    /// ever hydrated once.
-    func hydratePendingSessionIfNeeded(_ session: TerminalSessionState) {
+    @discardableResult
+    func hydratePendingSession(tabID: UUID) -> HydrationOutcome {
+        guard let session = workspaceStore.session(forTabID: tabID) else {
+            return .notInStore
+        }
+        return hydratePendingSession(session)
+    }
+
+    @discardableResult
+    func hydratePendingSession(_ session: TerminalSessionState) -> HydrationOutcome {
         guard let registry = pendingHydration,
-              let stored = registry.take(session.id) else { return }
+              let stored = registry.snapshot(for: session.id) else {
+            return .notPending
+        }
 
         // Something already gave this session a live tree; the stored value is
         // stale by definition.
-        guard session.surfaceTree.isEmpty else { return }
+        guard session.surfaceTree.isEmpty else {
+            _ = registry.take(session.id)
+            return .alreadyLive
+        }
 
         let defaultDirectory = workspaceStore.snapshot.workspaces
             .first { $0.tabs.contains { $0.id == session.id } }?
             .defaultDirectory
         let construct = restoredSurfaceConstructor
 
-        let tree = SessionSnapshotProjection.surfaceTree(
-            from: stored.paneTree,
-            zoomedPaneID: stored.zoomedPaneID
-        ) { leaf in
-            TerminalControllerGraphFactory.restoredSurface(
-                forLeaf: leaf,
-                workspaceDefaultDirectory: defaultDirectory,
-                construct: construct
+        let snapshotTree = TerminalControllerGraphFactory.restorableTree(of: stored)
+        guard let tree = SessionSnapshotProjection.surfaceTree(
+            from: snapshotTree,
+            zoomedPaneID: stored.zoomedPaneID,
+            makeSurface: { leaf in
+                TerminalControllerGraphFactory.restoredSurface(
+                    forLeaf: leaf,
+                    workspaceDefaultDirectory: defaultDirectory,
+                    construct: construct
+                )
+            }
+        ) else {
+            Ghostty.logger.warning(
+                "session.hydrate.failed tab=\(session.id, privacy: .public) panes=\(snapshotTree.paneCount)"
             )
+            return .failed
         }
-
-        guard !tree.isEmpty else { return }
 
         session.surfaceTree = tree
         if let focusedPaneID = stored.focusedPaneID,
@@ -2263,11 +2278,32 @@ class BaseTerminalController: NSWindowController,
             session.focusedSurfaceID = tree.first?.id
         }
 
+        _ = registry.take(session.id)
+
         // The panes are new objects, so the owner index and the subscriptions
         // both have to learn about them.
         syncRegistryToSnapshot()
         refreshMetadataSubscriptions(for: session, panes: Array(tree))
         session.bumpMetadataGeneration()
+        syncSurfaceTreeOcclusionState()
+
+        if presentedSessionID == session.id {
+            presentHydratedSessionInPlace(session)
+        }
+
+        return .hydrated(panes: Array(tree).count)
+    }
+
+    private func presentHydratedSessionInPlace(_ session: TerminalSessionState) {
+        surfaceTree = session.surfaceTree
+        focusedSurface = session.surfaceTree.first(where: { $0.id == session.focusedSurfaceID })
+            ?? session.surfaceTree.first
+        titleDidChange(to: session.title)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let surface = self.focusedSurface else { return }
+            self.window?.makeFirstResponder(surface)
+        }
     }
 
     /// ``rebuildSessionMetadataSubscriptions()`` skips sessions that already

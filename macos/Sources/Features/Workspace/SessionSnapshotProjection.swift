@@ -12,9 +12,8 @@ import Foundation
 enum SessionSnapshotProjection {
     /// Builds the live view for one leaf.
     ///
-    /// `nil` means the pane could not be created. The tree is rebuilt without
-    /// it - a split that loses one child collapses to the other - because
-    /// losing one pane beats failing the whole tab.
+    /// `nil` means the pane could not be created. A view whose `error` is set
+    /// also failed to initialize. Either failure rejects the whole tree.
     typealias SurfaceFactory = (PaneLeafSnapshot) -> Ghostty.SurfaceView?
 
     // MARK: - Live to value
@@ -122,18 +121,15 @@ enum SessionSnapshotProjection {
 
     // MARK: - Value → live
 
-    /// Leaves the factory declines are dropped and their splits collapse. Zoom
-    /// is resolved against the rebuilt tree, so a dropped pane simply yields an
-    /// unzoomed tree.
+    /// Returns an empty tree for a missing snapshot. A declined or failed leaf
+    /// rejects the entire tree, releasing every view built for that attempt.
     static func surfaceTree(
         from snapshot: PaneTreeSnapshot?,
         zoomedPaneID: UUID? = nil,
         makeSurface: SurfaceFactory
-    ) -> SplitTree<Ghostty.SurfaceView> {
-        guard let snapshot,
-              let root = node(from: snapshot, makeSurface: makeSurface) else {
-            return SplitTree<Ghostty.SurfaceView>()
-        }
+    ) -> SplitTree<Ghostty.SurfaceView>? {
+        guard let snapshot else { return SplitTree<Ghostty.SurfaceView>() }
+        guard let root = node(from: snapshot, makeSurface: makeSurface) else { return nil }
 
         let zoomed: SplitTree<Ghostty.SurfaceView>.Node?
         if let zoomedPaneID {
@@ -151,7 +147,7 @@ enum SessionSnapshotProjection {
     ) -> SplitTree<Ghostty.SurfaceView>.Node? {
         switch snapshot {
         case .leaf(let leaf):
-            guard let view = makeSurface(leaf) else { return nil }
+            guard let view = makeSurface(leaf), view.error == nil else { return nil }
             if let title = leaf.title, !title.isEmpty {
                 // Restored titles must be synchronous so an immediate save
                 // does not erase them. Shell titles keep `setTitle` coalescing.
@@ -160,24 +156,16 @@ enum SessionSnapshotProjection {
             return .leaf(view: view)
 
         case .split(let direction, let ratio, let left, let right):
-            let leftNode = node(from: left, makeSurface: makeSurface)
-            let rightNode = node(from: right, makeSurface: makeSurface)
-
-            switch (leftNode, rightNode) {
-            case (let leftNode?, let rightNode?):
-                return .split(.init(
-                    direction: self.direction(from: direction),
-                    ratio: ratio,
-                    left: leftNode,
-                    right: rightNode
-                ))
-            case (let leftNode?, nil):
-                return leftNode
-            case (nil, let rightNode?):
-                return rightNode
-            case (nil, nil):
+            guard let leftNode = node(from: left, makeSurface: makeSurface),
+                  let rightNode = node(from: right, makeSurface: makeSurface) else {
                 return nil
             }
+            return .split(.init(
+                direction: self.direction(from: direction),
+                ratio: ratio,
+                left: leftNode,
+                right: rightNode
+            ))
         }
     }
 

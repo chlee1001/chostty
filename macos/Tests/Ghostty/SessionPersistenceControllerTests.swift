@@ -385,6 +385,72 @@ import Testing
         #expect(paneCount(try decode(repository)) == 5)
     }
 
+    @Test func aFailedHydrationNeverErasesTheStoredPaneTree() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let live = try makeSession(pwd: "/live")
+        let failedLeaf = PaneLeafSnapshot(uuid: UUID(), cwd: "/failed", title: nil)
+        let stored = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: nil,
+            paneTree: .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: "/kept", title: nil)),
+                right: .leaf(failedLeaf)
+            ),
+            focusedPaneID: nil,
+            zoomedPaneID: nil
+        )
+        let pending = TerminalSessionState(
+            id: stored.id,
+            surfaceTree: SplitTree<Ghostty.SurfaceView>()
+        )
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [live, pending],
+            selectedTabID: live.id
+        )
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [workspace],
+            selection: Selection(workspaceID: workspace.id, tabID: live.id)
+        ))
+        let registry = PendingHydrationRegistry()
+        registry.store(stored, for: pending.id)
+        controller.injectRestoreBindings(.init(
+            registry: registry,
+            construct: { _, uuid in
+                guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+                let view = Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
+                if uuid == failedLeaf.uuid {
+                    view.error = Ghostty.Error.apiFailed
+                }
+                return view
+            }
+        ))
+
+        #expect(controller.hydratePendingSession(pending) == .failed)
+
+        let persistence = makePersistence(directory: directory, registry: registry) { [controller] }
+        #expect(persistence.persistIfNeeded())
+        persistence.flush()
+        let originalData = try Data(contentsOf: repository.primaryURL)
+
+        let saved = try #require(
+            try decode(repository).windows[0].workspaces[0].tabs.first { $0.id == pending.id }
+        )
+        #expect(saved.paneTree == stored.paneTree)
+        for _ in 0..<3 {
+            pending.bumpMetadataGeneration()
+            #expect(persistence.persistIfNeeded())
+            persistence.flush()
+            #expect(try Data(contentsOf: repository.primaryURL) == originalData)
+        }
+    }
+
     // MARK: - Metadata changes move the counter; one write per tick
 
     @Test func renamingATabUpdatesDiskAndCoalescesWithinOneTick() throws {

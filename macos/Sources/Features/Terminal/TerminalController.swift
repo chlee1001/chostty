@@ -174,8 +174,9 @@ enum TerminalControllerGraphFactory {
 
                 let tree: SplitTree<Ghostty.SurfaceView>
                 if isSelected {
-                    tree = SessionSnapshotProjection.surfaceTree(
-                        from: tabSnapshot.paneTree,
+                    let restorableTree = restorableTree(of: tabSnapshot)
+                    if let restoredTree = SessionSnapshotProjection.surfaceTree(
+                        from: restorableTree,
                         zoomedPaneID: tabSnapshot.zoomedPaneID,
                         makeSurface: {
                             restoredSurface(
@@ -184,8 +185,13 @@ enum TerminalControllerGraphFactory {
                                 construct: construct
                             )
                         }
-                    )
-                    liveTree = tree
+                    ) {
+                        tree = restoredTree
+                        liveTree = restoredTree
+                    } else {
+                        tree = SplitTree<Ghostty.SurfaceView>()
+                        bindings.registry.store(tabSnapshot, for: tabSnapshot.id)
+                    }
                 } else {
                     tree = SplitTree<Ghostty.SurfaceView>()
                     bindings.registry.store(tabSnapshot, for: tabSnapshot.id)
@@ -235,6 +241,11 @@ enum TerminalControllerGraphFactory {
             physicalUUID: window.physicalUUID,
             restoreBindings: bindings
         )
+    }
+
+    /// Restores an old no-pane tab as one fresh pane instead of an empty tab.
+    static func restorableTree(of tab: TabSnapshot) -> PaneTreeSnapshot {
+        tab.paneTree ?? .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
     }
 
     /// Working directory a restored pane should start in: its own recorded
