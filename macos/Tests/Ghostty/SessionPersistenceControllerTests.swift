@@ -163,6 +163,7 @@ import Testing
         otherInstanceRunning: @escaping () -> Bool = { false },
         uptime: @escaping @Sendable () -> UInt64 = { 100 },
         scheduler: ManualScheduler? = nil,
+        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
         controllers: @escaping () -> [TerminalController]
     ) -> SessionPersistenceController {
         SessionPersistenceController(
@@ -183,6 +184,7 @@ import Testing
                 }
             },
             uptime: uptime,
+            workspaceNotificationCenter: workspaceNotificationCenter,
             controllersProvider: controllers
         )
     }
@@ -1845,6 +1847,61 @@ import Testing
         #expect(try SessionSnapshotRepository.encoder.encode(after.windows[0]) == retainedBytes)
     }
 
+    @Test func aRetireDeclinedByTheEmptyFileGuardIsRetriedLater() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let closed = try makeController(workspaceName: "Closed")
+        let added = try makeController(workspaceName: "Added")
+        settleTitles()
+        let active = InstanceState(activePIDs: [777])
+        let clock = UptimeState(10)
+        let scheduler = ManualScheduler()
+        let ownerID = UUID()
+        let ownerControllers = ControllerList([closed])
+        let passiveControllers = ControllerList([closed])
+        let owner = makePersistence(
+            directory: directory,
+            ownerInstanceID: ownerID,
+            ownerPID: 777,
+            isActive: { active.contains(777) },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { ownerControllers.controllers }
+        )
+        let passive = makePersistence(
+            directory: directory,
+            ownerPID: 4242,
+            isActive: { false },
+            isLiveInstance: { active.contains($0) },
+            uptime: { clock.read() },
+            scheduler: scheduler,
+            controllers: { passiveControllers.controllers }
+        )
+
+        owner.noteActivation()
+        owner.persistNow()
+        let stored = try decode(repository)
+        let didAdoptOwnership = passive.adoptOwnership(of: stored)
+        #expect(didAdoptOwnership)
+        passive.persistNow()
+
+        passiveControllers.controllers = []
+        passive.persistNow()
+        let afterDeclinedRetire = try decode(repository)
+        let declinedWindowIDs = Set(afterDeclinedRetire.windows.map(\.physicalUUID))
+        #expect(declinedWindowIDs == [closed.physicalUUID])
+
+        ownerControllers.controllers = [closed, added]
+        owner.persistNow()
+        passive.persistNow()
+
+        let afterRetriedRetire = try decode(repository)
+        let retriedWindowIDs = Set(afterRetriedRetire.windows.map(\.physicalUUID))
+        #expect(retriedWindowIDs == [added.physicalUUID])
+    }
+
     @Test func finalSaveOfAnInactiveInstanceDoesNotOverwriteAnInstanceItDeferredTo() throws {
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
@@ -2319,18 +2376,36 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
         try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let added = restoredWindow(cwd: directory.path, titles: ["added"])
         var otherInstanceRunning = true
+        let workspaceNotificationCenter = NotificationCenter()
         let persistence = makePersistence(
             directory: directory,
             otherInstanceRunning: { otherInstanceRunning },
+            workspaceNotificationCenter: workspaceNotificationCenter,
             controllers: { [] }
         )
         _ = persistence.adoptStoredSession(liveWindowIDs: [])
         #expect(persistence.reopenableWindowIDs.isEmpty)
 
+        try save(
+            AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored, added]),
+            to: repository
+        )
         otherInstanceRunning = false
-        persistence.refreshDormantWindows()
+        persistence.start()
+        let terminationUserInfo: [AnyHashable: Any] = [
+            NSWorkspace.applicationUserInfoKey: NSRunningApplication.current,
+        ]
+        workspaceNotificationCenter.post(
+            name: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            userInfo: terminationUserInfo
+        )
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        persistence.stop()
 
-        #expect(persistence.reopenableWindowIDs == [stored.physicalUUID])
+        let reopenableWindowIDs = Set(persistence.reopenableWindowIDs)
+        #expect(reopenableWindowIDs == [stored.physicalUUID, added.physicalUUID])
     }
 }

@@ -89,7 +89,6 @@ struct WorkspaceControls: View {
     @State private var saveHealth: SessionPersistenceController.SaveHealth = .healthy
     @State private var restoreAttemptsUnavailable = false
     @State private var reopenableCount = 0
-    @State private var heldBackCount = 0
 
     private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
         SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
@@ -162,6 +161,7 @@ struct WorkspaceControls: View {
                 inspection: sidebarSyncInspection,
                 saveHealth: saveHealth,
                 restoreAttemptsUnavailable: restoreAttemptsUnavailable,
+                reopenableWindowCount: reopenableCount,
                 refresh: refreshSidebarSync,
                 saveCurrentState: synchronizeSidebarState
             )
@@ -190,7 +190,6 @@ struct WorkspaceControls: View {
     private func refreshPersistenceHealth() {
         guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
             reopenableCount = 0
-            heldBackCount = 0
             return
         }
         saveHealth = persistence.saveHealth
@@ -201,11 +200,9 @@ struct WorkspaceControls: View {
     private func refreshDormantWindowCounts() {
         guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
             reopenableCount = 0
-            heldBackCount = 0
             return
         }
         reopenableCount = persistence.reopenableWindowIDs.count
-        heldBackCount = persistence.restoreQuarantine().windows.count
     }
 
     private func refreshSidebarSync() {
@@ -229,6 +226,7 @@ private struct SidebarSyncSheet: View {
     let inspection: SessionPersistenceController.SidebarSyncInspection?
     let saveHealth: SessionPersistenceController.SaveHealth
     let restoreAttemptsUnavailable: Bool
+    let reopenableWindowCount: Int
     let refresh: () -> Void
     let saveCurrentState: () -> Void
 
@@ -368,7 +366,10 @@ private struct SidebarSyncSheet: View {
             if kind == "window" {
                 let excess = count - limit
                 let noun = excess == 1 ? "window" : "windows"
-                return "Too many windows are open. Close \(excess) \(noun) and try again."
+                let savedWindows = reopenableWindowCount > 0
+                    ? " (including \(reopenableWindowCount) saved windows not open)"
+                    : ""
+                return "Too many windows are open. Close \(excess) \(noun) and try again.\(savedWindows)"
             }
             return "The \(kind) limit was exceeded. Reduce the session size and try again."
         case .invalidSplitRatio:

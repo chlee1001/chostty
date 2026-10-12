@@ -381,13 +381,10 @@ class AppDelegate: NSObject,
             if let persistence = sessionPersistence,
                let stored {
                 let quarantine = persistence.restoreQuarantine()
-                let gate = SessionPersistenceGate(
-                    configEnabled: ghostty.config.macosSessionPersistence
-                )
                 let decision = SessionPersistenceController.bootDecision(
                     windows: stored.snapshot.windows,
                     quarantinedWindows: quarantine.windows,
-                    mayApplyOnBoot: gate.shouldApplyOnBoot,
+                    mayApplyOnBoot: persistence.mayApplyOnBoot,
                     anotherInstanceRunning: persistence.otherInstanceRunning(),
                     hasOpenWindow: !TerminalController.open.isEmpty,
                     initialWindow: derivedConfig.initialWindow
@@ -398,24 +395,24 @@ class AppDelegate: NSObject,
                     do {
                         try SessionSnapshotRepository().promotePrimaryToBackup()
                     } catch {
-                        Self.logger.warning(
+                        SessionPersistenceController.logger.warning(
                             "session.restore.backupPromotionFailed error=\(String(describing: error), privacy: .public)"
                         )
                     }
                 }
 
                 if promoted > 0 {
-                    Self.logger.notice(
+                    SessionPersistenceController.logger.notice(
                         "session.restore.applied windows=\(promoted, privacy: .public) source=\(String(describing: stored.source), privacy: .public) pendingTabs=\(self.pendingHydration.count, privacy: .public)"
                     )
                 }
                 if !decision.keepDormant.isEmpty {
-                    Self.logger.info(
+                    SessionPersistenceController.logger.notice(
                         "session.restore.keptDormant reason=\(String(describing: decision.reason), privacy: .public) windows=\(decision.keepDormant.count, privacy: .public)"
                     )
                 }
                 if !quarantine.windows.isEmpty {
-                    Self.logger.warning(
+                    SessionPersistenceController.logger.warning(
                         "session.restore.heldBack kind=window ids=\(quarantine.windows.count, privacy: .public)"
                     )
                 }
@@ -433,6 +430,7 @@ class AppDelegate: NSObject,
         _ windows: [WindowSnapshot],
         trigger: TerminalController.PromotionTrigger
     ) -> Int {
+        guard !windows.isEmpty else { return 0 }
         guard let sessionPersistence else { return 0 }
 
         undoManager.disableUndoRegistration()
@@ -450,7 +448,7 @@ class AppDelegate: NSObject,
         )
         undoManager.enableUndoRegistration()
 
-        Self.logger.notice(
+        SessionPersistenceController.logger.notice(
             "session.restore.promoted trigger=\(String(describing: trigger), privacy: .public) windows=\(controllers.count, privacy: .public) failed=\(windows.count - controllers.count, privacy: .public)"
         )
         return controllers.count

@@ -2291,7 +2291,12 @@ class BaseTerminalController: NSWindowController,
         case .notTracked:
             token = nil
         case .unrecorded:
-            guard trigger == .selection else { return .unrecorded }
+            // Without a recorded attempt only an explicit selection may build.
+            // Mark the tab so it does not sit blank with no hint to select it.
+            guard trigger == .selection else {
+                session.hydrationFailed = true
+                return .unrecorded
+            }
             token = nil
         }
 
@@ -2362,7 +2367,7 @@ class BaseTerminalController: NSWindowController,
                 )
             }
         ) else {
-            Ghostty.logger.warning(
+            SessionPersistenceController.logger.warning(
                 "session.hydrate.failed tab=\(session.id, privacy: .public) panes=\(snapshotTree.paneCount)"
             )
             return .failed

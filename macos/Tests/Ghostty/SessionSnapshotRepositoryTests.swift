@@ -589,16 +589,6 @@ import Testing
             return
         }
         #expect(reason.contains("noWindows"))
-        // The graph is unusable, but the writer it names still owns the file.
-        #expect(repository.storedOwner() == .init(ownerInstanceID: empty.ownerInstanceID, ownerPID: 1))
-    }
-
-    @Test func storedOwnerIsAbsentForMissingOrCorruptFiles() throws {
-        let directory = try makeTemporaryDirectory()
-        let repository = SessionSnapshotRepository(directory: directory)
-        #expect(repository.storedOwner() == nil)
-        try Data("{ not json".utf8).write(to: repository.primaryURL)
-        #expect(repository.storedOwner() == nil)
     }
 
     @Test func corruptPrimaryFallsBackToBackup() throws {
@@ -1094,6 +1084,7 @@ import Testing
             instanceID: UUID(), pid: 4242, live: { $0 == 777 }, retire: [first.windows[0].physicalUUID]
         ))
         #expect(receipt.outcome == .retired(1))
+        #expect(receipt.remainingRetireWindowIDs.isEmpty)
         let loaded = try Data(contentsOf: repository.primaryURL)
         let snapshot = try JSONDecoder().decode(AppSessionSnapshot.self, from: loaded)
         #expect(snapshot.ownerInstanceID == owner)
@@ -1110,6 +1101,7 @@ import Testing
             instanceID: UUID(), pid: 4242, live: { $0 == 777 }, retire: [stored.windows[0].physicalUUID]
         ))
         #expect(receipt.outcome == .yielded(.init(ownerInstanceID: owner, ownerPID: 777)))
+        #expect(receipt.remainingRetireWindowIDs == [stored.windows[0].physicalUUID])
         #expect(try Data(contentsOf: repository.primaryURL) == original)
     }
 

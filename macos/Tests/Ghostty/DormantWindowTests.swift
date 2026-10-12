@@ -115,10 +115,10 @@ import Testing
     private func inertConstructor(
         count: Counter? = nil
     ) -> TerminalControllerGraphFactory.SurfaceConstructor {
-        { config, uuid in
+        { _, uuid in
             count?.value += 1
             guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
-            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
+            return Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
         }
     }
 
@@ -217,7 +217,7 @@ import Testing
         try seed(repository, windows: [stored])
         let persistence = persistence(repository: repository, registry: registry, scheduler: scheduler)
         let sawQuarantine = Counter()
-        let construct: TerminalControllerGraphFactory.SurfaceConstructor = { config, uuid in
+        let construct: TerminalControllerGraphFactory.SurfaceConstructor = { _, uuid in
             let recorded = repository.restoreAttempts().contains { attempt in
                 attempt.kind == .window && attempt.targetID == stored.physicalUUID
             }
@@ -225,7 +225,7 @@ import Testing
                 sawQuarantine.value += 1
             }
             guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
-            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
+            return Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
         }
 
         _ = promote([stored], persistence: persistence, registry: registry, construct: construct)
@@ -306,41 +306,74 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let scheduler = ManualScheduler()
         let registry = PendingHydrationRegistry(scheduleAfter: scheduler.schedule)
-        let first = window(cwd: directory.path)
-        let second = window(cwd: directory.path)
-        try seed(repository, windows: [first, second])
         let persistence = persistence(repository: repository, registry: registry, scheduler: scheduler)
         let builds = Counter()
-        let failedTabID = first.workspaces[0].tabs[0].id
-        let failedLeafID = try #require(first.workspaces[0].tabs[0].paneTree?.leaves.first?.uuid)
-        let construct: TerminalControllerGraphFactory.SurfaceConstructor = { config, uuid in
+        var expectedBuiltLeafIDs = Set<UUID>()
+        var expectedPendingTabIDs = Set<UUID>()
+        var expectedWindowIDs = Set<UUID>()
+        var windows: [WindowSnapshot] = []
+
+        for _ in 0..<2 {
+            let selectedTabs = (0..<3).map { _ in tab(cwd: directory.path) }
+            let otherTabs = (0..<3).map { _ in tab(cwd: directory.path) }
+            let selectedWorkspace = WorkspaceSnapshot(
+                id: UUID(),
+                name: "Selected",
+                color: .none,
+                isCollapsed: false,
+                defaultDirectory: nil,
+                tabs: selectedTabs,
+                selectedTabID: selectedTabs[0].id
+            )
+            let otherWorkspace = WorkspaceSnapshot(
+                id: UUID(),
+                name: "Other",
+                color: .none,
+                isCollapsed: false,
+                defaultDirectory: nil,
+                tabs: otherTabs,
+                selectedTabID: otherTabs[0].id
+            )
+            let selectedLeafIDs = selectedTabs[0].paneTree?.leaves.map(\.uuid) ?? []
+            expectedBuiltLeafIDs.formUnion(selectedLeafIDs)
+            expectedPendingTabIDs.formUnion(selectedTabs.dropFirst().map(\.id))
+            expectedPendingTabIDs.formUnion(otherTabs.map(\.id))
+
+            let physicalUUID = UUID()
+            expectedWindowIDs.insert(physicalUUID)
+            windows.append(WindowSnapshot(
+                physicalUUID: physicalUUID,
+                selection: .init(workspaceID: selectedWorkspace.id, tabID: selectedTabs[0].id),
+                workspaces: [selectedWorkspace, otherWorkspace]
+            ))
+        }
+        try seed(repository, windows: windows)
+
+        let construct: TerminalControllerGraphFactory.SurfaceConstructor = { _, uuid in
             builds.value += 1
             guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
-            let view = Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
-            if uuid == failedLeafID {
-                view.error = Ghostty.Error.apiFailed
-            }
-            return view
+            return Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
         }
 
-        let controllers = promote(
-            [first, second],
-            persistence: persistence,
-            registry: registry,
-            construct: construct
+        let controllers = TerminalController.promoteStoredWindows(
+            windows,
+            ghostty: TerminalControllerTestHarness.sharedApp,
+            bindings: .init(registry: registry, construct: construct, persistence: persistence),
+            heldBackTabIDs: [],
+            trigger: .userReopen,
+            present: { _ in }
         )
-        scheduler.runAll()
+        let controllerCount = controllers.count
+        let constructorCallCount = builds.value
+        let pendingTabIDs = Set(registry.allPending.keys)
+        let recordedWindowIDs = Set(repository.restoreAttempts()
+            .filter { $0.kind == .window }
+            .map(\.targetID))
 
-        #expect(controllers.count == 2)
-        #expect(builds.value >= 2)
-        #expect(registry.contains(failedTabID))
-        for controller in controllers {
-            #expect(controller.workspaceStore.snapshot.workspaces.count == 1)
-            #expect(controller.surfaceTree.allSatisfy { $0.surface == nil })
-            for session in controller.workspaceStore.allSessions {
-                #expect(session.surfaceTree.allSatisfy { $0.surface == nil })
-            }
-        }
+        #expect(controllerCount == windows.count)
+        #expect(constructorCallCount == expectedBuiltLeafIDs.count)
+        #expect(pendingTabIDs == expectedPendingTabIDs)
+        #expect(recordedWindowIDs == expectedWindowIDs)
     }
 
     @Test func promotionQueuesHydrationOfTheSelectedWorkspace() throws {

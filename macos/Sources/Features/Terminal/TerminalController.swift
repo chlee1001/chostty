@@ -1619,6 +1619,7 @@ extension TerminalController {
         trigger: PromotionTrigger,
         present: (TerminalController) -> Void
     ) -> [TerminalController] {
+        guard !windows.isEmpty else { return [] }
         guard let persistence = bindings.persistence else {
             preconditionFailure("Stored-window promotion requires session persistence")
         }
@@ -1633,7 +1634,7 @@ extension TerminalController {
             token = nil
         case .unrecorded:
             guard case .userReopen = trigger else {
-                Ghostty.logger.warning(
+                SessionPersistenceController.logger.warning(
                     "session.restore.keptDormant reason=attemptNotRecorded windows=\(windows.count, privacy: .public)"
                 )
                 return []
@@ -1649,7 +1650,7 @@ extension TerminalController {
                 bindings: bindings,
                 heldBackTabIDs: heldBackTabIDs
             ) else {
-                Ghostty.logger.warning(
+                SessionPersistenceController.logger.warning(
                     "session.restore.promoteFailed window=\(window.physicalUUID.uuidString, privacy: .public)"
                 )
                 continue

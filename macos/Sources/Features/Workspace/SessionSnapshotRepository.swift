@@ -20,11 +20,6 @@ struct SessionSnapshotRepository: Sendable {
     /// Directory holding `session.json` and `session-previous.json`.
     let directory: URL
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
-        category: "session-persistence"
-    )
-
     static let primaryFileName = "session.json"
     static let backupFileName = "session-previous.json"
     static let lockFileName = "session.lock"
@@ -200,6 +195,7 @@ struct SessionSnapshotRepository: Sendable {
     struct SaveReceipt: Equatable, Sendable {
         var outcome: SaveOutcome
         var preservedWindowIDs: [UUID] = []
+        var remainingRetireWindowIDs: Set<UUID> = []
     }
 
     @discardableResult
@@ -220,7 +216,7 @@ struct SessionSnapshotRepository: Sendable {
                     || claim?.instanceID == policy.selfInstanceID
                     || claim!.epoch <= epoch
                 if !shouldClaim {
-                    Self.logger.notice("session.persist.claimStale")
+                    SessionPersistenceController.logger.notice("session.persist.claimStale")
                 }
             } else {
                 shouldClaim = false
@@ -235,24 +231,21 @@ struct SessionSnapshotRepository: Sendable {
                     ),
                     to: descriptor
                 )
-                return try write(snapshot, policy: policy, existingOwner: owner)
+                return try write(snapshot, policy: policy)
             }
 
             let mayWrite = owner == nil
                 || owner?.ownerInstanceID == policy.selfInstanceID
                 || (!policy.isLiveInstance(owner!.ownerPID)
                     && !policy.deferredOwnerIDs.contains(owner!.ownerInstanceID))
-            if mayWrite {
-                return try write(snapshot, policy: policy, existingOwner: owner)
+            if let owner, !mayWrite {
+                let retireResult = try retire(policy.retire)
+                return SaveReceipt(
+                    outcome: retireResult.count > 0 ? .retired(retireResult.count) : .yielded(owner),
+                    remainingRetireWindowIDs: retireResult.remainingWindowIDs
+                )
             }
-
-            guard let owner else {
-                return SaveReceipt(outcome: .nothingToWrite)
-            }
-            let retired = try retire(policy.retire)
-            return SaveReceipt(
-                outcome: retired > 0 ? .retired(retired) : .yielded(owner)
-            )
+            return try write(snapshot, policy: policy)
         }
     }
 
@@ -274,8 +267,7 @@ struct SessionSnapshotRepository: Sendable {
 
     private func write(
         _ snapshot: AppSessionSnapshot?,
-        policy: SavePolicy,
-        existingOwner: StoredOwner?
+        policy: SavePolicy
     ) throws -> SaveReceipt {
         guard let snapshot else {
             return SaveReceipt(outcome: .nothingToWrite)
@@ -294,7 +286,7 @@ struct SessionSnapshotRepository: Sendable {
                 guard !conflicts.isEmpty else { return window }
                 rekeyedCount += 1
                 let rekeyed = Self.rekeyed(window, conflicting: conflicts)
-                Self.logger.notice(
+                SessionPersistenceController.logger.notice(
                     "session.persist.preservedWindowRekeyed window=\(rekeyed.physicalUUID.uuidString, privacy: .public) ids=\(conflicts.count, privacy: .public)"
                 )
                 return rekeyed
@@ -318,13 +310,13 @@ struct SessionSnapshotRepository: Sendable {
         case .success(let snapshot):
             validated = snapshot
         case .failure(let rejection):
-            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
             return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
 
         let encoded = try Self.encoder.encode(validated)
         if let rejection = Self.resourceRejection(for: encoded) {
-            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
             return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
         let existing = try? Data(contentsOf: primaryURL)
@@ -337,13 +329,12 @@ struct SessionSnapshotRepository: Sendable {
         }
 
         try replacePrimary(encoded, existing: existing)
-        _ = existingOwner
         if !preserved.isEmpty {
-            Self.logger.notice(
+            SessionPersistenceController.logger.notice(
                 "session.persist.preserved windows=\(preserved.count, privacy: .public) rekeyed=\(rekeyedCount, privacy: .public)"
             )
         }
-        Self.logger.debug(
+        SessionPersistenceController.logger.debug(
             "session.persist.written windows=\(validated.windows.count, privacy: .public) preserved=\(preserved.count, privacy: .public)"
         )
         return SaveReceipt(outcome: .written, preservedWindowIDs: preservedWindowIDs)
@@ -430,14 +421,21 @@ struct SessionSnapshotRepository: Sendable {
         return identifiers
     }
 
-    private func retire(_ windowIDs: Set<UUID>) throws -> Int {
+    private func retire(
+        _ windowIDs: Set<UUID>
+    ) throws -> (count: Int, remainingWindowIDs: Set<UUID>) {
         guard !windowIDs.isEmpty,
               let existing = try? Data(contentsOf: primaryURL),
-              case .success(let snapshot) = Self.validate(existing) else { return 0 }
+              case .success(let snapshot) = Self.validate(existing) else {
+            return (0, [])
+        }
         let count = snapshot.windows.count
         let windows = snapshot.windows.filter { !windowIDs.contains($0.physicalUUID) }
         let retired = count - windows.count
-        guard retired > 0, !windows.isEmpty else { return 0 }
+        let remainingWindowIDs = windowIDs.intersection(Set(snapshot.windows.map(\.physicalUUID)))
+        guard retired > 0, !windows.isEmpty else {
+            return (0, remainingWindowIDs)
+        }
         let replacement = AppSessionSnapshot(
             version: snapshot.version,
             ownerInstanceID: snapshot.ownerInstanceID,
@@ -445,7 +443,7 @@ struct SessionSnapshotRepository: Sendable {
             windows: windows
         )
         try replacePrimary(try Self.encoder.encode(replacement), existing: existing)
-        return retired
+        return (retired, [])
     }
 
     private func replacePrimary(_ encoded: Data, existing: Data?) throws {
@@ -509,7 +507,7 @@ struct SessionSnapshotRepository: Sendable {
         do {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            Self.logger.warning(
+            SessionPersistenceController.logger.warning(
                 "session.persist.permissionsNotRestricted path=\(url.lastPathComponent, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
         }
@@ -541,7 +539,7 @@ struct SessionSnapshotRepository: Sendable {
             break
         case .failure(let failure):
             primaryFailure = failure.description
-            Self.logger.warning("session.restore.primaryUnusable \(failure.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.restore.primaryUnusable \(failure.description, privacy: .public)")
         }
 
         switch read(backupURL) {
@@ -550,7 +548,7 @@ struct SessionSnapshotRepository: Sendable {
         case .failure(.missing):
             return primaryFailure.map { .unusable(reason: $0) } ?? .absent
         case .failure(let failure):
-            Self.logger.warning("session.restore.backupUnusable \(failure.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.restore.backupUnusable \(failure.description, privacy: .public)")
             return .unusable(reason: primaryFailure ?? failure.description)
         }
     }
@@ -558,15 +556,6 @@ struct SessionSnapshotRepository: Sendable {
     struct StoredOwner: Decodable, Equatable, Sendable {
         let ownerInstanceID: UUID
         let ownerPID: Int32
-    }
-
-    /// Lock-free helper for the writer recorded in the primary file. Ownership
-    /// stays readable even when the graph itself would fail restore validation;
-    /// locked entry points also call this helper.
-    func storedOwner() -> StoredOwner? {
-        guard let data = try? Data(contentsOf: primaryURL),
-              Self.resourceRejection(for: data) == nil else { return nil }
-        return try? JSONDecoder().decode(StoredOwner.self, from: data)
     }
 
     private enum ReadFailure: Error, CustomStringConvertible {
@@ -684,10 +673,6 @@ private enum FileLock {
         case lockFailed(Int32)
     }
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
-        category: "session-persistence"
-    )
     private static let unsupportedLock = NSLock()
     private static var didLogUnsupported = false
 
@@ -715,7 +700,7 @@ private enum FileLock {
                 unsupportedLock.lock()
                 if !didLogUnsupported {
                     didLogUnsupported = true
-                    logger.warning("session.persist.lockUnsupported file=\(lockURL.lastPathComponent, privacy: .public)")
+                    SessionPersistenceController.logger.warning("session.persist.lockUnsupported file=\(lockURL.lastPathComponent, privacy: .public)")
                 }
                 unsupportedLock.unlock()
                 return try body(descriptor)

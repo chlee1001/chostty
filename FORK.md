@@ -149,11 +149,14 @@ then open only when you select them.
 
 File- and URL-first launches, launches that carry an explicit open intent
 (`ghostty -e …`, `open --args`), and `initial-window = false` keep saved
-windows unopened in the session file. An explicit-open launch still saves the
-windows it opens; the `-e` command itself is not saved. Open them with **Reopen Saved Windows** or by
-clicking the Dock when no window is open. Windows and tabs whose restore crashed
-stay held back until opened explicitly. A new instance does not restore saved
-windows while another instance is running.
+windows unopened in the session file. Open the saved windows with **Reopen
+Saved Windows** in the sidebar's workspace actions, or by clicking the Dock
+when no window is open. An explicit-open launch still saves the windows it
+opens next to the unopened ones; the `-e` command itself is not saved. Closing
+a window removes it from the file even when only unopened saved windows remain.
+Windows and tabs whose restore crashed stay held back until opened explicitly.
+A new instance does not restore saved windows while another instance is
+running.
 
 Set `macos-session-persistence = false` to turn persistence off, or export
 `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also

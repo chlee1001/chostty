@@ -39,7 +39,7 @@ final class SessionPersistenceController {
     private let ownerInstanceID: UUID
     private let ownerPID: Int32
 
-    private static let logger = Logger(
+    static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
         category: "session-persistence"
     )
@@ -123,12 +123,14 @@ final class SessionPersistenceController {
     private var retiredAcknowledged = Set<UUID>()
 
     var isPassive: Bool { !deferredOwners.isEmpty }
+    var mayApplyOnBoot: Bool { gate.shouldApplyOnBoot }
 
     private let isActive: () -> Bool
     private let isLiveInstance: @Sendable (Int32) -> Bool
     private let otherInstanceRunningProvider: () -> Bool
     private let scheduleAfter: MainScheduler
     private let uptime: @Sendable () -> UInt64
+    private let workspaceNotificationCenter: NotificationCenter
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lastPublishedReopenableWindowIDs: [UUID] = []
 
@@ -151,6 +153,7 @@ final class SessionPersistenceController {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
         },
         uptime: @escaping @Sendable () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) },
+        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.open }
     ) {
         self.repository = repository
@@ -164,6 +167,7 @@ final class SessionPersistenceController {
         self.otherInstanceRunningProvider = otherInstanceRunning
         self.scheduleAfter = scheduleAfter
         self.uptime = uptime
+        self.workspaceNotificationCenter = workspaceNotificationCenter
         self.controllersProvider = controllersProvider
     }
 
@@ -259,6 +263,7 @@ final class SessionPersistenceController {
     }
 
     func restoreQuarantine() -> (windows: Set<UUID>, tabs: Set<UUID>) {
+        guard gate.shouldPersist else { return ([], []) }
         var windows = Set<UUID>()
         var tabs = Set<UUID>()
         for attempt in repository.restoreAttempts() where isDeadRestoreAttempt(attempt) {
@@ -295,7 +300,7 @@ final class SessionPersistenceController {
     deinit {
         timer?.invalidate()
         workspaceObservers.forEach {
-            NSWorkspace.shared.notificationCenter.removeObserver($0)
+            workspaceNotificationCenter.removeObserver($0)
         }
     }
 
@@ -379,13 +384,12 @@ final class SessionPersistenceController {
 
     private func observeWorkspaceLifecycle() {
         guard workspaceObservers.isEmpty else { return }
-        let center = NSWorkspace.shared.notificationCenter
         let names: [Notification.Name] = [
             NSWorkspace.didLaunchApplicationNotification,
             NSWorkspace.didTerminateApplicationNotification,
         ]
         workspaceObservers = names.map { name in
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+            workspaceNotificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 MainActor.assumeIsolated {
                     guard let self,
                           let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
@@ -756,6 +760,7 @@ final class SessionPersistenceController {
                     case .yielded:
                         saveState.finish(cursor, result: .yielded)
                     case .retired:
+                        // The cursor stays unsaved so the next write records the yield.
                         saveState.finish(cursor, result: .failed)
                     case .nothingToWrite:
                         saveState.finish(cursor, result: .saved)
@@ -806,7 +811,7 @@ final class SessionPersistenceController {
         }
         switch receipt.outcome {
         case .yielded(let owner):
-            retiredAcknowledged.formUnion(retire)
+            retiredAcknowledged.formUnion(retire.subtracting(receipt.remainingRetireWindowIDs))
             if enqueuedActivationEpoch == activationEpoch {
                 deferredOwners[owner.ownerInstanceID] = owner.ownerPID
                 Self.logger.notice(
@@ -815,7 +820,8 @@ final class SessionPersistenceController {
             }
             applySaveResult(.yielded)
         case .retired:
-            retiredAcknowledged.formUnion(retire)
+            retiredAcknowledged.formUnion(retire.subtracting(receipt.remainingRetireWindowIDs))
+            // The health maps to `.saved` because the write succeeded.
             applySaveResult(.saved)
         case .written, .skippedIdentical:
             storeDormant(receipt.preservedWindowIDs)

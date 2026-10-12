@@ -720,6 +720,41 @@ import Testing
         #expect(persistence.restoreAttemptStarts == 1)
     }
 
+    @Test func anUnrecordedAutomaticStepMarksTheTabUntilItIsSelected() throws {
+        let scheduler = ManualScheduler()
+        let directory = try directory()
+        let registry = PendingHydrationRegistry(scheduleAfter: scheduler.schedule)
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent(SessionSnapshotRepository.restoreAttemptsLockFileName),
+            withIntermediateDirectories: true
+        )
+        let persistence = persistence(directory: directory, registry: registry, scheduler: scheduler)
+        let selected = tab()
+        let pending = tab()
+        let workspace = workspace([selected, pending])
+        let controller = try controller(
+            workspaces: [workspace],
+            selectedWorkspace: workspace.id,
+            registry: registry,
+            persistence: persistence,
+            construct: inertConstructor()
+        )
+        let pendingSession = try session(pending.id, in: controller)
+
+        controller.scheduleWorkspaceHydration(workspaceID: workspace.id)
+        scheduler.runNext()
+        let markedAfterStep = pendingSession.hydrationFailed
+        let pendingAfterStep = registry.contains(pending.id)
+
+        controller.selectSession(workspaceID: workspace.id, tabID: pending.id)
+
+        #expect(markedAfterStep)
+        #expect(pendingAfterStep)
+        #expect(!pendingSession.hydrationFailed)
+        #expect(!registry.contains(pending.id))
+        #expect(!pendingSession.surfaceTree.isEmpty)
+    }
+
     @Test func automaticHydrationResumesOnceTheAttemptCanBeRecorded() throws {
         let scheduler = ManualScheduler()
         let directory = try directory()
