@@ -154,6 +154,7 @@ import Testing
     private func makePersistence(
         directory: URL,
         registry: PendingHydrationRegistry? = nil,
+        gate: SessionPersistenceGate? = nil,
         ownerInstanceID: UUID = UUID(),
         ownerPID: Int32 = 4242,
         queue: DispatchQueue = DispatchQueue(label: "chostty-tests.persistence"),
@@ -166,7 +167,7 @@ import Testing
     ) -> SessionPersistenceController {
         SessionPersistenceController(
             repository: SessionSnapshotRepository(directory: directory),
-            gate: openGate(),
+            gate: gate ?? openGate(),
             registry: registry ?? PendingHydrationRegistry(),
             ownerInstanceID: ownerInstanceID,
             ownerPID: ownerPID,
@@ -2067,6 +2068,42 @@ import Testing
         let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
         #expect(retainedBytes == storedBytes)
         #expect(saved.windows.count == 2)
+    }
+
+    @Test func explicitOpenLaunchSavesItsWindowAndKeepsTheStoredSidebar() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = SessionSnapshotRepository(directory: directory)
+        let stored = restoredWindow(cwd: directory.path, titles: ["stored"])
+        try save(AppSessionSnapshot(ownerInstanceID: UUID(), ownerPID: 777, windows: [stored]), to: repository)
+        let storedBytes = try SessionSnapshotRepository.encoder.encode(stored)
+        let gate = SessionPersistenceGate(environment: [:], arguments: ["-e", "top"], configEnabled: true)
+        let opened = try makeController(workspaceName: "Opened")
+        let persistence = makePersistence(directory: directory, gate: gate) { [opened] }
+
+        let adopted = try #require(persistence.adoptStoredSession(
+            liveWindowIDs: [opened.physicalUUID]
+        ))
+        let decision = SessionPersistenceController.bootDecision(
+            windows: adopted.snapshot.windows,
+            quarantinedWindows: [],
+            mayApplyOnBoot: gate.shouldApplyOnBoot,
+            anotherInstanceRunning: false,
+            hasOpenWindow: true,
+            initialWindow: true
+        )
+        #expect(decision.apply.isEmpty)
+        #expect(decision.reason == .explicitOpenIntent)
+
+        persistence.persistNow()
+
+        let saved = try decode(repository)
+        let savedIDs = Set(saved.windows.map(\.physicalUUID))
+        #expect(savedIDs == [stored.physicalUUID, opened.physicalUUID])
+        let retained = try #require(saved.windows.first { $0.physicalUUID == stored.physicalUUID })
+        let retainedBytes = try SessionSnapshotRepository.encoder.encode(retained)
+        #expect(retainedBytes == storedBytes)
+        #expect(persistence.reopenableWindowIDs == [stored.physicalUUID])
     }
 
     @Test func unopenedWindowsSurviveRepeatedSavesByteIdentical() throws {

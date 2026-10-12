@@ -127,15 +127,16 @@ Chostty로 치지 않는다.
 복원 시도를 기록하지 못하면 경고 배지와 **Check Sidebar Sync…**에서 복원 보호를
 쓸 수 없다고 알린다. 이때 저장된 창과 탭은 선택할 때만 열린다.
 
-파일이나 URL을 먼저 여는 실행과 `initial-window = false` 설정은 저장 창을 열지 않고
-세션 파일에 그대로 남긴다. 이 창은 **Reopen Saved Windows**로 열거나, 창이 하나도 없을
+파일이나 URL을 먼저 여는 실행, 명시적인 열기 의도가 있는 실행(`ghostty -e …`,
+`open --args`), `initial-window = false` 설정은 저장 창을 열지 않고 세션 파일에 그대로
+남긴다. 명시적으로 연 실행도 자기가 연 창은 저장한다. `-e` 명령 자체는 저장하지 않는다. 이 창은 **Reopen Saved Windows**로 열거나, 창이 하나도 없을
 때 Dock을 클릭해서 연다. 복원하다가 앱이 종료된 창과 탭은 보류되며, 직접 열기 전에는
 자동으로 열리지 않는다. 다른 인스턴스가 실행 중이면 새 인스턴스는 저장 창을 복원하지
 않는다.
 
 이 기능을 모두 끄려면 `macos-session-persistence = false`로 설정한다. 한 번만 끄려면
-`GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1`을 export한다. 테스트 호스트와 명시적인 열기
-의도가 있는 실행(`ghostty -e …`, `open --args`)에서도 저장 기능은 스스로 꺼진다.
+`GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1`을 export한다. 테스트 호스트에서도 저장 기능은
+스스로 꺼진다.
 
 `window-save-state`는 upstream에서 물려받아 여전히 파싱되지만 macOS 앱은 무시하고
 늘 `never`처럼 동작한다. 위 동작을 정하는 키는 `macos-session-persistence`다.

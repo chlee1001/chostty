@@ -3,8 +3,8 @@ import Foundation
 /// Decides whether this process may write a session snapshot and whether it may
 /// apply one at launch.
 ///
-/// Both answers are the same value: every signal means "this is not an ordinary
-/// user session", and then neither writing nor restoring is wanted.
+/// The configuration key and the signals below mean "this is not an ordinary
+/// user session"; then neither writing nor restoring is wanted:
 ///
 /// - `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` turns the feature off.
 /// - `XCTestConfigurationFilePath` catches the unit-test host.
@@ -12,8 +12,10 @@ import Foundation
 ///   NOT inherit the runner's environment. Without it the gate would stand open
 ///   in exactly the process that drives the real app against the developer's
 ///   own session file.
-/// - Any launch argument other than Finder's `-psn_*` means an explicit open
-///   intent, and restoring last time's layout over it would be wrong.
+///
+/// An explicit open intent — any launch argument other than Finder's `-psn_*`
+/// — only stops the stored layout from being applied over what the user asked
+/// for. The launch still saves; the stored windows it does not open are kept.
 struct SessionPersistenceGate: Sendable {
     static let killSwitchVariable = "GHOSTTY_MAC_DISABLE_SESSION_RESTORE"
 
@@ -33,14 +35,13 @@ struct SessionPersistenceGate: Sendable {
     }
 
     var shouldPersist: Bool { isEnabled }
-    var shouldApplyOnBoot: Bool { isEnabled }
+    var shouldApplyOnBoot: Bool { isEnabled && !hasExplicitOpenIntent }
 
     private var isEnabled: Bool {
         guard configEnabled else { return false }
         guard environment[Self.killSwitchVariable] != "1" else { return false }
         guard environment["XCTestConfigurationFilePath"] == nil else { return false }
         guard environment["GHOSTTY_USER_DEFAULTS_SUITE"] == nil else { return false }
-        guard !hasExplicitOpenIntent else { return false }
         return true
     }
 

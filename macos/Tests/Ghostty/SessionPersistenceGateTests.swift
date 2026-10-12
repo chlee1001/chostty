@@ -62,17 +62,30 @@ import Testing
         #expect(gate(environment: [SessionPersistenceGate.killSwitchVariable: ""]).shouldPersist)
     }
 
-    @Test func applePersistenceArgumentsCloseTheGate() {
+    @Test func applePersistenceArgumentsSkipBootRestoreButStillPersist() {
         let gate = gate(arguments: ["-ApplePersistenceIgnoreState", "YES"])
-        #expect(!gate.shouldPersist)
+        #expect(gate.shouldPersist)
         #expect(!gate.shouldApplyOnBoot)
     }
 
-    @Test func arbitraryLaunchArgumentClosesTheGate() {
+    @Test func explicitOpenIntentSkipsBootRestoreButStillPersists() {
         // `ghostty -e ...`, `open --args`: the user asked for something
-        // specific, so last session's layout must not land on top.
-        #expect(!gate(arguments: ["-e", "top"]).shouldApplyOnBoot)
-        #expect(!gate(arguments: ["--config-file=/tmp/x"]).shouldApplyOnBoot)
+        // specific, so last session's layout must not land on top, but what
+        // this launch opens is still the session the user is using.
+        for arguments in [["-e", "top"], ["--config-file=/tmp/x"]] {
+            let gate = gate(arguments: arguments)
+            #expect(gate.shouldPersist)
+            #expect(!gate.shouldApplyOnBoot)
+        }
+    }
+
+    @Test func explicitOpenIntentNeverReopensAClosedGate() {
+        let gate = gate(
+            environment: [SessionPersistenceGate.killSwitchVariable: "1"],
+            arguments: ["-e", "top"]
+        )
+        #expect(!gate.shouldPersist)
+        #expect(!gate.shouldApplyOnBoot)
     }
 
     @Test func configuredOffClosesTheGate() {

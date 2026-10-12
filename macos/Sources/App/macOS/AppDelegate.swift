@@ -213,8 +213,9 @@ class AppDelegate: NSObject,
         terminalCommands = TerminalCommandRouter()
         terminalCommands.dispatcher = surfaceDispatcher
 
-        // The gate closes itself in test hosts, under the kill switch, and for
-        // launches with an explicit open intent.
+        // The gate closes itself in test hosts and under the kill switch. A
+        // launch with an explicit open intent still saves; it only skips
+        // applying the stored windows at boot.
         pendingHydration = PendingHydrationRegistry()
         sessionPersistence = SessionPersistenceController(
             repository: SessionSnapshotRepository(),
