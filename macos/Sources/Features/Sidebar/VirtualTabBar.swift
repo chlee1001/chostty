@@ -247,10 +247,17 @@ private struct VirtualTabBarItem: View {
         HStack(spacing: 5) {
             // Reserved at all times so a tab that starts or stops ringing does
             // not resize itself and shove its neighbours sideways.
-            Image(systemName: "bell.fill")
+            Image(systemName: session.isHeldBack
+                ? "exclamationmark.arrow.circlepath"
+                : session.hydrationFailed ? "exclamationmark.triangle" : "bell.fill")
                 .font(.system(size: 8.5))
-                .foregroundStyle(.orange)
-                .opacity(session.bell ? 1 : 0)
+                .foregroundStyle(session.isHeldBack || session.hydrationFailed ? Color.primary : Color.orange)
+                .opacity(session.isHeldBack || session.hydrationFailed || session.bell ? 1 : 0)
+                .help(session.isHeldBack
+                    ? "Held back: Chostty quit while opening this tab. Select it to open."
+                    : session.hydrationFailed
+                        ? "Couldn't open this tab. Select it to retry."
+                        : "")
 
             if isRenaming {
                 InlineRenameField(

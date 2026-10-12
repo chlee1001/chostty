@@ -58,6 +58,14 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     /// A user-supplied title override; takes precedence over `title`.
     @Published var titleOverride: String?
 
+    /// A restored tab whose previous construction attempt outlived its owner.
+    /// It stays pending until explicitly selected.
+    @Published var isHeldBack = false
+
+    /// A non-crash construction failure. The stored tree remains pending so a
+    /// later selection can retry it.
+    @Published var hydrationFailed = false
+
     let readerStore = TerminalReaderStore()
 
     // MARK: - Telemetry / lifecycle

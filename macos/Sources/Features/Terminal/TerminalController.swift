@@ -23,6 +23,7 @@ enum TerminalControllerGraphFactory {
     struct RestoreBindings {
         let registry: PendingHydrationRegistry
         let construct: SurfaceConstructor?
+        var persistence: SessionPersistenceController?
     }
 
     /// A fully initialized graph handed to a controller's designated
@@ -139,7 +140,8 @@ enum TerminalControllerGraphFactory {
     static func makeFromSnapshot(
         ghostty: Ghostty.App,
         window: WindowSnapshot,
-        bindings: RestoreBindings
+        bindings: RestoreBindings,
+        heldBackTabIDs: Set<UUID> = []
     ) -> InitialGraph? {
         guard !window.workspaces.isEmpty else { return nil }
 
@@ -173,7 +175,7 @@ enum TerminalControllerGraphFactory {
                     && tabSnapshot.id == selectedTab.id
 
                 let tree: SplitTree<Ghostty.SurfaceView>
-                if isSelected {
+                if isSelected && !heldBackTabIDs.contains(tabSnapshot.id) {
                     let restorableTree = restorableTree(of: tabSnapshot)
                     if let restoredTree = SessionSnapshotProjection.surfaceTree(
                         from: restorableTree,
@@ -200,6 +202,7 @@ enum TerminalControllerGraphFactory {
                 // Tab identity is reused, not minted: the sidebar, AppleScript
                 // and the pending registry key off it.
                 let session = TerminalSessionState(id: tabSnapshot.id, surfaceTree: tree)
+                session.isHeldBack = heldBackTabIDs.contains(tabSnapshot.id)
                 session.titleOverride = tabSnapshot.titleOverride
                 session.tabColor = tabSnapshot.tabColor
                 seedDisplayMetadata(of: session, from: tabSnapshot)
@@ -502,8 +505,12 @@ class TerminalController: BaseTerminalController {
             window.surfaceIsZoomed = to.zoomed != nil
         }
 
-        // If our surface tree is now nil then we close our window.
-        if to.isEmpty {
+        let pendingSessionID = presentedSessionID
+            ?? workspaceStore.snapshot.selection.tabID
+        let isPendingPresentation = pendingHydration?.contains(pendingSessionID) == true
+        // A failed or held-back restored tab remains empty until the user
+        // retries it; closing here would also discard the other virtual tabs.
+        if to.isEmpty && !isPendingPresentation {
             self.window?.close()
         }
     }
@@ -1219,6 +1226,7 @@ class TerminalController: BaseTerminalController {
     }
 
     override func windowWillClose(_ notification: Notification) {
+        pendingHydration?.cancelHydration(owner: self)
         super.windowWillClose(notification)
         cancelPendingInitialPresentation()
         filesPanelController?.teardown()

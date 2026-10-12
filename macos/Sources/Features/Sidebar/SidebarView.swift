@@ -799,10 +799,17 @@ private struct TabSessionRow: View {
             // Reserved at all times. Inserting the bell only while it is
             // ringing reflows the row, so a tab that starts/stops ringing
             // would shove the close button sideways under the pointer.
-            Image(systemName: "bell.fill")
+            Image(systemName: tab.isHeldBack
+                ? "exclamationmark.arrow.circlepath"
+                : tab.hydrationFailed ? "exclamationmark.triangle" : "bell.fill")
                 .font(.system(size: 9))
-                .foregroundStyle(.orange)
-                .opacity(tab.bell ? 1 : 0)
+                .foregroundStyle(tab.isHeldBack || tab.hydrationFailed ? Color.primary : Color.orange)
+                .opacity(tab.isHeldBack || tab.hydrationFailed || tab.bell ? 1 : 0)
+                .help(tab.isHeldBack
+                    ? "Held back: Chostty quit while opening this tab. Select it to open."
+                    : tab.hydrationFailed
+                        ? "Couldn't open this tab. Select it to retry."
+                        : "")
 
             if let onClose {
                 // Always laid out, only revealed on hover. Inserting it on

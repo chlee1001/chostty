@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import Darwin
 
 /// Reads and writes the session snapshot file.
 ///
@@ -22,9 +23,33 @@ struct SessionSnapshotRepository: Sendable {
 
     static let primaryFileName = "session.json"
     static let backupFileName = "session-previous.json"
+    static let restoreAttemptsFileName = "restore-attempts.json"
+    static let restoreAttemptsLockFileName = "restore-attempts.lock"
 
-    init(directory: URL) {
+    struct RestoreAttempt: Codable, Equatable {
+        enum Kind: String, Codable, Hashable {
+            case window
+            case tab
+        }
+
+        let kind: Kind
+        let targetID: UUID
+        let attemptID: UUID
+        let ownerInstanceID: UUID
+        let ownerPID: Int32
+        let startedAtUptime: UInt64
+    }
+
+    private let restoreAttemptsLock: @Sendable (Int32, Int32) -> Int32
+
+    init(
+        directory: URL,
+        restoreAttemptsLock: @escaping @Sendable (Int32, Int32) -> Int32 = { descriptor, operation in
+            flock(descriptor, operation)
+        }
+    ) {
         self.directory = directory
+        self.restoreAttemptsLock = restoreAttemptsLock
     }
 
     init(
@@ -35,6 +60,9 @@ struct SessionSnapshotRepository: Sendable {
             bundleIdentifier: bundleIdentifier,
             fileManager: fileManager
         )
+        self.restoreAttemptsLock = { descriptor, operation in
+            flock(descriptor, operation)
+        }
     }
 
     /// `~/Library/Application Support/<bundle id>/`.
@@ -50,6 +78,59 @@ struct SessionSnapshotRepository: Sendable {
 
     var primaryURL: URL { directory.appendingPathComponent(Self.primaryFileName, isDirectory: false) }
     var backupURL: URL { directory.appendingPathComponent(Self.backupFileName, isDirectory: false) }
+    var restoreAttemptsURL: URL {
+        directory.appendingPathComponent(Self.restoreAttemptsFileName, isDirectory: false)
+    }
+    private var restoreAttemptsLockURL: URL {
+        directory.appendingPathComponent(Self.restoreAttemptsLockFileName, isDirectory: false)
+    }
+
+    // MARK: - Restore attempts
+
+    func updateRestoreAttempts(_ body: (inout [RestoreAttempt]) -> Void) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileLock.withExclusiveLock(
+            at: restoreAttemptsLockURL,
+            lock: restoreAttemptsLock
+        ) { _ in
+            let data: Data?
+            do {
+                data = try Data(contentsOf: restoreAttemptsURL)
+            } catch {
+                guard Self.isFileNotFound(error) else { throw error }
+                data = nil
+            }
+            var attempts = data.flatMap {
+                try? JSONDecoder().decode([RestoreAttempt].self, from: $0)
+            } ?? []
+            body(&attempts)
+            if attempts.isEmpty {
+                do {
+                    try FileManager.default.removeItem(at: restoreAttemptsURL)
+                } catch {
+                    guard Self.isFileNotFound(error) else { throw error }
+                }
+            } else {
+                let data = try Self.encoder.encode(attempts)
+                try data.write(to: restoreAttemptsURL, options: [.atomic])
+                restrictPermissions(of: restoreAttemptsURL)
+            }
+        }
+    }
+
+    func restoreAttempts() -> [RestoreAttempt] {
+        guard let data = try? Data(contentsOf: restoreAttemptsURL) else { return [] }
+        return (try? JSONDecoder().decode([RestoreAttempt].self, from: data)) ?? []
+    }
+
+    private static func isFileNotFound(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain && error.code == ENOENT {
+            return true
+        }
+        return error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileReadNoSuchFileError || error.code == NSFileNoSuchFileError)
+    }
 
     // MARK: - Saving
 
@@ -283,5 +364,61 @@ struct SessionSnapshotRepository: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
+    }
+}
+
+private enum FileLock {
+    typealias LockFunction = @Sendable (Int32, Int32) -> Int32
+
+    enum LockError: Error {
+        case openFailed(Int32)
+        case timeout
+        case lockFailed(Int32)
+    }
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
+        category: "session-persistence"
+    )
+    private static let unsupportedLock = NSLock()
+    private static var didLogUnsupported = false
+
+    static func withExclusiveLock<T>(
+        at lockURL: URL,
+        timeout: TimeInterval = 0.5,
+        lock: @escaping LockFunction = { descriptor, operation in
+            flock(descriptor, operation)
+        },
+        _ body: (Int32) throws -> T
+    ) throws -> T {
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw LockError.openFailed(errno) }
+        defer { close(descriptor) }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            if lock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+                defer { _ = flock(descriptor, LOCK_UN) }
+                return try body(descriptor)
+            }
+
+            let error = errno
+            if error == ENOTSUP || error == ENOLCK {
+                unsupportedLock.lock()
+                if !didLogUnsupported {
+                    didLogUnsupported = true
+                    logger.warning("session.persist.lockUnsupported file=\(lockURL.lastPathComponent, privacy: .public)")
+                }
+                unsupportedLock.unlock()
+                return try body(descriptor)
+            }
+            if error != EWOULDBLOCK && error != EAGAIN {
+                throw LockError.lockFailed(error)
+            }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                throw LockError.timeout
+            }
+            usleep(10_000)
+        }
     }
 }

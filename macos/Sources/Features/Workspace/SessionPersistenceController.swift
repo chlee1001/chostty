@@ -110,6 +110,12 @@ final class SessionPersistenceController {
     var isDisabledBySecondInstance: Bool { foreignOwnerPID != nil }
 
     private let isLiveInstance: (Int32) -> Bool
+    private let scheduleAfter: MainScheduler
+    private let uptime: () -> UInt64
+
+    static let restoreAttemptSettleDelay: TimeInterval = 2.0
+    private(set) var restoreAttemptsUnavailable = false
+    private(set) var restoreAttemptStarts = 0
 
     init(
         repository: SessionSnapshotRepository,
@@ -119,6 +125,10 @@ final class SessionPersistenceController {
         ownerPID: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
         queue: DispatchQueue = DispatchQueue(label: "kr.co.devch.chostty.session-persistence", qos: .utility),
         isLiveInstance: @escaping (Int32) -> Bool = SessionPersistenceController.isLiveAppInstance,
+        scheduleAfter: @escaping MainScheduler = { delay, action in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+        },
+        uptime: @escaping () -> UInt64 = { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) },
         controllersProvider: @escaping () -> [TerminalController] = { TerminalController.all }
     ) {
         self.repository = repository
@@ -128,7 +138,128 @@ final class SessionPersistenceController {
         self.ownerPID = ownerPID
         self.queue = queue
         self.isLiveInstance = isLiveInstance
+        self.scheduleAfter = scheduleAfter
+        self.uptime = uptime
         self.controllersProvider = controllersProvider
+    }
+
+    // MARK: - Restore attempts
+
+    struct RestoreAttemptToken: Hashable {
+        let attemptID: UUID
+        let kind: SessionSnapshotRepository.RestoreAttempt.Kind
+        let targetIDs: Set<UUID>
+    }
+
+    enum RestoreAttemptStart: Equatable {
+        case recorded(RestoreAttemptToken)
+        case notTracked
+        case unrecorded
+    }
+
+    func beginRestoreAttempt(
+        _ kind: SessionSnapshotRepository.RestoreAttempt.Kind,
+        _ ids: Set<UUID>
+    ) -> RestoreAttemptStart {
+        guard gate.shouldPersist else { return .notTracked }
+
+        restoreAttemptStarts += 1
+        let token = RestoreAttemptToken(attemptID: UUID(), kind: kind, targetIDs: ids)
+        do {
+            try repository.updateRestoreAttempts { attempts in
+                attempts.append(contentsOf: ids.map {
+                    SessionSnapshotRepository.RestoreAttempt(
+                        kind: kind,
+                        targetID: $0,
+                        attemptID: token.attemptID,
+                        ownerInstanceID: ownerInstanceID,
+                        ownerPID: ownerPID,
+                        startedAtUptime: uptime()
+                    )
+                })
+            }
+            restoreAttemptsUnavailable = false
+            return .recorded(token)
+        } catch {
+            restoreAttemptsUnavailable = true
+            Self.logger.warning(
+                "session.restore.attemptNotRecorded kind=\(kind.rawValue, privacy: .public) ids=\(ids.count, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+            return .unrecorded
+        }
+    }
+
+    func settleRestoreAttempt(
+        _ token: RestoreAttemptToken,
+        recovered: Set<UUID>,
+        onSettled: @escaping @MainActor () -> Void = {}
+    ) {
+        scheduleAfter(Self.restoreAttemptSettleDelay) { [weak self] in
+            self?.finishRestoreAttempt(token, recovered: recovered)
+            onSettled()
+        }
+    }
+
+    func finishRestoreAttempt(
+        _ token: RestoreAttemptToken,
+        recovered: Set<UUID> = []
+    ) {
+        guard gate.shouldPersist else { return }
+        do {
+            try repository.updateRestoreAttempts { attempts in
+                attempts.removeAll { attempt in
+                    if attempt.attemptID == token.attemptID {
+                        return true
+                    }
+                    guard recovered.contains(attempt.targetID),
+                          token.targetIDs.contains(attempt.targetID) else {
+                        return false
+                    }
+                    return isDeadRestoreAttempt(attempt)
+                }
+            }
+        } catch {
+            Self.logger.warning("session.restore.attemptFinishFailed error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func finishOwnRestoreAttempts() {
+        guard gate.shouldPersist else { return }
+        do {
+            try repository.updateRestoreAttempts { attempts in
+                attempts.removeAll { $0.ownerInstanceID == ownerInstanceID }
+            }
+        } catch {
+            Self.logger.warning("session.restore.attemptFinishOwnFailed error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func restoreQuarantine() -> (windows: Set<UUID>, tabs: Set<UUID>) {
+        var windows = Set<UUID>()
+        var tabs = Set<UUID>()
+        for attempt in repository.restoreAttempts() where isDeadRestoreAttempt(attempt) {
+            switch attempt.kind {
+            case .window: windows.insert(attempt.targetID)
+            case .tab: tabs.insert(attempt.targetID)
+            }
+        }
+        return (windows, tabs)
+    }
+
+    func pruneRestoreAttempts(keeping ids: Set<UUID>) {
+        guard gate.shouldPersist else { return }
+        do {
+            try repository.updateRestoreAttempts { attempts in
+                attempts.removeAll { isDeadRestoreAttempt($0) && !ids.contains($0.targetID) }
+            }
+        } catch {
+            Self.logger.warning("session.restore.attemptPruneFailed error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func isDeadRestoreAttempt(_ attempt: SessionSnapshotRepository.RestoreAttempt) -> Bool {
+        attempt.ownerInstanceID != ownerInstanceID
+            && (!isLiveInstance(attempt.ownerPID) || attempt.startedAtUptime > uptime())
     }
 
     deinit {

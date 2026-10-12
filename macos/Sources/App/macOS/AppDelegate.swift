@@ -418,6 +418,11 @@ class AppDelegate: NSObject,
         // One ownership decision per launch. A file left behind by a process
         // that has since exited is not an ownership claim.
         sessionPersistence?.adoptOwnership(of: snapshot)
+        let storedIDs = Set(snapshot.windows.map(\.physicalUUID)).union(
+            snapshot.windows.flatMap { $0.workspaces.flatMap { $0.tabs.map(\.id) } }
+        )
+        sessionPersistence?.pruneRestoreAttempts(keeping: storedIDs)
+        let heldBackTabIDs = sessionPersistence?.restoreQuarantine().tabs ?? []
 
         // The previous launch died while applying; skip this time rather than
         // reproduce the crash. Clearing the marker lets the next launch retry.
@@ -435,11 +440,19 @@ class AppDelegate: NSObject,
             guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
                 ghostty: ghostty,
                 window: window,
-                bindings: .init(registry: pendingHydration, construct: nil)
+                bindings: .init(
+                    registry: pendingHydration,
+                    construct: nil,
+                    persistence: sessionPersistence
+                ),
+                heldBackTabIDs: heldBackTabIDs
             ) else { continue }
 
             let controller = TerminalController(ghostty, graph: graph)
             controller.showWindow(self)
+            controller.scheduleWorkspaceHydration(
+                workspaceID: controller.workspaceStore.snapshot.selection.workspaceID
+            )
             created = true
         }
 
@@ -473,6 +486,7 @@ class AppDelegate: NSObject,
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        pendingHydration?.cancelAllHydration()
         let windows = NSApplication.shared.windows
         if windows.isEmpty { return .terminateNow }
 
@@ -521,6 +535,7 @@ class AppDelegate: NSObject,
         // Synchronous: an ordinary quit must lose nothing. The timer interval
         // only bounds a crash or SIGKILL, where this never runs.
         sessionPersistence?.persistNow()
+        sessionPersistence?.finishOwnRestoreAttempts()
 
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be

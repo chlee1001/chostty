@@ -133,8 +133,12 @@ empty one. If the app later quits without opening another window, the next
 launch restores that last non-empty layout.
 
 Only the selected tab of the selected workspace starts a shell at launch. The
-rest are rebuilt as values and materialize the first time you select them, which
-is what keeps restoring twenty tabs from starting twenty terminals at once.
+other tabs in that workspace then open one at a time, paced by their pane count;
+tabs in other workspaces remain values until you visit them. This keeps
+restoring twenty tabs from starting twenty terminals at once. If Chostty quit
+while opening a tab, that tab is held back: it shows an indicator and opens only
+when you select it. A tab that fails to open shows a warning and retries when you
+select it.
 
 Set `macos-session-persistence = false` to turn all of this off, or export
 `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also

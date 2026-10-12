@@ -381,7 +381,8 @@ class BaseTerminalController: NSWindowController,
         // This must precede the already-presented guard: a boot-selected tab
         // can be empty after a failed restore and needs another selection to
         // retry in place.
-        _ = hydratePendingSession(session)
+        _ = restoreHydrate(session, trigger: .selection)
+        scheduleWorkspaceHydration(workspaceID: workspaceID)
 
         // Skip if already presenting this session at or beyond the candidate
         // generation — this guards against stale mounts and feedback loops.
@@ -1815,7 +1816,7 @@ class BaseTerminalController: NSWindowController,
               let restoreIndex = owning.tabs.firstIndex(where: { $0.id == tabID }),
               let session = store.liveSession(forTabID: tabID) else { return nil }
 
-        _ = hydratePendingSession(session)
+        _ = restoreHydrate(session, trigger: .detach)
 
         let wasPresented = presentedSessionID == tabID
         let restoreWorkspaceID = owning.id
@@ -2212,6 +2213,10 @@ class BaseTerminalController: NSWindowController,
         injectedRestoreBindings?.registry ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
     }
 
+    var sessionPersistence: SessionPersistenceController? {
+        injectedRestoreBindings?.persistence ?? (NSApp.delegate as? AppDelegate)?.sessionPersistence
+    }
+
     var restoredSurfaceConstructor: TerminalControllerGraphFactory.SurfaceConstructor {
         injectedRestoreBindings?.construct ?? { [weak self] config, uuid in
             guard let app = self?.ghostty.app else { return nil }
@@ -2224,12 +2229,79 @@ class BaseTerminalController: NSWindowController,
         injectedRestoreBindings = bindings
     }
 
+    enum RestoreTrigger {
+        case paced
+        case selection
+        case detach
+    }
+
     @discardableResult
-    func hydratePendingSession(tabID: UUID) -> HydrationOutcome {
+    func restoreHydrate(tabID: UUID, trigger: RestoreTrigger) -> HydrationOutcome {
         guard let session = workspaceStore.session(forTabID: tabID) else {
             return .notInStore
         }
-        return hydratePendingSession(session)
+        return restoreHydrate(session, trigger: trigger)
+    }
+
+    @discardableResult
+    func restoreHydrate(
+        _ session: TerminalSessionState,
+        trigger: RestoreTrigger
+    ) -> HydrationOutcome {
+        guard pendingHydration?.contains(session.id) == true,
+              session.surfaceTree.isEmpty else {
+            return hydratePendingSession(session)
+        }
+        guard !(session.isHeldBack && trigger != .selection) else {
+            return .heldBack
+        }
+
+        let attempt = sessionPersistence?.beginRestoreAttempt(.tab, [session.id]) ?? .notTracked
+        let token: SessionPersistenceController.RestoreAttemptToken?
+        switch attempt {
+        case .recorded(let recorded):
+            token = recorded
+        case .notTracked:
+            token = nil
+        case .unrecorded:
+            guard trigger == .selection else { return .unrecorded }
+            token = nil
+        }
+
+        let outcome = hydratePendingSession(session)
+        switch outcome {
+        case .hydrated:
+            session.hydrationFailed = false
+            if let token {
+                sessionPersistence?.settleRestoreAttempt(token, recovered: [session.id]) {
+                    session.isHeldBack = false
+                }
+            } else {
+                session.isHeldBack = false
+            }
+        case .failed:
+            session.hydrationFailed = true
+            if let token {
+                sessionPersistence?.finishRestoreAttempt(token)
+            }
+        default:
+            if let token {
+                sessionPersistence?.finishRestoreAttempt(token)
+            }
+        }
+        return outcome
+    }
+
+    func scheduleWorkspaceHydration(workspaceID: UUID) {
+        guard let workspace = workspaceStore.snapshot.workspaces.first(where: { $0.id == workspaceID }) else {
+            return
+        }
+        let tabIDs = workspace.tabs
+            .filter { $0.surfaceTree.isEmpty && !$0.isHeldBack }
+            .map(\.id)
+        pendingHydration?.enqueueHydration(tabIDs, owner: self) { [weak self] tabID in
+            self?.restoreHydrate(tabID: tabID, trigger: .paced) ?? .notInStore
+        }
     }
 
     @discardableResult
