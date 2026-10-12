@@ -53,6 +53,30 @@ Reader를 숨기며 Reader가 활성일 때 `⌘W`는 선택한 문서만 닫는
 나머지 형식은 내장 Quick Look 미리보기로 연다. 정적 HTML은 JavaScript와 네트워크
 리소스를 끈 채로 보여 준다. 열린 문서 탭은 앱을 다시 시작하면 일부러 복원하지 않는다.
 
+**설정 편집기.** `⌘,`(환경설정…)와 `open_config` 동작이 설정 파일을 외부 편집기로
+바로 넘기지 않고 GUI 편집기를 연다. 흔한 키 — 글꼴, 색, 커서, 창 동작, `keybind`나
+`font-feature` 같은 반복 키 — 를 항목별 설명과 함께 다루고, 값이 바뀐 줄만 다시
+쓰므로 주석과 순서, 알 수 없는 키, 반복 키는 저장 후에도 한 바이트도 바뀌지 않는다.
+**Save & Apply**는 파일을 원자적으로 쓰고 앱 설정을 다시 읽는다. **Edit in External
+Editor**가 원래의 텍스트 편집 작업을 한 번의 클릭에 남겨 두었고, 줄 옆의 **Reset**은
+키를 지워 기본값이 다시 적용되게 한다. 컨트롤 값을 정하면 기본값과 같아도 값을
+명시적으로 쓰며, 키를 지우려면 Reset을 누르거나 텍스트 칸을 비운다. 고칠 때마다
+libghostty 파서로 검사해 문제가 있으면 저장하기 전에 해당 줄에 표시한다. 설정 파일이
+심볼릭 링크면 링크가 가리키는 원본에 쓰고, 편집기가 연 뒤 다른 곳에서 파일을 고쳤으면
+말없이 덮어쓰지 않고 어느 쪽을 남길지 묻는다. Save & Apply 단축키는 Return이 아니라
+`⌘S`다. `open_config` 키 바인딩은 그대로 동작하고 이제 편집기를 연다.
+
+`theme` 줄에서는 앱에 들어 있는 테마와 `~/.config/ghostty/themes`의 테마를 갤러리로
+고른다. 이름이 같으면 사용자 테마가 이긴다. 테마마다 미리보기가 있고, 검색과
+어두운/밝은 필터를 쓸 수 있으며, 라이트·다크 모드에 테마를 따로 고르면
+`light:…,dark:…`로 쓴다. 테마나 `config-file` include가 정한 값은 Ghostty의
+우선순위(include > 이 파일 > 테마 > 기본값)대로 실제 적용되는 값과 출처를 그
+줄에 보여 준다. 이 파일에 썼지만 include가 덮어쓰는 키에는 경고가 붙는다.
+**All Settings**는 실행 중인 바이너리가 `+show-config --default --docs`로 알려 주는
+키를 모두 보여 주고 upstream 설명 전문은 **More…**에 담는다. 그래서 추려 둔
+페이지 밖의 키도 편집기에서 고칠 수 있다. 다른 플랫폼용 설정은 파일에 없으면
+여기서 숨긴다.
+
 **창 복원이 아니라 구조 저장.** Chostty는 여전히 `NSWindowRestoration` 클래스를
 등록하지 않고 `NSQuitAlwaysKeepsWindows`도 false로 고정한다. AppKit 창 아카이브는
 관여하지 않는다. 대신 앱이 자체 JSON 파일 하나를 관리한다.
@@ -266,6 +290,11 @@ Pillow가 필요하다. `macos-icon` 값과 Swift asset 이름(`CustomIconGhost`
 
 ## 알려진 한계
 
+- 선택 목록, 색 선택기, 슬라이더 같은 전용 컨트롤은
+  `macos/Sources/Features/Settings/ConfigEditor/ConfigSchema.swift`에 추려 둔 키에만
+  있다. All Settings의 나머지 키는 텍스트 칸이고, `bool` 필드는 스위치, 반복 키는
+  목록이다. 실제 적용값은 파일과 include, 테마만으로 계산하며 CLI 인자는 반영하지
+  않는다.
 - `new tab`은 `in` 매개변수가 있을 때만 처리된다. `new tab in window 1`과
   `new tab in front window`는 되지만 `new tab`만 쓰면 errAEEventNotHandled(-1708)로
   실패한다. `in` 없는 `new tab with configuration …`도 마찬가지다. 자동화가 불안정해서가
