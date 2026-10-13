@@ -114,8 +114,9 @@ up to that interval. The file is written atomically with owner-only (`0600`)
 permissions.
 
 Saved sessions support up to 32 physical windows. If a save is refused or keeps
-failing, the workspace-actions button shows an orange warning badge and
-**Check Sidebar Sync…** explains the cause and how to resolve it.
+failing, the workspace-actions button shows an orange warning badge and its
+menu gains **Check Sidebar Sync…**, which explains the cause and how to resolve
+it. The item is hidden while saving works.
 
 The backup is seeded after a successful launch, then refreshed before each
 changed save with the existing primary only if it passes the same checks as

@@ -136,14 +136,18 @@ struct WorkspaceControls: View {
                 if reopenableCount > 0 {
                     Button("Reopen Saved Windows (\(reopenableCount))", action: reopenSavedWindows)
                 }
-                Button("Check Sidebar Sync…") {
-                    refreshSidebarSync()
-                    showingSidebarSync = true
+                // Saving is automatic; the sheet is only reachable while the
+                // badge reports a problem it can explain.
+                if needsAttention {
+                    Button("Check Sidebar Sync…") {
+                        refreshSidebarSync()
+                        showingSidebarSync = true
+                    }
                 }
             } label: {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: "ellipsis.circle")
-                    if saveHealth != .healthy || restoreAttemptsUnavailable {
+                    if needsAttention {
                         Image(systemName: "exclamationmark.circle.fill")
                             .font(.system(size: 8))
                             .foregroundStyle(.orange)
@@ -182,6 +186,10 @@ struct WorkspaceControls: View {
                   source === persistence else { return }
             refreshDormantWindowCounts()
         }
+    }
+
+    private var needsAttention: Bool {
+        saveHealth != .healthy || restoreAttemptsUnavailable
     }
 
     private var accessibilityValue: String {
