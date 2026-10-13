@@ -1806,8 +1806,10 @@ class BaseTerminalController: NSWindowController,
     /// 5. Undo group — ONE group on the process-wide undo manager. The
     ///    source-restore action registers FIRST and the destination window's
     ///    close-on-undo registers SECOND, so reverse-order execution closes
-    ///    the destination before restoring the source. The restore action
-    ///    also owns redo as a full re-detach. The lease finalize is a no-op:
+    ///    the destination before restoring the source. The restore runs only
+    ///    while no open window owns the tab and it is still alive; otherwise
+    ///    undo leaves it where it is. The restore action also owns redo as a
+    ///    full re-detach. The lease finalize is a no-op:
     ///    a torn-off session is alive in the new window and must survive
     ///    lease expiry (unlike a close, which tears down on expiry).
     @discardableResult
@@ -1878,7 +1880,7 @@ class BaseTerminalController: NSWindowController,
                 // or that window was rebuilt, a second owner would present the
                 // same surfaces twice and fail every save's validation.
                 guard TerminalController.open.allSatisfy({ $0.workspaceStore.liveSession(forTabID: tabID) == nil }),
-                      let restored = lease.consume() else { return }
+                      let restored = lease.consume(), !restored.isTornDown else { return }
                 target.workspaceStore.register(restored)
                 if target.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
                     target.workspaceStore.insertTab(

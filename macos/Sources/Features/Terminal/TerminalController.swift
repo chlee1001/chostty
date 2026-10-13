@@ -749,11 +749,11 @@ class TerminalController: BaseTerminalController {
     /// claiming the same surface IDs.
     ///
     /// The window-close-on-undo registration mirrors `newWindow(tree:)`'s
-    /// `confirmUndo: false` lineage (which also closes the session's Readers),
-    /// with two tear-off differences: the action name is caller-owned because
-    /// this registration lands inside the tear-off handler's undo group, and
-    /// NO nested redo is registered — the group's source-restore action owns
-    /// redo as a full re-detach.
+    /// `confirmUndo: false` lineage (which also closes the session's Readers):
+    /// the close is immediate, never behind a confirmation, because the
+    /// tear-off's source restore runs right after it and checks that no open
+    /// window owns the tab. NO nested redo is registered — the group's
+    /// source-restore action owns redo as a full re-detach.
     ///
     /// - Returns: nil when `makeFromWorkspaces` cannot resolve the graph (same
     ///   conditions as window-close undo), leaving the caller to treat the
@@ -763,8 +763,6 @@ class TerminalController: BaseTerminalController {
         _ ghostty: Ghostty.App,
         detachedWorkspace workspace: WorkspaceSession,
         position: NSPoint? = nil,
-        confirmUndo: Bool = false,
-        undoActionName: String = "Detach Tab",
         restoreBindings: TerminalControllerGraphFactory.RestoreBindings? = nil
     ) -> TerminalController? {
         guard let session = workspace.tabs.first,
@@ -801,17 +799,13 @@ class TerminalController: BaseTerminalController {
         }
 
         if let undoManager = c.undoManager {
-            undoManager.setActionName(undoActionName)
+            undoManager.setActionName("Detach Tab")
             undoManager.registerUndo(
                 withTarget: c,
                 expiresAfter: c.undoExpiration
             ) { target in
                 undoManager.disableUndoRegistration {
-                    if confirmUndo {
-                        target.closeWindow(nil)
-                    } else {
-                        target.closeWindowImmediately()
-                    }
+                    target.closeWindowImmediately()
                 }
                 // Deliberately no nested redo registration: the tear-off
                 // handler's source-restore action owns redo (full re-detach).
