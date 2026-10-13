@@ -2012,8 +2012,7 @@ class BaseTerminalController: NSWindowController,
         //    When the source still holds other tabs the removal commits
         //    normally; when this was its last tab, closing the source window
         //    IS the removal — the session already lives in the destination, so
-        //    no PTY is at risk. The closed controller's store still lists the
-        //    tab, which is why only open windows are ever a source.
+        //    no PTY is at risk.
         let targetWorkspaceID = workspaceID ?? workspaceStore.snapshot.selection.workspaceID
         workspaceStore.register(session)
         if let index {
@@ -2058,10 +2057,8 @@ class BaseTerminalController: NSWindowController,
                 withTarget: self,
                 expiresAfter: undoExpiration
             ) { [weak source] target in
-                // Give the tab back only while this window still owns it (a
-                // later move may have taken it elsewhere), and only to a window
-                // that can take it: the source while it is open, or a rebuild
-                // of the one this move closed. Otherwise it stays put.
+                // A later move may have taken the tab elsewhere, and the
+                // source may have closed on its own since.
                 let openSource = source.flatMap { $0.isWindowClosed ? nil : $0 }
                 guard target.workspaceStore.liveSession(forTabID: tabID) != nil,
                       closedSourceState != nil || openSource != nil,
@@ -2080,9 +2077,8 @@ class BaseTerminalController: NSWindowController,
                     let sel = target.workspaceStore.snapshot.selection
                     target.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
                 }
-                // 6b. Source-restore: put the session back where it came
-                // from, then re-run the receive on redo. A source window the
-                // receive closed comes back whole, with this tab in it.
+                // A source window the receive closed comes back whole, with
+                // this tab in it.
                 if let closedSourceState {
                     _ = TerminalController(target.ghostty, with: closedSourceState)
                 } else if let source = openSource {
