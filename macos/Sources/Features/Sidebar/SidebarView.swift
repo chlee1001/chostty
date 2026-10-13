@@ -97,8 +97,9 @@ struct SidebarView: View {
     /// presentation never touches it directly.
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window is dropped on a
-    /// workspace row. The tab joins that workspace and becomes presented.
-    /// Nil-accepting: same-window drops keep the reorder path.
+    /// workspace row or a tab row: (tab, workspace, index). The tab joins
+    /// that workspace and becomes presented, before the dropped-on tab or,
+    /// with a nil index, at the end. Same-window drops keep the reorder path.
     var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// The sidebar search/filter query. Private view state — filtering is
@@ -407,9 +408,9 @@ struct WorkspaceSessionList: View {
     /// Resolves a drag/drop pair into the right store mutation.
     ///
     /// Dropping a tab onto a workspace header moves it into that workspace;
-    /// dropping onto another tab places it at that tab's position. Workspaces
-    /// only reorder among themselves. A dropped tab unknown to this store came
-    /// from another window: it is received at the same place instead of moved.
+    /// dropping onto another tab moves it to that tab's index. Workspaces only
+    /// reorder among themselves. A dropped tab unknown to this store came from
+    /// another window: it is received before the dropped-on tab instead.
     private func handleDrop(source: WorkspaceDragPayload, target: WorkspaceDragPayload) {
         switch (source, target) {
         case let (.tab(moving), .tab(over)):

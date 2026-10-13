@@ -1962,7 +1962,7 @@ class BaseTerminalController: NSWindowController,
 
     /// Test seam + the real worker: move `tabID` from `source` into this
     /// window. Production callers use `receiveForeignTab(_:intoWorkspace:at:)`,
-    /// which resolves `source` via `TerminalController.all`; tests pass both
+    /// which resolves `source` via `TerminalController.open`; tests pass both
     /// controllers explicitly (the harness must not depend on `NSApp.windows`
     /// contents, which accumulate across suites in the test host).
     @discardableResult
@@ -2003,9 +2003,8 @@ class BaseTerminalController: NSWindowController,
         //    When the source still holds other tabs the removal commits
         //    normally; when this was its last tab, closing the source window
         //    IS the removal — the session already lives in the destination, so
-        //    no PTY is at risk, and the close's own undo restores the window.
-        //    (Transient dual registration mirrors the tear-off undo tests'
-        //    proven pattern; single ownership is restored below either way.)
+        //    no PTY is at risk. The closed controller's store still lists the
+        //    tab, which is why only open windows are ever a source.
         let targetWorkspaceID = workspaceID ?? workspaceStore.snapshot.selection.workspaceID
         workspaceStore.register(session)
         if let index {
@@ -2035,9 +2034,9 @@ class BaseTerminalController: NSWindowController,
             //    no undo of its own: a second restore would also put the session
             //    back into the closed controller, leaving two owners.
             closedSourceState = source.undoState
-            undoManager?.disableUndoRegistration()
-            source.closeWindowImmediately()
-            undoManager?.enableUndoRegistration()
+            undoManager?.disableUndoRegistration {
+                source.closeWindowImmediately()
+            }
         }
 
         // 6. Undo: give the tab back, then re-run the receive on redo.
@@ -2049,8 +2048,13 @@ class BaseTerminalController: NSWindowController,
             undoManager.registerUndo(
                 withTarget: self,
                 expiresAfter: undoExpiration
-            ) { target in
-                guard let moved = lease.consume() else { return }
+            ) { [weak source] target in
+                // Give the tab back only to a window that can take it: the
+                // source while it is open, or a rebuild of the one this move
+                // closed. Otherwise it stays here rather than vanish.
+                let openSource = source.flatMap { $0.isWindowClosed ? nil : $0 }
+                guard closedSourceState != nil || openSource != nil,
+                      let moved = lease.consume() else { return }
                 // The destination's presented tree is authoritative for the
                 // tab it is giving back; keep it before the tab leaves.
                 let wasPresentedHere = target.presentedSessionID == moved.id
@@ -2070,7 +2074,7 @@ class BaseTerminalController: NSWindowController,
                 // receive closed comes back whole, with this tab in it.
                 if let closedSourceState {
                     _ = TerminalController(target.ghostty, with: closedSourceState)
-                } else {
+                } else if let source = openSource {
                     source.workspaceStore.register(moved)
                     if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
                         source.workspaceStore.insertTab(

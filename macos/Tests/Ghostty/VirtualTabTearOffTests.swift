@@ -538,19 +538,32 @@ import Testing
         #expect(destinationAfterUndo == before)
         #expect(destination.presentedSessionID != moving.id)
 
-        // The production redo resolves the source through the open windows,
-        // which the harness controllers are not guaranteed to be; replay the
-        // same receive explicitly instead.
-        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: 1))
+        undoManager.redo()
         let destinationAfterRedo = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
         #expect(destinationAfterRedo == [before[0], moving.id, before[1]])
     }
 
+    @Test func undoKeepsTheTabWhenItsSourceClosedSinceTheMove() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let undoManager = try #require(destination.undoManager)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        // The source window closed after the move; mark what `windowWillClose`
+        // records in the app.
+        source.isWindowClosed = true
+        undoManager.undo()
+
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(moving.isTornDown == false)
+    }
+
     /// Open windows other than `excluded` whose store owns `tabID`.
     private func openOwners(of tabID: UUID, excluding excluded: [TerminalController]) -> [TerminalController] {
-        TerminalController.all.filter { controller in
-            !controller.isWindowClosed
-                && !excluded.contains { $0 === controller }
+        TerminalController.open.filter { controller in
+            !excluded.contains { $0 === controller }
                 && controller.workspaceStore.liveSession(forTabID: tabID) != nil
         }
     }
