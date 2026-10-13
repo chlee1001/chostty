@@ -106,9 +106,9 @@ matching every other tab-creating path in this fork.
 
 Structural changes — tabs, workspaces, names, colors, windows, and splits — are
 saved about one second later. Titles and directories reported by the shell are
-saved at most every eight seconds. A save happens only when a generation counter
-shows something actually changed, and it is skipped entirely when the encoded
-bytes match the file already on disk, so an idle window writes nothing. Quitting
+saved at most every eight seconds. A save runs only after something changed and
+is skipped when its bytes match the file on disk, so an idle window writes
+nothing. Quitting
 normally saves once more before closing windows; a crash or force quit can lose
 up to that interval. The file is written atomically with owner-only (`0600`)
 permissions.
@@ -137,7 +137,7 @@ launch restores that last non-empty layout.
 
 Only the selected tab of the selected workspace starts a shell at launch. The
 other tabs in that workspace then open one at a time, paced by their pane count;
-tabs in other workspaces remain values until you visit them. This keeps
+tabs in other workspaces start no shell until you open that workspace. This keeps
 restoring twenty tabs from starting twenty terminals at once. If Chostty quit
 while opening a tab, that tab is held back: it shows an indicator and opens only
 when you select it. A tab that fails to open shows a warning and retries when you
