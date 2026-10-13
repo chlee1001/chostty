@@ -114,7 +114,9 @@ struct WorkspaceControls: View {
                     Image(systemName: "macwindow.badge.plus")
                 }
                 .buttonStyle(.plain)
-                .help("\(reopenableCount) saved windows are not open. Click to reopen them.")
+                .help(reopenableCount == 1
+                    ? "1 saved window is not open. Click to reopen it."
+                    : "\(reopenableCount) saved windows are not open. Click to reopen them.")
                 .accessibilityLabel("Reopen Saved Windows")
             }
 

@@ -1669,6 +1669,9 @@ extension TerminalController {
                 recovered: Set(controllers.map(\.physicalUUID))
             )
         }
+        SessionPersistenceController.logger.notice(
+            "session.restore.promoted trigger=\(String(describing: trigger), privacy: .public) windows=\(controllers.count, privacy: .public) failed=\(windows.count - controllers.count, privacy: .public)"
+        )
         persistence.scheduleSave()
         return controllers
     }

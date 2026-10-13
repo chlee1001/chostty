@@ -447,10 +447,6 @@ class AppDelegate: NSObject,
             present: { $0.showWindow(self) }
         )
         undoManager.enableUndoRegistration()
-
-        SessionPersistenceController.logger.notice(
-            "session.restore.promoted trigger=\(String(describing: trigger), privacy: .public) windows=\(controllers.count, privacy: .public) failed=\(windows.count - controllers.count, privacy: .public)"
-        )
         return controllers.count
     }
 
