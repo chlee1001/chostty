@@ -3313,10 +3313,24 @@ keybind: Keybinds = .{},
 /// are ever written to disk.
 ///
 /// The file lives in `~/Library/Application Support/<bundle id>/session.json`
-/// with owner-only permissions, is rewritten at most once every eight
-/// seconds and only when something actually changed, and is written once more
-/// when the app quits normally. A crash or a force quit can therefore lose at
-/// most eight seconds of structural change.
+/// with owner-only permissions. Structural changes to tabs, workspaces, names,
+/// colors, windows, and splits are saved about one second later. Titles and
+/// directories reported by the shell are saved at most every eight seconds.
+/// A normal quit saves once more before closing windows. A crash or force quit
+/// can lose up to that interval.
+///
+/// A launch that opens a file or URL first, a launch that carries an explicit
+/// open intent (`ghostty -e …`, `open --args`), and a launch with
+/// `initial-window = false` leave saved windows unopened in the file. Open the
+/// saved windows with Reopen Saved Windows in the sidebar's workspace actions,
+/// or by clicking the Dock when no window is open. An explicit-open launch
+/// still saves the windows it opens next to the unopened ones; the `-e`
+/// command itself is not saved. Closing a window removes it from the file even
+/// when only unopened saved windows remain. Windows and tabs whose restore
+/// crashed stay held back until opened explicitly. A new instance does not
+/// restore saved windows while another instance is running.
+///
+/// Test hosts and `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` disable saving.
 ///
 /// This is unrelated to `window-save-state`, which is inherited from upstream
 /// and remains ignored on macOS.

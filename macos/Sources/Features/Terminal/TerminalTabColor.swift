@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum TerminalTabColor: Int, CaseIterable, Codable {
+enum TerminalTabColor: Int, CaseIterable, Codable, Sendable {
     case none
     case blue
     case purple

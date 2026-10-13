@@ -273,11 +273,56 @@ import Testing
         #expect(snapshot.tabs[1].tabColor == "2")
     }
 
+    @Test func pendingEntryIsIgnoredWhenTheLiveTreeIsNonEmpty() throws {
+        let session = TerminalSessionState(
+            id: UUID(),
+            surfaceTree: SplitTree(view: try #require(makeView(pwd: "/live")))
+        )
+        let stored = TabSnapshot(
+            id: session.id,
+            titleOverride: "stale",
+            tabColor: "1",
+            paneTree: .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-a", title: nil)),
+                right: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: "/stored-b", title: nil))
+            ),
+            focusedPaneID: UUID(),
+            zoomedPaneID: UUID()
+        )
+        let workspace = WorkspaceSession(
+            id: UUID(),
+            name: "W",
+            tabs: [session],
+            selectedTabID: session.id
+        )
+
+        let snapshot = SessionSnapshotProjection.workspace(
+            from: workspace,
+            pendingTabs: [session.id: stored]
+        )
+
+        #expect(snapshot.tabs == [SessionSnapshotProjection.tab(from: session)])
+    }
+
     // MARK: - Value → live
 
     @Test func nilSnapshotRebuildsEmptyTree() {
         let tree = SessionSnapshotProjection.surfaceTree(from: nil, makeSurface: testFactory())
-        #expect(tree.isEmpty)
+        #expect(tree?.isEmpty == true)
+    }
+
+    @Test func restoredTitleIsReadableSynchronously() throws {
+        let title = "restored shell title"
+        let snapshot = PaneTreeSnapshot.leaf(
+            PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: title)
+        )
+
+        let tree = SessionSnapshotProjection.surfaceTree(from: snapshot, makeSurface: testFactory())
+
+        let view = try #require(tree?.first)
+        #expect(view.title == title)
     }
 
     @Test(arguments: [PaneSplitDirection.horizontal, .vertical])
@@ -292,7 +337,8 @@ import Testing
         )
 
         let tree = SessionSnapshotProjection.surfaceTree(from: original, makeSurface: testFactory())
-        let reprojected = try #require(SessionSnapshotProjection.paneTree(from: tree))
+        let builtTree = try #require(tree)
+        let reprojected = try #require(SessionSnapshotProjection.paneTree(from: builtTree))
 
         #expect(reprojected == original)
     }
@@ -311,7 +357,8 @@ import Testing
         )
 
         let tree = SessionSnapshotProjection.surfaceTree(from: original, makeSurface: testFactory())
-        let reprojected = try #require(SessionSnapshotProjection.paneTree(from: tree))
+        let builtTree = try #require(tree)
+        let reprojected = try #require(SessionSnapshotProjection.paneTree(from: builtTree))
 
         #expect(reprojected == original)
         #expect(reprojected.paneCount == 3)
@@ -333,12 +380,11 @@ import Testing
             makeSurface: testFactory()
         )
 
-        #expect(SessionSnapshotProjection.zoomedPaneID(in: tree) == zoomedID)
+        let builtTree = try #require(tree)
+        #expect(SessionSnapshotProjection.zoomedPaneID(in: builtTree) == zoomedID)
     }
 
-    /// A leaf the factory declines is dropped and its split collapses, rather
-    /// than failing the whole tab.
-    @Test func declinedLeafCollapsesItsSplit() throws {
+    @Test func aDeclinedLeafFailsTheWholeTree() {
         let keptID = UUID()
         let droppedID = UUID()
         let original = PaneTreeSnapshot.split(
@@ -353,11 +399,31 @@ import Testing
             leaf.uuid == droppedID ? nil : base(leaf)
         }
 
-        let reprojected = try #require(SessionSnapshotProjection.paneTree(from: tree))
-        #expect(reprojected == .leaf(PaneLeafSnapshot(uuid: keptID, cwd: "/kept", title: nil)))
+        #expect(tree == nil)
     }
 
-    @Test func allLeavesDeclinedYieldsEmptyTree() {
+    @Test func anErrorStateLeafFailsTheWholeTree() {
+        let failedID = UUID()
+        let original = PaneTreeSnapshot.split(
+            direction: .vertical,
+            ratio: 0.5,
+            left: .leaf(PaneLeafSnapshot(uuid: failedID, cwd: nil, title: nil)),
+            right: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
+        )
+
+        let base = testFactory()
+        let tree = SessionSnapshotProjection.surfaceTree(from: original) { leaf in
+            guard let view = base(leaf) else { return nil }
+            if leaf.uuid == failedID {
+                view.error = Ghostty.Error.apiFailed
+            }
+            return view
+        }
+
+        #expect(tree == nil)
+    }
+
+    @Test func allLeavesDeclinedFailsTheTree() {
         let original = PaneTreeSnapshot.split(
             direction: .vertical,
             ratio: 0.5,
@@ -365,8 +431,27 @@ import Testing
             right: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
         )
 
-        let tree = SessionSnapshotProjection.surfaceTree(from: original) { _ in nil }
-        #expect(tree.isEmpty)
+        let base = testFactory()
+        let tree = SessionSnapshotProjection.surfaceTree(from: original) { leaf in
+            guard let view = base(leaf) else { return nil }
+            view.error = Ghostty.Error.apiFailed
+            return view
+        }
+        #expect(tree == nil)
+    }
+
+    @Test func inertLeavesWithoutAnErrorBuildTheWholeTree() throws {
+        let original = PaneTreeSnapshot.split(
+            direction: .vertical,
+            ratio: 0.5,
+            left: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil)),
+            right: .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
+        )
+
+        let tree = SessionSnapshotProjection.surfaceTree(from: original, makeSurface: testFactory())
+
+        let builtTree = try #require(tree)
+        #expect(Array(builtTree).count == 2)
     }
 
     @Test func directionMappingIsSymmetric() {

@@ -1,11 +1,16 @@
 import Foundation
 import OSLog
+import Darwin
 
 /// Reads and writes the session snapshot file.
 ///
 /// Stateless and synchronous: `applicationWillTerminate` must finish its write
 /// before returning, and a synchronous AppKit callback cannot await an actor.
 /// Callers serialize themselves.
+///
+/// A write never drops or replaces with an older copy a stored window the
+/// writer never had live. It removes only windows the writer itself had live
+/// and closed.
 ///
 /// The directory is injectable so tests never touch real Application Support,
 /// and the default derives from the bundle identifier. A Debug build is
@@ -15,16 +20,41 @@ struct SessionSnapshotRepository: Sendable {
     /// Directory holding `session.json` and `session-previous.json`.
     let directory: URL
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "kr.co.devch.chostty",
-        category: "session-persistence"
-    )
-
     static let primaryFileName = "session.json"
     static let backupFileName = "session-previous.json"
+    static let lockFileName = "session.lock"
+    static let restoreAttemptsFileName = "restore-attempts.json"
+    static let restoreAttemptsLockFileName = "restore-attempts.lock"
 
-    init(directory: URL) {
+    struct RestoreAttempt: Codable, Equatable {
+        enum Kind: String, Codable, Hashable {
+            case window
+            case tab
+        }
+
+        let kind: Kind
+        let targetID: UUID
+        let attemptID: UUID
+        let ownerInstanceID: UUID
+        let ownerPID: Int32
+        let startedAtUptime: UInt64
+    }
+
+    private let restoreAttemptsLock: @Sendable (Int32, Int32) -> Int32
+    private let sessionLock: @Sendable (Int32, Int32) -> Int32
+
+    init(
+        directory: URL,
+        restoreAttemptsLock: @escaping @Sendable (Int32, Int32) -> Int32 = { descriptor, operation in
+            flock(descriptor, operation)
+        },
+        sessionLock: @escaping @Sendable (Int32, Int32) -> Int32 = { descriptor, operation in
+            flock(descriptor, operation)
+        }
+    ) {
         self.directory = directory
+        self.restoreAttemptsLock = restoreAttemptsLock
+        self.sessionLock = sessionLock
     }
 
     init(
@@ -35,6 +65,12 @@ struct SessionSnapshotRepository: Sendable {
             bundleIdentifier: bundleIdentifier,
             fileManager: fileManager
         )
+        self.restoreAttemptsLock = { descriptor, operation in
+            flock(descriptor, operation)
+        }
+        self.sessionLock = { descriptor, operation in
+            flock(descriptor, operation)
+        }
     }
 
     /// `~/Library/Application Support/<bundle id>/`.
@@ -50,40 +86,367 @@ struct SessionSnapshotRepository: Sendable {
 
     var primaryURL: URL { directory.appendingPathComponent(Self.primaryFileName, isDirectory: false) }
     var backupURL: URL { directory.appendingPathComponent(Self.backupFileName, isDirectory: false) }
+    var lockURL: URL { directory.appendingPathComponent(Self.lockFileName, isDirectory: false) }
+    var restoreAttemptsURL: URL {
+        directory.appendingPathComponent(Self.restoreAttemptsFileName, isDirectory: false)
+    }
+    private var restoreAttemptsLockURL: URL {
+        directory.appendingPathComponent(Self.restoreAttemptsLockFileName, isDirectory: false)
+    }
+
+    // MARK: - Restore attempts
+
+    func updateRestoreAttempts(_ body: (inout [RestoreAttempt]) -> Void) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileLock.withExclusiveLock(
+            at: restoreAttemptsLockURL,
+            lock: restoreAttemptsLock
+        ) { _ in
+            let data: Data?
+            do {
+                data = try Data(contentsOf: restoreAttemptsURL)
+            } catch {
+                guard Self.isFileNotFound(error) else { throw error }
+                data = nil
+            }
+            var attempts = data.flatMap {
+                try? JSONDecoder().decode([RestoreAttempt].self, from: $0)
+            } ?? []
+            body(&attempts)
+            if attempts.isEmpty {
+                do {
+                    try FileManager.default.removeItem(at: restoreAttemptsURL)
+                } catch {
+                    guard Self.isFileNotFound(error) else { throw error }
+                }
+            } else {
+                let data = try Self.encoder.encode(attempts)
+                try data.write(to: restoreAttemptsURL, options: [.atomic])
+                restrictPermissions(of: restoreAttemptsURL)
+            }
+        }
+    }
+
+    func restoreAttempts() -> [RestoreAttempt] {
+        guard let data = try? Data(contentsOf: restoreAttemptsURL) else { return [] }
+        return (try? JSONDecoder().decode([RestoreAttempt].self, from: data)) ?? []
+    }
+
+    private static func isFileNotFound(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain && error.code == ENOENT {
+            return true
+        }
+        return error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileReadNoSuchFileError || error.code == NSFileNoSuchFileError)
+    }
 
     // MARK: - Saving
 
-    enum SaveOutcome: Equatable {
+    enum SaveOutcome: Equatable, Sendable {
         case written
         /// The encoded bytes matched the file on disk. This is what keeps an
         /// idle app from touching the disk on every tick.
         case skippedIdentical
         /// Not loadable; the previous valid file is left untouched.
         case refusedInvalid(SessionSnapshotValidator.Rejection)
+        case yielded(StoredOwner)
+        case retired(Int)
+        case nothingToWrite
+    }
+
+    struct ClaimRecord: Codable, Equatable, Sendable {
+        let instanceID: UUID
+        let pid: Int32
+        let epoch: UInt64
+    }
+
+    struct SavePolicy: Sendable {
+        let claimEpoch: UInt64?
+        let selfInstanceID: UUID
+        let selfPID: Int32
+        let deferredOwnerIDs: Set<UUID>
+        let isLiveInstance: @Sendable (Int32) -> Bool
+        let now: @Sendable () -> UInt64
+        let retire: Set<UUID>
+        let preserveStoredWindowsExcept: Set<UUID>?
+
+        init(
+            claimEpoch: UInt64?,
+            selfInstanceID: UUID,
+            selfPID: Int32,
+            deferredOwnerIDs: Set<UUID>,
+            isLiveInstance: @escaping @Sendable (Int32) -> Bool,
+            now: @escaping @Sendable () -> UInt64,
+            retire: Set<UUID>,
+            preserveStoredWindowsExcept: Set<UUID>? = nil
+        ) {
+            self.claimEpoch = claimEpoch
+            self.selfInstanceID = selfInstanceID
+            self.selfPID = selfPID
+            self.deferredOwnerIDs = deferredOwnerIDs
+            self.isLiveInstance = isLiveInstance
+            self.now = now
+            self.retire = retire
+            self.preserveStoredWindowsExcept = preserveStoredWindowsExcept
+        }
+    }
+
+    struct SaveReceipt: Equatable, Sendable {
+        var outcome: SaveOutcome
+        var preservedWindowIDs: [UUID] = []
+        var remainingRetireWindowIDs: Set<UUID> = []
     }
 
     @discardableResult
-    func save(_ snapshot: AppSessionSnapshot) throws -> SaveOutcome {
+    func save(
+        _ snapshot: AppSessionSnapshot?,
+        policy: SavePolicy
+    ) throws -> SaveReceipt {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try FileLock.withExclusiveLock(at: lockURL, lock: sessionLock) { descriptor in
+            let claim = validClaim(
+                readClaimRecord(from: descriptor),
+                policy: policy
+            )
+            let owner = validatedStoredOwner()
+            let shouldClaim: Bool
+            if let epoch = policy.claimEpoch {
+                shouldClaim = claim == nil
+                    || claim?.instanceID == policy.selfInstanceID
+                    || claim!.epoch <= epoch
+                if !shouldClaim {
+                    SessionPersistenceController.logger.notice("session.persist.claimStale")
+                }
+            } else {
+                shouldClaim = false
+            }
+
+            if shouldClaim {
+                try writeClaimRecord(
+                    ClaimRecord(
+                        instanceID: policy.selfInstanceID,
+                        pid: policy.selfPID,
+                        epoch: policy.claimEpoch!
+                    ),
+                    to: descriptor
+                )
+                return try write(snapshot, policy: policy)
+            }
+
+            let mayWrite = owner == nil
+                || owner?.ownerInstanceID == policy.selfInstanceID
+                || (!policy.isLiveInstance(owner!.ownerPID)
+                    && !policy.deferredOwnerIDs.contains(owner!.ownerInstanceID))
+            if let owner, !mayWrite {
+                let retireResult = try retire(policy.retire)
+                return SaveReceipt(
+                    outcome: retireResult.count > 0 ? .retired(retireResult.count) : .yielded(owner),
+                    remainingRetireWindowIDs: retireResult.remainingWindowIDs
+                )
+            }
+            return try write(snapshot, policy: policy)
+        }
+    }
+
+    private func validClaim(
+        _ claim: ClaimRecord?,
+        policy: SavePolicy
+    ) -> ClaimRecord? {
+        guard let claim,
+              claim.epoch <= policy.now(),
+              policy.isLiveInstance(claim.pid) else { return nil }
+        return claim
+    }
+
+    private func validatedStoredOwner() -> StoredOwner? {
+        guard let data = try? Data(contentsOf: primaryURL),
+              case .success = Self.validate(data) else { return nil }
+        return try? JSONDecoder().decode(StoredOwner.self, from: data)
+    }
+
+    private func write(
+        _ snapshot: AppSessionSnapshot?,
+        policy: SavePolicy
+    ) throws -> SaveReceipt {
+        guard let snapshot else {
+            return SaveReceipt(outcome: .nothingToWrite)
+        }
+
+        let liveWindowIDs = Set(snapshot.windows.map(\.physicalUUID))
+        let liveIdentifiers = Self.identifiers(in: snapshot)
+        var preserved: [WindowSnapshot] = []
+        var rekeyedCount = 0
+        if let excludedWindowIDs = policy.preserveStoredWindowsExcept,
+           case .loaded(let stored, _) = load() {
+            let excluded = excludedWindowIDs.union(liveWindowIDs)
+            preserved = stored.windows.compactMap { window in
+                guard !excluded.contains(window.physicalUUID) else { return nil }
+                let conflicts = Self.identifiers(in: window).intersection(liveIdentifiers)
+                guard !conflicts.isEmpty else { return window }
+                rekeyedCount += 1
+                let rekeyed = Self.rekeyed(window, conflicting: conflicts)
+                SessionPersistenceController.logger.notice(
+                    "session.persist.preservedWindowRekeyed window=\(rekeyed.physicalUUID.uuidString, privacy: .public) ids=\(conflicts.count, privacy: .public)"
+                )
+                return rekeyed
+            }
+        }
+
+        let merged = AppSessionSnapshot(
+            version: snapshot.version,
+            ownerInstanceID: snapshot.ownerInstanceID,
+            ownerPID: snapshot.ownerPID,
+            windows: (snapshot.windows + preserved).sorted {
+                $0.physicalUUID.uuidString < $1.physicalUUID.uuidString
+            }
+        )
+        guard !merged.windows.isEmpty else {
+            return SaveReceipt(outcome: .nothingToWrite)
+        }
+
         let validated: AppSessionSnapshot
-        switch SessionSnapshotValidator.validate(snapshot) {
+        switch SessionSnapshotValidator.validate(merged) {
         case .success(let snapshot):
             validated = snapshot
         case .failure(let rejection):
-            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
-            return .refusedInvalid(rejection)
+            SessionPersistenceController.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
 
         let encoded = try Self.encoder.encode(validated)
         if let rejection = Self.resourceRejection(for: encoded) {
-            Self.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
-            return .refusedInvalid(rejection)
+            SessionPersistenceController.logger.warning("session.persist.refusedInvalid \(rejection.description, privacy: .public)")
+            return SaveReceipt(outcome: .refusedInvalid(rejection))
         }
         let existing = try? Data(contentsOf: primaryURL)
+        let preservedWindowIDs = preserved.map(\.physicalUUID)
         if existing == encoded {
-            return .skippedIdentical
+            return SaveReceipt(
+                outcome: .skippedIdentical,
+                preservedWindowIDs: preservedWindowIDs
+            )
         }
 
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try replacePrimary(encoded, existing: existing)
+        if !preserved.isEmpty {
+            SessionPersistenceController.logger.notice(
+                "session.persist.preserved windows=\(preserved.count, privacy: .public) rekeyed=\(rekeyedCount, privacy: .public)"
+            )
+        }
+        SessionPersistenceController.logger.debug(
+            "session.persist.written windows=\(validated.windows.count, privacy: .public) preserved=\(preserved.count, privacy: .public)"
+        )
+        return SaveReceipt(outcome: .written, preservedWindowIDs: preservedWindowIDs)
+    }
+
+    static func rekeyed(_ window: WindowSnapshot, conflicting: Set<UUID>) -> WindowSnapshot {
+        var replacements: [UUID: UUID] = [:]
+        for identifier in conflicting {
+            var replacement = UUID()
+            while replacements.values.contains(replacement) {
+                replacement = UUID()
+            }
+            replacements[identifier] = replacement
+        }
+
+        func replacing(_ identifier: UUID) -> UUID {
+            replacements[identifier] ?? identifier
+        }
+
+        func rekeying(_ tree: PaneTreeSnapshot) -> PaneTreeSnapshot {
+            switch tree {
+            case .leaf(let leaf):
+                return .leaf(PaneLeafSnapshot(
+                    uuid: replacing(leaf.uuid),
+                    cwd: leaf.cwd,
+                    title: leaf.title
+                ))
+            case .split(let direction, let ratio, let left, let right):
+                return .split(
+                    direction: direction,
+                    ratio: ratio,
+                    left: rekeying(left),
+                    right: rekeying(right)
+                )
+            }
+        }
+
+        return WindowSnapshot(
+            physicalUUID: replacing(window.physicalUUID),
+            selection: window.selection.map {
+                SelectionSnapshot(
+                    workspaceID: replacing($0.workspaceID),
+                    tabID: replacing($0.tabID)
+                )
+            },
+            workspaces: window.workspaces.map { workspace in
+                WorkspaceSnapshot(
+                    id: replacing(workspace.id),
+                    name: workspace.name,
+                    color: workspace.color,
+                    isCollapsed: workspace.isCollapsed,
+                    defaultDirectory: workspace.defaultDirectory,
+                    tabs: workspace.tabs.map { tab in
+                        TabSnapshot(
+                            id: replacing(tab.id),
+                            titleOverride: tab.titleOverride,
+                            tabColor: tab.tabColor,
+                            paneTree: tab.paneTree.map(rekeying),
+                            focusedPaneID: tab.focusedPaneID.map(replacing),
+                            zoomedPaneID: tab.zoomedPaneID.map(replacing)
+                        )
+                    },
+                    selectedTabID: workspace.selectedTabID.map(replacing)
+                )
+            }
+        )
+    }
+
+    private static func identifiers(in snapshot: AppSessionSnapshot) -> Set<UUID> {
+        Set(snapshot.windows.flatMap { identifiers(in: $0) })
+    }
+
+    private static func identifiers(in window: WindowSnapshot) -> Set<UUID> {
+        var identifiers = Set([window.physicalUUID])
+        for workspace in window.workspaces {
+            identifiers.insert(workspace.id)
+            for tab in workspace.tabs {
+                identifiers.insert(tab.id)
+                if let paneTree = tab.paneTree {
+                    identifiers.formUnion(paneTree.leaves.map(\.uuid))
+                }
+            }
+        }
+        return identifiers
+    }
+
+    private func retire(
+        _ windowIDs: Set<UUID>
+    ) throws -> (count: Int, remainingWindowIDs: Set<UUID>) {
+        guard !windowIDs.isEmpty,
+              let existing = try? Data(contentsOf: primaryURL),
+              case .success(let snapshot) = Self.validate(existing) else {
+            return (0, [])
+        }
+        let count = snapshot.windows.count
+        let windows = snapshot.windows.filter { !windowIDs.contains($0.physicalUUID) }
+        let retired = count - windows.count
+        let remainingWindowIDs = windowIDs.intersection(Set(snapshot.windows.map(\.physicalUUID)))
+        guard retired > 0, !windows.isEmpty else {
+            return (0, remainingWindowIDs)
+        }
+        let replacement = AppSessionSnapshot(
+            version: snapshot.version,
+            ownerInstanceID: snapshot.ownerInstanceID,
+            ownerPID: snapshot.ownerPID,
+            windows: windows
+        )
+        try replacePrimary(try Self.encoder.encode(replacement), existing: existing)
+        return (retired, [])
+    }
+
+    private func replacePrimary(_ encoded: Data, existing: Data?) throws {
         if let existing, case .success = Self.validate(existing) {
             // Secure the previous valid bytes before replacing the primary.
             // A backup write failure must leave the primary intact for retry.
@@ -91,10 +454,32 @@ struct SessionSnapshotRepository: Sendable {
             restrictPermissions(of: backupURL)
         }
         try encoded.write(to: primaryURL, options: [.atomic])
-        // `.atomic` replaces the file, so permissions are reapplied after every
-        // write rather than once at creation.
         restrictPermissions(of: primaryURL)
-        return .written
+    }
+
+    private func readClaimRecord(from descriptor: Int32) -> ClaimRecord? {
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, status.st_size > 0 else { return nil }
+        let size = Int(status.st_size)
+        var data = Data(count: size)
+        let read = data.withUnsafeMutableBytes {
+            pread(descriptor, $0.baseAddress, size, 0)
+        }
+        guard read == size else { return nil }
+        return try? JSONDecoder().decode(ClaimRecord.self, from: data)
+    }
+
+    private func writeClaimRecord(_ record: ClaimRecord, to descriptor: Int32) throws {
+        let data = try Self.encoder.encode(record)
+        guard ftruncate(descriptor, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let written = data.withUnsafeBytes {
+            pwrite(descriptor, $0.baseAddress, data.count, 0)
+        }
+        guard written == data.count else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     /// Promotes the primary file to the backup slot.
@@ -104,14 +489,15 @@ struct SessionSnapshotRepository: Sendable {
     /// primary, so recovery is not limited to the starting state of that boot.
     /// A missing primary is not an error; invalid bytes are never promoted.
     func promotePrimaryToBackup() throws {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: primaryURL.path) else { return }
-
-        let data = try Data(contentsOf: primaryURL)
-        _ = try Self.validate(data).get()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: backupURL, options: [.atomic])
-        restrictPermissions(of: backupURL)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileLock.withExclusiveLock(at: lockURL, lock: sessionLock) { _ in
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: primaryURL.path) else { return }
+            let data = try Data(contentsOf: primaryURL)
+            _ = try Self.validate(data).get()
+            try data.write(to: backupURL, options: [.atomic])
+            restrictPermissions(of: backupURL)
+        }
     }
 
     /// The file records working directories and titles, and `FORK.md` states it
@@ -121,7 +507,7 @@ struct SessionSnapshotRepository: Sendable {
         do {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            Self.logger.warning(
+            SessionPersistenceController.logger.warning(
                 "session.persist.permissionsNotRestricted path=\(url.lastPathComponent, privacy: .public) error=\(String(describing: error), privacy: .public)"
             )
         }
@@ -141,7 +527,8 @@ struct SessionSnapshotRepository: Sendable {
         case unusable(reason: String)
     }
 
-    /// Prefers the primary, falling back to the previous validated snapshot.
+    /// Lock-free helper that prefers the primary, falling back to the previous
+    /// validated snapshot. Locked entry points also call this helper.
     func load() -> LoadOutcome {
         var primaryFailure: String?
 
@@ -152,7 +539,7 @@ struct SessionSnapshotRepository: Sendable {
             break
         case .failure(let failure):
             primaryFailure = failure.description
-            Self.logger.warning("session.restore.primaryUnusable \(failure.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.restore.primaryUnusable \(failure.description, privacy: .public)")
         }
 
         switch read(backupURL) {
@@ -161,23 +548,14 @@ struct SessionSnapshotRepository: Sendable {
         case .failure(.missing):
             return primaryFailure.map { .unusable(reason: $0) } ?? .absent
         case .failure(let failure):
-            Self.logger.warning("session.restore.backupUnusable \(failure.description, privacy: .public)")
+            SessionPersistenceController.logger.warning("session.restore.backupUnusable \(failure.description, privacy: .public)")
             return .unusable(reason: primaryFailure ?? failure.description)
         }
     }
 
-    struct StoredOwner: Decodable, Equatable {
+    struct StoredOwner: Decodable, Equatable, Sendable {
         let ownerInstanceID: UUID
         let ownerPID: Int32
-    }
-
-    /// The writer recorded in the primary file, decoded without the workspace
-    /// graph. Ownership is a property of the file on disk, so it stays readable
-    /// even when the graph itself would fail restore validation.
-    func storedOwner() -> StoredOwner? {
-        guard let data = try? Data(contentsOf: primaryURL),
-              Self.resourceRejection(for: data) == nil else { return nil }
-        return try? JSONDecoder().decode(StoredOwner.self, from: data)
     }
 
     private enum ReadFailure: Error, CustomStringConvertible {
@@ -283,5 +661,58 @@ struct SessionSnapshotRepository: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
+    }
+}
+
+private enum FileLock {
+    typealias LockFunction = @Sendable (Int32, Int32) -> Int32
+
+    enum LockError: Error {
+        case openFailed(Int32)
+        case timeout
+        case lockFailed(Int32)
+    }
+
+    private static let unsupportedLock = NSLock()
+    private static var didLogUnsupported = false
+
+    static func withExclusiveLock<T>(
+        at lockURL: URL,
+        timeout: TimeInterval = 0.5,
+        lock: @escaping LockFunction = { descriptor, operation in
+            flock(descriptor, operation)
+        },
+        _ body: (Int32) throws -> T
+    ) throws -> T {
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw LockError.openFailed(errno) }
+        defer { close(descriptor) }
+
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            if lock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+                defer { _ = flock(descriptor, LOCK_UN) }
+                return try body(descriptor)
+            }
+
+            let error = errno
+            if error == ENOTSUP || error == ENOLCK {
+                unsupportedLock.lock()
+                if !didLogUnsupported {
+                    didLogUnsupported = true
+                    SessionPersistenceController.logger.warning("session.persist.lockUnsupported file=\(lockURL.lastPathComponent, privacy: .public)")
+                }
+                unsupportedLock.unlock()
+                return try body(descriptor)
+            }
+            if error != EWOULDBLOCK && error != EAGAIN {
+                throw LockError.lockFailed(error)
+            }
+            if ProcessInfo.processInfo.systemUptime >= deadline {
+                SessionPersistenceController.logger.warning("session.persist.lockTimeout file=\(lockURL.lastPathComponent, privacy: .public)")
+                throw LockError.timeout
+            }
+            usleep(10_000)
+        }
     }
 }

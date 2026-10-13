@@ -13,6 +13,7 @@ import Testing
 /// entry so `TerminalCommandRouter.createVirtualTab` resolves both the owning
 /// controller AND the owning workspace exactly as it does live.
 @MainActor
+// swiftlint:disable:next type_name
 struct TerminalCommandRouterVirtualTabWorkspaceTests {
     private func makeSession() -> TerminalSessionState {
         let tree: SplitTree<Ghostty.SurfaceView>

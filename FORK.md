@@ -104,13 +104,19 @@ and no terminal contents are ever written to disk. A recorded directory that no
 longer exists is dropped rather than silently swapped for your home directory,
 matching every other tab-creating path in this fork.
 
-Saving is driven by an eight-second timer, never by terminal output: a save
-happens only when a generation counter shows something actually changed, and it
-is skipped entirely when the encoded bytes match the file already on disk, so an
-idle window writes nothing. Quitting normally writes once more, synchronously, so
-an ordinary quit loses nothing; a crash or a force quit can lose at most eight
-seconds of structural change. The file is written atomically with owner-only
-(`0600`) permissions.
+Structural changes — tabs, workspaces, names, colors, windows, and splits — are
+saved about one second later. Titles and directories reported by the shell are
+saved at most every eight seconds. A save runs only after something changed and
+is skipped when its bytes match the file on disk, so an idle window writes
+nothing. Quitting
+normally saves once more before closing windows; a crash or force quit can lose
+up to that interval. The file is written atomically with owner-only (`0600`)
+permissions.
+
+Saved sessions support up to 32 physical windows. If a save is refused or keeps
+failing, the workspace-actions button shows an orange warning badge and its
+menu gains **Check Sidebar Sync…**, which explains the cause and how to resolve
+it. The item is hidden while saving works.
 
 The backup is seeded after a successful launch, then refreshed before each
 changed save with the existing primary only if it passes the same checks as
@@ -120,26 +126,42 @@ the backup. If writing the backup fails, the primary is preserved and the save
 fails for retry. Both slots use atomic writes and owner-only permissions;
 identical saves leave both untouched.
 
-Only one running Chostty writes the file. A launch that finds the file owned by
-another running Chostty (same bundle identifier, still alive) stays passive and
-resumes saving as soon as that instance exits; a recorded pid now held by an
-unrelated process does not count. The sidebar's **Check Sidebar Sync…** sheet
-names the owning instance and offers **Take Over and Save**, which writes the
-current window's state; the previous owner reads the new owner before its next
-write and goes passive.
+The Chostty instance you are using — the active one — saves the file;
+activating another running instance hands saving to it. An instance that has
+yielded to another one only removes the windows it closed, and stays that way
+until you activate it, even after the other instance exits. A recorded pid now
+held by an unrelated process does not count as a running Chostty instance.
 
 Closing every physical window does not replace the last valid snapshot with an
 empty one. If the app later quits without opening another window, the next
 launch restores that last non-empty layout.
 
 Only the selected tab of the selected workspace starts a shell at launch. The
-rest are rebuilt as values and materialize the first time you select them, which
-is what keeps restoring twenty tabs from starting twenty terminals at once.
+other tabs in that workspace then open one at a time, paced by their pane count;
+tabs in other workspaces start no shell until you open that workspace. This keeps
+restoring twenty tabs from starting twenty terminals at once. If Chostty quit
+while opening a tab, that tab is held back: it shows an indicator and opens only
+when you select it. A tab that fails to open shows a warning and retries when you
+select it.
 
-Set `macos-session-persistence = false` to turn all of this off, or export
+If Chostty cannot record restore attempts, the warning badge and **Check Sidebar
+Sync…** report that restore protection is unavailable. Saved windows and tabs
+then open only when you select them.
+
+File- and URL-first launches, launches that carry an explicit open intent
+(`ghostty -e …`, `open --args`), and `initial-window = false` keep saved
+windows unopened in the session file. Open the saved windows with **Reopen
+Saved Windows** in the sidebar's workspace actions, or by clicking the Dock
+when no window is open. An explicit-open launch still saves the windows it
+opens next to the unopened ones; the `-e` command itself is not saved. Closing
+a window removes it from the file even when only unopened saved windows remain.
+Windows and tabs whose restore crashed stay held back until opened explicitly.
+A new instance does not restore saved windows while another instance is
+running.
+
+Set `macos-session-persistence = false` to turn persistence off, or export
 `GHOSTTY_MAC_DISABLE_SESSION_RESTORE=1` for a single launch. Persistence also
-disables itself for test hosts and for launches that carry an explicit open
-intent (`ghostty -e …`, `open --args`).
+disables itself for test hosts.
 
 `window-save-state` is inherited from upstream and still parses, but the macOS
 app ignores it and always behaves as `never`; `macos-session-persistence` is the

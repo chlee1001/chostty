@@ -631,6 +631,11 @@ extension Ghostty {
             }
         }
 
+        func restoreTitle(_ title: String) {
+            titleChangeTimer?.invalidate()
+            self.title = title
+        }
+
         // MARK: Local Events
 
         private func localEventHandler(_ event: NSEvent) -> NSEvent? {

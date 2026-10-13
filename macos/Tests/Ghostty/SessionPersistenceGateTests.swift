@@ -62,17 +62,30 @@ import Testing
         #expect(gate(environment: [SessionPersistenceGate.killSwitchVariable: ""]).shouldPersist)
     }
 
-    @Test func applePersistenceArgumentsCloseTheGate() {
+    @Test func applePersistenceArgumentsSkipBootRestoreButStillPersist() {
         let gate = gate(arguments: ["-ApplePersistenceIgnoreState", "YES"])
-        #expect(!gate.shouldPersist)
+        #expect(gate.shouldPersist)
         #expect(!gate.shouldApplyOnBoot)
     }
 
-    @Test func arbitraryLaunchArgumentClosesTheGate() {
+    @Test func explicitOpenIntentSkipsBootRestoreButStillPersists() {
         // `ghostty -e ...`, `open --args`: the user asked for something
-        // specific, so last session's layout must not land on top.
-        #expect(!gate(arguments: ["-e", "top"]).shouldApplyOnBoot)
-        #expect(!gate(arguments: ["--config-file=/tmp/x"]).shouldApplyOnBoot)
+        // specific, so last session's layout must not land on top, but what
+        // this launch opens is still the session the user is using.
+        for arguments in [["-e", "top"], ["--config-file=/tmp/x"]] {
+            let gate = gate(arguments: arguments)
+            #expect(gate.shouldPersist)
+            #expect(!gate.shouldApplyOnBoot)
+        }
+    }
+
+    @Test func explicitOpenIntentNeverReopensAClosedGate() {
+        let gate = gate(
+            environment: [SessionPersistenceGate.killSwitchVariable: "1"],
+            arguments: ["-e", "top"]
+        )
+        #expect(!gate.shouldPersist)
+        #expect(!gate.shouldApplyOnBoot)
     }
 
     @Test func configuredOffClosesTheGate() {
@@ -85,34 +98,6 @@ import Testing
         // `GHOSTTY_*` is the frozen runtime prefix; `CHOSTTY_*` would open a
         // namespace with no precedent.
         #expect(SessionPersistenceGate.killSwitchVariable.hasPrefix("GHOSTTY_"))
-    }
-
-    // MARK: - Crash-loop marker
-
-    @Test func markerRoundTripsWhenTheGateIsOpen() throws {
-        let defaults = try #require(UserDefaults(suiteName: "chostty.gate.tests.\(UUID().uuidString)"))
-        defer { defaults.removePersistentDomain(forName: defaults.description) }
-        let gate = gate()
-
-        #expect(!gate.crashLoopMarkerIsSet(defaults: defaults))
-        gate.setCrashLoopMarker(true, defaults: defaults)
-        #expect(gate.crashLoopMarkerIsSet(defaults: defaults))
-        gate.setCrashLoopMarker(false, defaults: defaults)
-        #expect(!gate.crashLoopMarkerIsSet(defaults: defaults))
-    }
-
-    /// A gated process must not create the key, or every test run leaves
-    /// persistence bookkeeping in the shared defaults.
-    @Test func closedGateNeverCreatesTheMarkerKey() throws {
-        let suiteName = "chostty.gate.tests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let closed = gate(environment: ["XCTestConfigurationFilePath": "/x"])
-        closed.setCrashLoopMarker(true, defaults: defaults)
-
-        #expect(defaults.object(forKey: SessionPersistenceGate.crashLoopMarkerKey) == nil)
-        #expect(!closed.crashLoopMarkerIsSet(defaults: defaults))
     }
 
     /// This process is an XCTest host, so the process-backed default must be

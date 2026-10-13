@@ -40,6 +40,7 @@ class BaseTerminalController: NSWindowController,
     /// of the controller and is the value surfaced to accessibility, undo, and
     /// (in later phases) the owner registry.
     let physicalUUID: UUID
+    var isWindowClosed = false
 
     /// The currently focused surface.
     var focusedSurface: Ghostty.SurfaceView? {
@@ -146,8 +147,8 @@ class BaseTerminalController: NSWindowController,
     /// can be skipped when the pane set did not actually change.
     private var sessionSubscribedLeafIDs: [UUID: Set<UUID>] = [:]
 
-    /// Test seam for ``pendingHydration``.
-    var pendingHydrationOverride: PendingHydrationRegistry?
+    /// Restoration dependencies injected with the initial graph.
+    private(set) var injectedRestoreBindings: TerminalControllerGraphFactory.RestoreBindings?
 
     /// Rebuilds the per-session subscriptions when the roster changes.
     private var sessionRosterCancellable: AnyCancellable?
@@ -205,6 +206,7 @@ class BaseTerminalController: NSWindowController,
     init(_ ghostty: Ghostty.App,
          graph: TerminalControllerGraphFactory.InitialGraph
     ) {
+        self.injectedRestoreBindings = graph.restoreBindings
         self.ghostty = ghostty
         // A window restored from a snapshot keeps its recorded identity rather
         // than minting a new one: this value is the window's stable id, and
@@ -234,6 +236,9 @@ class BaseTerminalController: NSWindowController,
         self.workspaceStore.willCommit = { [weak self] workspaces, _ in
             self?.replaceRegistryIndex(for: workspaces)
         }
+        self.workspaceStore.didEditMetadata = { [weak self] in
+            self?.sessionPersistence?.scheduleSave()
+        }
 
         // Subscribe every session to its own surface metadata, and re-subscribe
         // whenever the roster changes, so a newly created or background tab
@@ -242,6 +247,7 @@ class BaseTerminalController: NSWindowController,
         sessionRosterCancellable = self.workspaceStore.$snapshot
             .sink { [weak self] _ in
                 self?.rebuildSessionMetadataSubscriptions()
+                self?.sessionPersistence?.scheduleSave()
                 // A tab created in the background owns a surface that is not
                 // in the presented tree, so it has to be told it is hidden
                 // even though the presented tree did not change.
@@ -341,8 +347,8 @@ class BaseTerminalController: NSWindowController,
     /// initializer. Provided for call sites that still construct a controller
     /// from an optional base config and/or an existing surface tree.
     convenience init(_ ghostty: Ghostty.App,
-         baseConfig base: Ghostty.SurfaceConfiguration? = nil,
-         surfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil
+                     baseConfig base: Ghostty.SurfaceConfiguration? = nil,
+                     surfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil
     ) {
         let graph: TerminalControllerGraphFactory.InitialGraph
         if let tree {
@@ -361,7 +367,6 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
-
     // MARK: Virtual workspace support
 
     /// Selects a workspace/tab by (workspaceID, tabID). The desired selection is
@@ -377,21 +382,18 @@ class BaseTerminalController: NSWindowController,
         let store = workspaceStore
         guard let session = store.session(forTabID: tabID) else { return }
 
+        // This must precede the already-presented guard: a boot-selected tab
+        // can be empty after a failed restore and needs another selection to
+        // retry in place.
+        _ = restoreHydrate(session, trigger: .selection)
+        scheduleWorkspaceHydration(workspaceID: workspaceID)
+
         // Skip if already presenting this session at or beyond the candidate
         // generation — this guards against stale mounts and feedback loops.
         if presentedSessionID == tabID,
            store.snapshot.mountGeneration <= presentedMountGeneration {
             return
         }
-
-        // Materialize a tab that was restored from disk but never opened.
-        //
-        // Unconditional, and before the selection-commit block below, because
-        // several callers arrive with the selection ALREADY committed:
-        // `ReservedShortcutDispatcher.select(workspace:on:)` commits through
-        // `selectWorkspace` first, so a hydration placed inside that block
-        // would mount an empty tab for the workspace-switch shortcuts.
-        hydratePendingSessionIfNeeded(session)
 
         // Save the currently presented tree/focus back into the previously
         // presented session so re-selecting it restores exactly this state.
@@ -1154,7 +1156,6 @@ class BaseTerminalController: NSWindowController,
         return newSession.id
     }
 
-
     /// Create a new split.
     @discardableResult
     func newSplit(
@@ -1230,6 +1231,7 @@ class BaseTerminalController: NSWindowController,
             // in `commit`, so `mountGeneration` does not move for them and the
             // periodic save would otherwise never see the pane layout.
             session.bumpMetadataGeneration()
+            sessionPersistence?.scheduleSave()
 
             // A split created a pane nothing is subscribed to yet; a close
             // removed one.
@@ -1804,8 +1806,10 @@ class BaseTerminalController: NSWindowController,
     /// 5. Undo group — ONE group on the process-wide undo manager. The
     ///    source-restore action registers FIRST and the destination window's
     ///    close-on-undo registers SECOND, so reverse-order execution closes
-    ///    the destination before restoring the source. The restore action
-    ///    also owns redo as a full re-detach. The lease finalize is a no-op:
+    ///    the destination before restoring the source. The restore runs only
+    ///    while no open window owns the tab and it is still alive; otherwise
+    ///    undo leaves it where it is. The restore action also owns redo as a
+    ///    full re-detach. The lease finalize is a no-op:
     ///    a torn-off session is alive in the new window and must survive
     ///    lease expiry (unlike a close, which tears down on expiry).
     @discardableResult
@@ -1817,6 +1821,8 @@ class BaseTerminalController: NSWindowController,
               }),
               let restoreIndex = owning.tabs.firstIndex(where: { $0.id == tabID }),
               let session = store.liveSession(forTabID: tabID) else { return nil }
+
+        _ = restoreHydrate(session, trigger: .detach)
 
         let wasPresented = presentedSessionID == tabID
         let restoreWorkspaceID = owning.id
@@ -1869,7 +1875,12 @@ class BaseTerminalController: NSWindowController,
                 withTarget: self,
                 expiresAfter: undoExpiration
             ) { target in
-                guard let restored = lease.consume() else { return }
+                // Restore only a tab no open window owns. The torn-off window
+                // normally closed a step earlier; if the tab has since moved
+                // or that window was rebuilt, a second owner would present the
+                // same surfaces twice and fail every save's validation.
+                guard TerminalController.open.allSatisfy({ $0.workspaceStore.liveSession(forTabID: tabID) == nil }),
+                      let restored = lease.consume(), !restored.isTornDown else { return }
                 target.workspaceStore.register(restored)
                 if target.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
                     target.workspaceStore.insertTab(
@@ -1917,7 +1928,8 @@ class BaseTerminalController: NSWindowController,
         return TerminalController.newWindow(
             ghostty,
             detachedWorkspace: destination,
-            position: screenPoint)
+            position: screenPoint,
+            restoreBindings: injectedRestoreBindings)
     }
 
     /// Receives a live virtual tab dragged in from ANOTHER window's strip or
@@ -1927,28 +1939,31 @@ class BaseTerminalController: NSWindowController,
     ///
     /// Order (every step is load-bearing):
     /// 1. Guards — the tab must NOT already live here (same-window drops keep
-    ///    their existing reorder path), and exactly one OTHER controller must
-    ///    own it, or the drop is a defined no-op.
+    ///    their existing reorder path), and another open controller must own
+    ///    it, or the drop is a defined no-op.
     /// 2. Write-back — if the tab is presented in its source window, that
     ///    controller's `surfaceTree` is authoritative; the source writes back
     ///    before removal.
-    /// 3. Transfer — source `removeTab` + `unregister`, then this store
-    ///    `addTab` into the target workspace (remove-then-create, so surface
-    ///    ownership never duplicates).
+    /// 3. Transfer — this store adopts first (`insertTab` at the drop index,
+    ///    or `addTab` to append when there is none), then the source
+    ///    `removeTab` + `unregister`s it.
     /// 4. Present — the received tab becomes this window's presented tab.
-    /// 5. Source cleanup — if the source window is now empty, close it. Its
-    ///    window-close undo runs in the same group (see below).
-    /// 6. Undo group — ONE group on the process-wide undo manager. The
-    ///    destination-remove action registers FIRST and the source-restore
-    ///    action registers SECOND, so reverse-order execution restores the
-    ///    source before removing from the destination. Redo re-runs the full
-    ///    receive. Lease finalize is a no-op: the session stays alive in the
-    ///    destination either way.
+    /// 5. Source cleanup — if that was the source window's last tab, close the
+    ///    window without an undo of its own; the undo below rebuilds it.
+    /// 6. Undo group — ONE group on the process-wide undo manager. Undo takes
+    ///    the tab out of this window and puts it back in the source while that
+    ///    is open, or rebuilds the source window this move closed. When this
+    ///    window no longer owns the tab, or neither source exists, undo leaves
+    ///    it where it is: a tab owned by two windows makes every save fail
+    ///    validation. Redo re-runs the full receive. Lease finalize is a
+    ///    no-op: the session stays alive either way.
     @discardableResult
     func receiveForeignTab(_ tabID: UUID, intoWorkspace workspaceID: UUID?, at index: Int? = nil) -> Bool {
         // 1. Guards.
         if workspaceStore.liveSession(forTabID: tabID) != nil { return false }
-        guard let source = TerminalController.all.first(where: {
+        // A closed window's store still lists the tabs it had; only an open
+        // window can be the source.
+        guard let source = TerminalController.open.first(where: {
             $0 !== self && $0.workspaceStore.liveSession(forTabID: tabID) != nil
         }) else { return false }
         return receiveForeignTab(tabID, from: source, intoWorkspace: workspaceID, at: index)
@@ -1956,7 +1971,7 @@ class BaseTerminalController: NSWindowController,
 
     /// Test seam + the real worker: move `tabID` from `source` into this
     /// window. Production callers use `receiveForeignTab(_:intoWorkspace:at:)`,
-    /// which resolves `source` via `TerminalController.all`; tests pass both
+    /// which resolves `source` via `TerminalController.open`; tests pass both
     /// controllers explicitly (the harness must not depend on `NSApp.windows`
     /// contents, which accumulate across suites in the test host).
     @discardableResult
@@ -1997,17 +2012,22 @@ class BaseTerminalController: NSWindowController,
         //    When the source still holds other tabs the removal commits
         //    normally; when this was its last tab, closing the source window
         //    IS the removal — the session already lives in the destination, so
-        //    no PTY is at risk, and the close's own undo restores the window.
-        //    (Transient dual registration mirrors the tear-off undo tests'
-        //    proven pattern; single ownership is restored below either way.)
+        //    no PTY is at risk.
         let targetWorkspaceID = workspaceID ?? workspaceStore.snapshot.selection.workspaceID
         workspaceStore.register(session)
-        workspaceStore.addTab(session, toWorkspace: targetWorkspaceID)
+        if let index {
+            // Dropped onto a tab: land where it was dropped, as a local move would.
+            workspaceStore.insertTab(session, intoWorkspace: targetWorkspaceID, at: index)
+        } else {
+            workspaceStore.addTab(session, toWorkspace: targetWorkspaceID)
+        }
 
         // 4. Present the received tab here.
         selectSession(workspaceID: targetWorkspaceID, tabID: session.id)
 
+        let closedSourceState: TerminalController.UndoState?
         if sourceStore.removeTab(tabID) != nil {
+            closedSourceState = nil
             sourceStore.unregister(session.id)
             // Remount the source's committed successor when its presented tab left.
             if wasPresentedInSource {
@@ -2017,13 +2037,17 @@ class BaseTerminalController: NSWindowController,
                 }
             }
         } else {
-            // 5. This was the source window's last tab: close the window. Its
-            //    close-window undo joins this same group (registered inside the
-            //    call below, executing before the receive-undo on undo).
-            source.closeWindowImmediately()
+            // 5. This was the source window's last tab: close the window. The
+            //    undo below rebuilds it from this state, so the close registers
+            //    no undo of its own: a second restore would also put the session
+            //    back into the closed controller, leaving two owners.
+            closedSourceState = source.undoState
+            undoManager?.disableUndoRegistration {
+                source.closeWindowImmediately()
+            }
         }
 
-        // 6a. Destination-remove undo (registers FIRST ⇒ executes LAST).
+        // 6. Undo: give the tab back, then re-run the receive on redo.
         let lease = DetachedUndoLease(payload: session) { _ in
             // Session-preserving by design: the moved session stays alive in
             // whichever window holds it even if this lease expires unused.
@@ -2032,32 +2056,52 @@ class BaseTerminalController: NSWindowController,
             undoManager.registerUndo(
                 withTarget: self,
                 expiresAfter: undoExpiration
-            ) { target in
-                guard let moved = lease.consume() else { return }
+            ) { [weak source] target in
+                // A later move may have taken the tab elsewhere, and the
+                // source may have closed on its own since.
+                let openSource = source.flatMap { $0.isWindowClosed ? nil : $0 }
+                guard target.workspaceStore.liveSession(forTabID: tabID) != nil,
+                      closedSourceState != nil || openSource != nil,
+                      let moved = lease.consume() else { return }
+                // The destination's presented tree is authoritative for the
+                // tab it is giving back; keep it before the tab leaves.
+                let wasPresentedHere = target.presentedSessionID == moved.id
+                if wasPresentedHere {
+                    moved.surfaceTree = target.surfaceTree
+                    moved.focusedSurfaceID = target.focusedSurface?.id
+                    moved.unmount()
+                }
                 target.workspaceStore.removeTab(moved.id)
                 target.workspaceStore.unregister(moved.id)
-                // 6b. Source-restore (registers SECOND ⇒ executes FIRST):
-                // put the session back where it came from, then re-run the
-                // receive on redo.
-                source.workspaceStore.register(moved)
-                if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
-                    source.workspaceStore.insertTab(
-                        moved,
-                        intoWorkspace: restoreWorkspaceID,
-                        at: restoreIndex)
-                } else {
-                    source.workspaceStore.insertWorkspace(
-                        id: restoreWorkspaceID,
-                        name: restoreWorkspaceName,
-                        sessions: [moved],
-                        selectedTabID: moved.id,
-                        at: restoreWorkspaceIndex,
-                        defaultDirectory: restoreWorkspaceDefaultDirectory,
-                        color: restoreWorkspaceColor,
-                        isCollapsed: restoreWorkspaceCollapsed)
+                if wasPresentedHere {
+                    let sel = target.workspaceStore.snapshot.selection
+                    target.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
                 }
-                let sel = source.workspaceStore.snapshot.selection
-                source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                // A source window the receive closed comes back whole, with
+                // this tab in it.
+                if let closedSourceState {
+                    _ = TerminalController(target.ghostty, with: closedSourceState)
+                } else if let source = openSource {
+                    source.workspaceStore.register(moved)
+                    if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
+                        source.workspaceStore.insertTab(
+                            moved,
+                            intoWorkspace: restoreWorkspaceID,
+                            at: restoreIndex)
+                    } else {
+                        source.workspaceStore.insertWorkspace(
+                            id: restoreWorkspaceID,
+                            name: restoreWorkspaceName,
+                            sessions: [moved],
+                            selectedTabID: moved.id,
+                            at: restoreWorkspaceIndex,
+                            defaultDirectory: restoreWorkspaceDefaultDirectory,
+                            color: restoreWorkspaceColor,
+                            isCollapsed: restoreWorkspaceCollapsed)
+                    }
+                    let sel = source.workspaceStore.snapshot.selection
+                    source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                }
                 undoManager.registerUndo(
                     withTarget: target.ghostty,
                     expiresAfter: target.undoExpiration
@@ -2172,13 +2216,34 @@ class BaseTerminalController: NSWindowController,
                 ?? panes.first else { continue }
 
             var set: Set<AnyCancellable> = []
+            // The session's display title follows the representative pane.
             representative.$title
                 .combineLatest(representative.$bell)
                 .sink { [weak self, weak session] title, bell in
                     guard let self, let session else { return }
                     session.title = self.computeTitle(title: title, bell: bell)
-                    session.bell = bell
-                    session.bumpMetadataGeneration()
+                }
+                .store(in: &set)
+
+            // Every pane's title is saved, so a title change on any pane,
+            // including one in a background tab, has to reach the next save.
+            // The initial snapshot is dropped after duplicates are folded, so
+            // subscribing alone never counts as a change.
+            tree.valuesPublisher(valueKeyPath: \.title, publisherKeyPath: \.$title)
+                .removeDuplicates()
+                .dropFirst()
+                .sink { [weak session] _ in
+                    session?.bumpMetadataGeneration()
+                }
+                .store(in: &set)
+
+            // The sidebar bell shows when any pane rings. A bell is transient
+            // and never saved, so it does not move the metadata generation.
+            tree.valuesPublisher(valueKeyPath: \.bell, publisherKeyPath: \.$bell)
+                .map { $0.values.contains(true) }
+                .removeDuplicates()
+                .sink { [weak session] bell in
+                    session?.bell = bell
                 }
                 .store(in: &set)
 
@@ -2208,41 +2273,142 @@ class BaseTerminalController: NSWindowController,
     // MARK: - Lazy hydration
 
     /// Tabs restored from disk that have not been materialized yet.
-    /// Application-owned; tests assign ``pendingHydrationOverride``.
     var pendingHydration: PendingHydrationRegistry? {
-        pendingHydrationOverride ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
+        injectedRestoreBindings?.registry ?? (NSApp.delegate as? AppDelegate)?.pendingHydration
     }
 
-    /// Idempotent: the registry entry is consumed either way, so a tab is only
-    /// ever hydrated once.
-    func hydratePendingSessionIfNeeded(_ session: TerminalSessionState) {
+    var sessionPersistence: SessionPersistenceController? {
+        injectedRestoreBindings?.persistence ?? (NSApp.delegate as? AppDelegate)?.sessionPersistence
+    }
+
+    var restoredSurfaceConstructor: TerminalControllerGraphFactory.SurfaceConstructor {
+        injectedRestoreBindings?.construct ?? { [weak self] config, uuid in
+            guard let app = self?.ghostty.app else { return nil }
+            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid)
+        }
+    }
+
+    /// Test seam for restoration dependencies used by lazy hydration.
+    func injectRestoreBindings(_ bindings: TerminalControllerGraphFactory.RestoreBindings?) {
+        injectedRestoreBindings = bindings
+    }
+
+    enum RestoreTrigger {
+        case paced
+        case selection
+        case detach
+    }
+
+    @discardableResult
+    func restoreHydrate(tabID: UUID, trigger: RestoreTrigger) -> HydrationOutcome {
+        guard let session = workspaceStore.session(forTabID: tabID) else {
+            return .notInStore
+        }
+        return restoreHydrate(session, trigger: trigger)
+    }
+
+    @discardableResult
+    func restoreHydrate(
+        _ session: TerminalSessionState,
+        trigger: RestoreTrigger
+    ) -> HydrationOutcome {
+        guard pendingHydration?.contains(session.id) == true,
+              session.surfaceTree.isEmpty else {
+            return hydratePendingSession(session)
+        }
+        guard !(session.isHeldBack && trigger != .selection) else {
+            return .heldBack
+        }
+
+        let attempt = sessionPersistence?.beginRestoreAttempt(.tab, [session.id]) ?? .notTracked
+        let token: SessionPersistenceController.RestoreAttemptToken?
+        switch attempt {
+        case .recorded(let recorded):
+            token = recorded
+        case .notTracked:
+            token = nil
+        case .unrecorded:
+            // Without a recorded attempt only an explicit selection may build.
+            // Mark the tab so it does not sit blank with no hint to select it.
+            guard trigger == .selection else {
+                session.hydrationFailed = true
+                return .unrecorded
+            }
+            token = nil
+        }
+
+        let outcome = hydratePendingSession(session)
+        switch outcome {
+        case .hydrated:
+            session.hydrationFailed = false
+            if let token {
+                sessionPersistence?.settleRestoreAttempt(token, recovered: [session.id]) {
+                    session.isHeldBack = false
+                }
+            } else {
+                session.isHeldBack = false
+            }
+        case .failed:
+            session.hydrationFailed = true
+            if let token {
+                sessionPersistence?.finishRestoreAttempt(token)
+            }
+        default:
+            if let token {
+                sessionPersistence?.finishRestoreAttempt(token)
+            }
+        }
+        return outcome
+    }
+
+    func scheduleWorkspaceHydration(workspaceID: UUID) {
+        guard let workspace = workspaceStore.snapshot.workspaces.first(where: { $0.id == workspaceID }) else {
+            return
+        }
+        let tabIDs = workspace.tabs
+            .filter { $0.surfaceTree.isEmpty && !$0.isHeldBack }
+            .map(\.id)
+        pendingHydration?.enqueueHydration(tabIDs, owner: self) { [weak self] tabID in
+            self?.restoreHydrate(tabID: tabID, trigger: .paced) ?? .notInStore
+        }
+    }
+
+    @discardableResult
+    func hydratePendingSession(_ session: TerminalSessionState) -> HydrationOutcome {
         guard let registry = pendingHydration,
-              let stored = registry.take(session.id) else { return }
+              let stored = registry.snapshot(for: session.id) else {
+            return .notPending
+        }
 
         // Something already gave this session a live tree; the stored value is
         // stale by definition.
-        guard session.surfaceTree.isEmpty else { return }
+        guard session.surfaceTree.isEmpty else {
+            _ = registry.take(session.id)
+            return .alreadyLive
+        }
 
         let defaultDirectory = workspaceStore.snapshot.workspaces
             .first { $0.tabs.contains { $0.id == session.id } }?
             .defaultDirectory
+        let construct = restoredSurfaceConstructor
 
-        let tree = SessionSnapshotProjection.surfaceTree(
-            from: stored.paneTree,
-            zoomedPaneID: stored.zoomedPaneID
-        ) { [weak self] leaf in
-            guard let app = self?.ghostty.app else { return nil }
-            return Ghostty.SurfaceView(
-                app,
-                baseConfig: TerminalControllerGraphFactory.surfaceConfiguration(
+        let snapshotTree = TerminalControllerGraphFactory.restorableTree(of: stored)
+        guard let tree = SessionSnapshotProjection.surfaceTree(
+            from: snapshotTree,
+            zoomedPaneID: stored.zoomedPaneID,
+            makeSurface: { leaf in
+                TerminalControllerGraphFactory.restoredSurface(
                     forLeaf: leaf,
-                    workspaceDefaultDirectory: defaultDirectory
-                ),
-                uuid: leaf.uuid
+                    workspaceDefaultDirectory: defaultDirectory,
+                    construct: construct
+                )
+            }
+        ) else {
+            SessionPersistenceController.logger.warning(
+                "session.hydrate.failed tab=\(session.id, privacy: .public) panes=\(snapshotTree.paneCount)"
             )
+            return .failed
         }
-
-        guard !tree.isEmpty else { return }
 
         session.surfaceTree = tree
         if let focusedPaneID = stored.focusedPaneID,
@@ -2253,11 +2419,32 @@ class BaseTerminalController: NSWindowController,
             session.focusedSurfaceID = tree.first?.id
         }
 
+        _ = registry.take(session.id)
+
         // The panes are new objects, so the owner index and the subscriptions
         // both have to learn about them.
         syncRegistryToSnapshot()
         refreshMetadataSubscriptions(for: session, panes: Array(tree))
         session.bumpMetadataGeneration()
+        syncSurfaceTreeOcclusionState()
+
+        if presentedSessionID == session.id {
+            presentHydratedSessionInPlace(session)
+        }
+
+        return .hydrated(panes: Array(tree).count)
+    }
+
+    private func presentHydratedSessionInPlace(_ session: TerminalSessionState) {
+        surfaceTree = session.surfaceTree
+        focusedSurface = session.surfaceTree.first(where: { $0.id == session.focusedSurfaceID })
+            ?? session.surfaceTree.first
+        titleDidChange(to: session.title)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let surface = self.focusedSurface else { return }
+            self.window?.makeFirstResponder(surface)
+        }
     }
 
     /// ``rebuildSessionMetadataSubscriptions()`` skips sessions that already
@@ -2735,6 +2922,7 @@ class BaseTerminalController: NSWindowController,
     }
 
     func windowWillClose(_ notification: Notification) {
+        isWindowClosed = true
         guard let window else { return }
 
         // Unregister surfaces from the owner registry before any

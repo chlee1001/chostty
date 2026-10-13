@@ -18,6 +18,14 @@ import GhosttyKit
 /// The controller receives the graph and never has to lazily bootstrap a
 /// store, surface, or session — `workspaceStore` is therefore nonoptional.
 enum TerminalControllerGraphFactory {
+    typealias SurfaceConstructor = (Ghostty.SurfaceConfiguration, UUID) -> Ghostty.SurfaceView?
+
+    struct RestoreBindings {
+        let registry: PendingHydrationRegistry
+        let construct: SurfaceConstructor?
+        var persistence: SessionPersistenceController?
+    }
+
     /// A fully initialized graph handed to a controller's designated
     /// initializer. Carries the live store and the references the controller
     /// must mount for its initial presentation.
@@ -33,19 +41,23 @@ enum TerminalControllerGraphFactory {
         /// Window identity to adopt, when this graph was restored from a
         /// snapshot. `nil` mints a fresh one.
         let physicalUUID: UUID?
+        /// Restoration dependencies shared with later lazy hydration.
+        let restoreBindings: RestoreBindings?
 
         init(
             store: WorkspaceSessionStore,
             initialSession: TerminalSessionState,
             initialSurfaceTree: SplitTree<Ghostty.SurfaceView>,
             focusedSurface: Ghostty.SurfaceView?,
-            physicalUUID: UUID? = nil
+            physicalUUID: UUID? = nil,
+            restoreBindings: RestoreBindings? = nil
         ) {
             self.store = store
             self.initialSession = initialSession
             self.initialSurfaceTree = initialSurfaceTree
             self.focusedSurface = focusedSurface
             self.physicalUUID = physicalUUID
+            self.restoreBindings = restoreBindings
         }
     }
 
@@ -87,7 +99,8 @@ enum TerminalControllerGraphFactory {
     /// decoded and no surface is created, so no process is spawned.
     static func makeFromWorkspaces(
         _ workspaces: [WorkspaceSession],
-        selection: Selection
+        selection: Selection,
+        restoreBindings: RestoreBindings? = nil
     ) -> InitialGraph? {
         guard !workspaces.isEmpty else { return nil }
 
@@ -111,7 +124,8 @@ enum TerminalControllerGraphFactory {
             store: store,
             initialSession: session,
             initialSurfaceTree: session.surfaceTree,
-            focusedSurface: focused
+            focusedSurface: focused,
+            restoreBindings: restoreBindings
         )
     }
     /// Rebuilds a graph from a stored snapshot.
@@ -126,8 +140,8 @@ enum TerminalControllerGraphFactory {
     static func makeFromSnapshot(
         ghostty: Ghostty.App,
         window: WindowSnapshot,
-        registry: PendingHydrationRegistry,
-        makeSurface: ((PaneLeafSnapshot, WorkspaceSnapshot) -> Ghostty.SurfaceView?)? = nil
+        bindings: RestoreBindings,
+        heldBackTabIDs: Set<UUID> = []
     ) -> InitialGraph? {
         guard !window.workspaces.isEmpty else { return nil }
 
@@ -142,13 +156,14 @@ enum TerminalControllerGraphFactory {
             ?? selectedWorkspace.tabs.first
         guard let selectedTab else { return nil }
 
-        let factory = makeSurface ?? { leaf, workspace in
-            guard let app = ghostty.app else { return nil }
-            return Ghostty.SurfaceView(
-                app,
-                baseConfig: surfaceConfiguration(forLeaf: leaf, in: workspace),
-                uuid: leaf.uuid
-            )
+        let construct = bindings.construct ?? { config, uuid in
+            ghostty.app.map {
+                Ghostty.SurfaceView(
+                    $0,
+                    baseConfig: config,
+                    uuid: uuid
+                )
+            }
         }
 
         var liveSession: TerminalSessionState?
@@ -160,21 +175,34 @@ enum TerminalControllerGraphFactory {
                     && tabSnapshot.id == selectedTab.id
 
                 let tree: SplitTree<Ghostty.SurfaceView>
-                if isSelected {
-                    tree = SessionSnapshotProjection.surfaceTree(
-                        from: tabSnapshot.paneTree,
+                if isSelected && !heldBackTabIDs.contains(tabSnapshot.id) {
+                    let restorableTree = restorableTree(of: tabSnapshot)
+                    if let restoredTree = SessionSnapshotProjection.surfaceTree(
+                        from: restorableTree,
                         zoomedPaneID: tabSnapshot.zoomedPaneID,
-                        makeSurface: { factory($0, workspaceSnapshot) }
-                    )
-                    liveTree = tree
+                        makeSurface: {
+                            restoredSurface(
+                                forLeaf: $0,
+                                workspaceDefaultDirectory: workspaceSnapshot.defaultDirectory,
+                                construct: construct
+                            )
+                        }
+                    ) {
+                        tree = restoredTree
+                        liveTree = restoredTree
+                    } else {
+                        tree = SplitTree<Ghostty.SurfaceView>()
+                        bindings.registry.store(tabSnapshot, for: tabSnapshot.id)
+                    }
                 } else {
                     tree = SplitTree<Ghostty.SurfaceView>()
-                    registry.store(tabSnapshot, for: tabSnapshot.id)
+                    bindings.registry.store(tabSnapshot, for: tabSnapshot.id)
                 }
 
                 // Tab identity is reused, not minted: the sidebar, AppleScript
                 // and the pending registry key off it.
                 let session = TerminalSessionState(id: tabSnapshot.id, surfaceTree: tree)
+                session.isHeldBack = heldBackTabIDs.contains(tabSnapshot.id)
                 session.titleOverride = tabSnapshot.titleOverride
                 session.tabColor = tabSnapshot.tabColor
                 seedDisplayMetadata(of: session, from: tabSnapshot)
@@ -213,8 +241,14 @@ enum TerminalControllerGraphFactory {
             initialSession: liveSession,
             initialSurfaceTree: liveTree,
             focusedSurface: focused,
-            physicalUUID: window.physicalUUID
+            physicalUUID: window.physicalUUID,
+            restoreBindings: bindings
         )
+    }
+
+    /// Restores an old no-pane tab as one fresh pane instead of an empty tab.
+    static func restorableTree(of tab: TabSnapshot) -> PaneTreeSnapshot {
+        tab.paneTree ?? .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
     }
 
     /// Working directory a restored pane should start in: its own recorded
@@ -267,11 +301,20 @@ enum TerminalControllerGraphFactory {
     }
 
     @MainActor
-    static func surfaceConfiguration(
+    static func restoredSurface(
         forLeaf leaf: PaneLeafSnapshot,
-        in workspace: WorkspaceSnapshot
-    ) -> Ghostty.SurfaceConfiguration {
-        surfaceConfiguration(forLeaf: leaf, workspaceDefaultDirectory: workspace.defaultDirectory)
+        workspaceDefaultDirectory: String?,
+        construct: SurfaceConstructor
+    ) -> Ghostty.SurfaceView? {
+        let config = surfaceConfiguration(
+            forLeaf: leaf,
+            workspaceDefaultDirectory: workspaceDefaultDirectory
+        )
+        guard let view = construct(config, leaf.uuid) else { return nil }
+        if let workingDirectory = config.workingDirectory {
+            view.pwd = workingDirectory
+        }
+        return view
     }
 
     /// Shared builder that constructs the session and committed store from a
@@ -290,7 +333,6 @@ enum TerminalControllerGraphFactory {
         )
     }
 }
-
 
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController {
@@ -338,7 +380,7 @@ class TerminalController: BaseTerminalController {
 
     /// Designated initializer that adopts an already-built normalized graph.
     override init(_ ghostty: Ghostty.App,
-         graph: TerminalControllerGraphFactory.InitialGraph
+                  graph: TerminalControllerGraphFactory.InitialGraph
     ) {
         self.derivedConfig = DerivedConfig(ghostty.config)
         super.init(ghostty, graph: graph)
@@ -462,8 +504,12 @@ class TerminalController: BaseTerminalController {
             window.surfaceIsZoomed = to.zoomed != nil
         }
 
-        // If our surface tree is now nil then we close our window.
-        if to.isEmpty {
+        let pendingSessionID = presentedSessionID
+            ?? workspaceStore.snapshot.selection.tabID
+        let isPendingPresentation = pendingHydration?.contains(pendingSessionID) == true
+        // A failed or held-back restored tab remains empty until the user
+        // retries it; closing here would also discard the other virtual tabs.
+        if to.isEmpty && !isPendingPresentation {
             self.window?.close()
         }
     }
@@ -495,6 +541,10 @@ class TerminalController: BaseTerminalController {
         return NSApplication.shared.windows.compactMap {
             $0.windowController as? TerminalController
         }
+    }
+
+    static var open: [TerminalController] {
+        all.filter { !$0.isWindowClosed }
     }
 
     // Keep track of the last point that our window was launched at so that new
@@ -699,11 +749,11 @@ class TerminalController: BaseTerminalController {
     /// claiming the same surface IDs.
     ///
     /// The window-close-on-undo registration mirrors `newWindow(tree:)`'s
-    /// `confirmUndo: false` lineage (which also closes the session's Readers),
-    /// with two tear-off differences: the action name is caller-owned because
-    /// this registration lands inside the tear-off handler's undo group, and
-    /// NO nested redo is registered — the group's source-restore action owns
-    /// redo as a full re-detach.
+    /// `confirmUndo: false` lineage (which also closes the session's Readers):
+    /// the close is immediate, never behind a confirmation, because the
+    /// tear-off's source restore runs right after it and checks that no open
+    /// window owns the tab. NO nested redo is registered — the group's
+    /// source-restore action owns redo as a full re-detach.
     ///
     /// - Returns: nil when `makeFromWorkspaces` cannot resolve the graph (same
     ///   conditions as window-close undo), leaving the caller to treat the
@@ -713,13 +763,13 @@ class TerminalController: BaseTerminalController {
         _ ghostty: Ghostty.App,
         detachedWorkspace workspace: WorkspaceSession,
         position: NSPoint? = nil,
-        confirmUndo: Bool = false,
-        undoActionName: String = "Detach Tab"
+        restoreBindings: TerminalControllerGraphFactory.RestoreBindings? = nil
     ) -> TerminalController? {
         guard let session = workspace.tabs.first,
               let graph = TerminalControllerGraphFactory.makeFromWorkspaces(
                   [workspace],
-                  selection: Selection(workspaceID: workspace.id, tabID: session.id)
+                  selection: Selection(workspaceID: workspace.id, tabID: session.id),
+                  restoreBindings: restoreBindings
               ) else { return nil }
 
         let c = TerminalController(ghostty, graph: graph)
@@ -749,17 +799,13 @@ class TerminalController: BaseTerminalController {
         }
 
         if let undoManager = c.undoManager {
-            undoManager.setActionName(undoActionName)
+            undoManager.setActionName("Detach Tab")
             undoManager.registerUndo(
                 withTarget: c,
                 expiresAfter: c.undoExpiration
             ) { target in
                 undoManager.disableUndoRegistration {
-                    if confirmUndo {
-                        target.closeWindow(nil)
-                    } else {
-                        target.closeWindowImmediately()
-                    }
+                    target.closeWindowImmediately()
                 }
                 // Deliberately no nested redo registration: the tear-off
                 // handler's source-restore action owns redo (full re-detach).
@@ -1107,7 +1153,6 @@ class TerminalController: BaseTerminalController {
             }
         }
 
-
         // Apply any additional appearance-related properties to the new window. We
         // apply this based on the root config but change it later based on surface
         // config (see focused surface change callback).
@@ -1177,7 +1222,9 @@ class TerminalController: BaseTerminalController {
     }
 
     override func windowWillClose(_ notification: Notification) {
+        pendingHydration?.cancelHydration(owner: self)
         super.windowWillClose(notification)
+        sessionPersistence?.scheduleSave()
         cancelPendingInitialPresentation()
         filesPanelController?.teardown()
 
@@ -1545,6 +1592,82 @@ class TerminalController: BaseTerminalController {
             self.windowPositionX = config.windowPositionX
             self.windowPositionY = config.windowPositionY
         }
+    }
+}
+
+extension TerminalController {
+    enum PromotionTrigger {
+        case boot
+        case dockReopen
+        case userReopen
+    }
+
+    @MainActor
+    static func promoteStoredWindows(
+        _ windows: [WindowSnapshot],
+        ghostty: Ghostty.App,
+        bindings: TerminalControllerGraphFactory.RestoreBindings,
+        heldBackTabIDs: Set<UUID>,
+        trigger: PromotionTrigger,
+        present: (TerminalController) -> Void
+    ) -> [TerminalController] {
+        guard !windows.isEmpty else { return [] }
+        guard let persistence = bindings.persistence else {
+            preconditionFailure("Stored-window promotion requires session persistence")
+        }
+
+        let windowIDs = Set(windows.map(\.physicalUUID))
+        let attempt = persistence.beginRestoreAttempt(.window, windowIDs)
+        let token: SessionPersistenceController.RestoreAttemptToken?
+        switch attempt {
+        case .recorded(let recorded):
+            token = recorded
+        case .notTracked:
+            token = nil
+        case .unrecorded:
+            guard case .userReopen = trigger else {
+                SessionPersistenceController.logger.warning(
+                    "session.restore.keptDormant reason=attemptNotRecorded windows=\(windows.count, privacy: .public)"
+                )
+                return []
+            }
+            token = nil
+        }
+
+        var controllers: [TerminalController] = []
+        for window in windows {
+            guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
+                ghostty: ghostty,
+                window: window,
+                bindings: bindings,
+                heldBackTabIDs: heldBackTabIDs
+            ) else {
+                SessionPersistenceController.logger.warning(
+                    "session.restore.promoteFailed window=\(window.physicalUUID.uuidString, privacy: .public)"
+                )
+                continue
+            }
+
+            persistence.claimDormant(window.physicalUUID)
+            let controller = TerminalController(ghostty, graph: graph)
+            present(controller)
+            controller.scheduleWorkspaceHydration(
+                workspaceID: controller.workspaceStore.snapshot.selection.workspaceID
+            )
+            controllers.append(controller)
+        }
+
+        if let token {
+            persistence.settleRestoreAttempt(
+                token,
+                recovered: Set(controllers.map(\.physicalUUID))
+            )
+        }
+        SessionPersistenceController.logger.notice(
+            "session.restore.promoted trigger=\(String(describing: trigger), privacy: .public) windows=\(controllers.count, privacy: .public) failed=\(windows.count - controllers.count, privacy: .public)"
+        )
+        persistence.scheduleSave()
+        return controllers
     }
 }
 

@@ -4,9 +4,9 @@ import Testing
 @testable import Ghostty
 
 /// Lazy hydration, the partial-hydration invariants, and the second-instance
-/// ownership decision. No real terminal is created: hydration builds its panes
-/// with `spawnsSurface: false` views, so the path can be asserted without
-/// accumulating PTYs in the test host.
+/// ownership decision. Every hydration path receives an injected constructor
+/// that builds `spawnsSurface: false` views, so no PTY is created in the test
+/// host.
 @MainActor
 @Suite struct LazyHydrationTests {
     // MARK: - Fixtures
@@ -15,10 +15,15 @@ import Testing
         PaneLeafSnapshot(uuid: UUID(), cwd: cwd, title: nil)
     }
 
-    private func makeTab(id: UUID = UUID(), panes: Int = 1) -> TabSnapshot {
-        var tree: PaneTreeSnapshot = .leaf(makeLeaf())
+    private func makeTab(id: UUID = UUID(), panes: Int = 1, cwd: String? = nil) -> TabSnapshot {
+        var tree: PaneTreeSnapshot = .leaf(makeLeaf(cwd: cwd))
         for _ in 1..<max(panes, 1) {
-            tree = .split(direction: .horizontal, ratio: 0.5, left: tree, right: .leaf(makeLeaf()))
+            tree = .split(
+                direction: .horizontal,
+                ratio: 0.5,
+                left: tree,
+                right: .leaf(makeLeaf(cwd: cwd))
+            )
         }
         return TabSnapshot(
             id: id,
@@ -35,15 +40,25 @@ import Testing
         return Ghostty.SurfaceView(app, baseConfig: nil, spawnsSurface: false)
     }
 
+    private func inertConstructor() -> TerminalControllerGraphFactory.SurfaceConstructor {
+        { config, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            return Ghostty.SurfaceView(app, baseConfig: config, uuid: uuid, spawnsSurface: false)
+        }
+    }
+
     /// A controller whose second tab is pending hydration, as boot leaves it.
     private func makeControllerWithPendingTab(
-        pendingPanes: Int = 2
+        pendingPanes: Int = 2,
+        pendingCwd: String? = nil,
+        pendingSnapshot: TabSnapshot? = nil,
+        construct: TerminalControllerGraphFactory.SurfaceConstructor? = nil
     ) throws -> (TerminalController, PendingHydrationRegistry, TerminalSessionState) {
         let liveView = try #require(inertSurface())
         let live = TerminalSessionState(id: UUID(), surfaceTree: SplitTree(view: liveView))
         live.focusedSurfaceID = liveView.id
 
-        let pendingID = UUID()
+        let pendingID = pendingSnapshot?.id ?? UUID()
         let pending = TerminalSessionState(id: pendingID, surfaceTree: SplitTree<Ghostty.SurfaceView>())
 
         let workspace = WorkspaceSession(
@@ -58,8 +73,11 @@ import Testing
         ))
 
         let registry = PendingHydrationRegistry()
-        registry.store(makeTab(id: pendingID, panes: pendingPanes), for: pendingID)
-        controller.pendingHydrationOverride = registry
+        registry.store(
+            pendingSnapshot ?? makeTab(id: pendingID, panes: pendingPanes, cwd: pendingCwd),
+            for: pendingID
+        )
+        controller.injectRestoreBindings(.init(registry: registry, construct: construct ?? inertConstructor()))
 
         return (controller, registry, pending)
     }
@@ -120,17 +138,18 @@ import Testing
         #expect(registry.isEmpty)
     }
 
-    @Test func aSessionThatIsAlreadyLiveIsNotOverwritten() throws {
+    @Test func aLiveTreeWinsOverAStalePendingEntry() throws {
         let (controller, registry, pending) = try makeControllerWithPendingTab(pendingPanes: 2)
 
         // Something gave the tab a live tree before it was selected.
         let existing = try #require(inertSurface())
         pending.surfaceTree = SplitTree(view: existing)
 
-        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+        let outcome = controller.hydratePendingSession(pending)
 
         #expect(Array(pending.surfaceTree).map(\.id) == [existing.id])
         #expect(registry.isEmpty)
+        #expect(outcome == .alreadyLive)
     }
 
     @Test func hydratedPanesAreResolvableThroughTheOwnerRegistry() throws {
@@ -142,6 +161,30 @@ import Testing
         for pane in pending.surfaceTree {
             #expect(controller.workspaceStore.tabID(forSurfaceID: pane.id) == pending.id)
         }
+    }
+
+    @Test func hydratedPaneKeepsItsRecordedCwdBeforeTheShellReports() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-hydrated-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (controller, _, pending) = try makeControllerWithPendingTab(pendingCwd: directory.path)
+
+        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+
+        #expect(pending.surfaceTree.first?.pwd == directory.path)
+    }
+
+    @Test func hydrationDoesNotBlankTheSidebarPwd() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-sidebar-cwd-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (controller, _, pending) = try makeControllerWithPendingTab(pendingCwd: directory.path)
+
+        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+
+        #expect(pending.pwd == directory.path)
     }
 
     // MARK: - Partial-hydration invariants
@@ -184,7 +227,7 @@ import Testing
             workspaces: [workspace],
             selection: Selection(workspaceID: workspace.id, tabID: live.id)
         ))
-        controller.pendingHydrationOverride = registry
+        controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor()))
 
         controller.selectSession(workspaceID: workspace.id, tabID: newID)
 
@@ -192,12 +235,159 @@ import Testing
         #expect(registry.isEmpty)
     }
 
+    @Test func aPartiallyFailedHydrationKeepsTheWholeStoredTree() throws {
+        // Real directories: a recorded cwd that no longer exists is dropped on
+        // restore, which would make the rebuilt tree differ from the stored one.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chostty-partial-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func liveDirectory(_ name: String) throws -> String {
+            let url = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url.path
+        }
+        let first = makeLeaf(cwd: try liveDirectory("first"))
+        let focused = makeLeaf(cwd: try liveDirectory("focused"))
+        let failed = makeLeaf(cwd: try liveDirectory("failed"))
+        let tree = PaneTreeSnapshot.split(
+            direction: .horizontal,
+            ratio: 0.6,
+            left: .leaf(first),
+            right: .split(
+                direction: .vertical,
+                ratio: 0.25,
+                left: .leaf(focused),
+                right: .leaf(failed)
+            )
+        )
+        let tab = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: nil,
+            paneTree: tree,
+            focusedPaneID: focused.uuid,
+            zoomedPaneID: focused.uuid
+        )
+        let failingConstructor: TerminalControllerGraphFactory.SurfaceConstructor = { _, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            let view = Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
+            if uuid == failed.uuid {
+                view.error = Ghostty.Error.apiFailed
+            }
+            return view
+        }
+        let (controller, registry, pending) = try makeControllerWithPendingTab(
+            pendingSnapshot: tab,
+            construct: failingConstructor
+        )
+        let workspace = try #require(controller.workspaceStore.snapshot.workspaces.first)
+        let expected = SessionSnapshotProjection.workspace(from: workspace, pendingTabs: registry.allPending)
+
+        #expect(controller.hydratePendingSession(pending) == .failed)
+        #expect(pending.surfaceTree.isEmpty)
+        #expect(registry.snapshot(for: pending.id) == tab)
+        for _ in 0..<3 {
+            #expect(SessionSnapshotProjection.workspace(from: workspace, pendingTabs: registry.allPending) == expected)
+        }
+
+        controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor()))
+        controller.selectSession(workspaceID: workspace.id, tabID: pending.id)
+
+        #expect(SessionSnapshotProjection.paneTree(from: pending.surfaceTree) == tree)
+        #expect(SessionSnapshotProjection.zoomedPaneID(in: pending.surfaceTree) == focused.uuid)
+        #expect(pending.focusedSurfaceID == focused.uuid)
+    }
+
+    @Test func failedHydrationReleasesTheViewsItBuilt() throws {
+        let tab = makeTab(panes: 2)
+        let failedID = try #require(tab.paneTree?.leaves.last?.uuid)
+        weak var builtView: Ghostty.SurfaceView?
+        let constructor: TerminalControllerGraphFactory.SurfaceConstructor = { _, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            let view = Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
+            if uuid == failedID {
+                view.error = Ghostty.Error.apiFailed
+            } else {
+                builtView = view
+            }
+            return view
+        }
+        let (controller, _, pending) = try makeControllerWithPendingTab(
+            pendingSnapshot: tab,
+            construct: constructor
+        )
+
+        let outcome = autoreleasepool { controller.hydratePendingSession(pending) }
+        #expect(outcome == .failed)
+        #expect(builtView == nil)
+    }
+
+    @Test func aFailedPresentedTabRetriesWhenItIsSelectedAgain() throws {
+        let tab = makeTab(panes: 2)
+        let failedID = try #require(tab.paneTree?.leaves.last?.uuid)
+        let failingConstructor: TerminalControllerGraphFactory.SurfaceConstructor = { _, uuid in
+            guard let app = TerminalControllerTestHarness.sharedApp.app else { return nil }
+            let view = Ghostty.SurfaceView(app, baseConfig: nil, uuid: uuid, spawnsSurface: false)
+            if uuid == failedID {
+                view.error = Ghostty.Error.apiFailed
+            }
+            return view
+        }
+        let (controller, registry, pending) = try makeControllerWithPendingTab(
+            pendingSnapshot: tab,
+            construct: failingConstructor
+        )
+        let workspaceID = try workspaceID(of: controller)
+
+        controller.selectSession(workspaceID: workspaceID, tabID: pending.id)
+        let generation = controller.workspaceStore.snapshot.mountGeneration
+        #expect(controller.presentedSessionID == pending.id)
+        #expect(controller.surfaceTree.isEmpty)
+        #expect(registry.contains(pending.id))
+
+        controller.injectRestoreBindings(.init(registry: registry, construct: inertConstructor()))
+        controller.selectSession(workspaceID: workspaceID, tabID: pending.id)
+
+        #expect(controller.workspaceStore.snapshot.mountGeneration == generation)
+        #expect(Array(controller.surfaceTree).count == 2)
+        #expect(controller.presentedSessionID == pending.id)
+    }
+
+    @Test func detachingAPendingTabHydratesItBeforeTheNewWindowPresentsIt() throws {
+        let (controller, _, pending) = try makeControllerWithPendingTab(pendingPanes: 3)
+
+        let destination = try #require(
+            controller.detachTabToNewWindow(tabID: pending.id, screenPoint: nil)
+        )
+
+        #expect(Array(destination.surfaceTree).count == 3)
+        #expect(destination.presentedSessionID == pending.id)
+    }
+
+    @Test func aStoredTabWithoutPanesHydratesAsOneFreshPane() throws {
+        let tab = TabSnapshot(
+            id: UUID(),
+            titleOverride: nil,
+            tabColor: nil,
+            paneTree: nil,
+            focusedPaneID: nil,
+            zoomedPaneID: nil
+        )
+        let (controller, registry, pending) = try makeControllerWithPendingTab(pendingSnapshot: tab)
+
+        controller.selectSession(workspaceID: try workspaceID(of: controller), tabID: pending.id)
+
+        #expect(Array(pending.surfaceTree).count == 1)
+        #expect(!registry.contains(pending.id))
+    }
+
     // MARK: - Second-instance ownership
 
     private func makePersistence(
         ownerInstanceID: UUID = UUID(),
         directory: URL? = nil,
-        isLiveInstance: @escaping (Int32) -> Bool = { _ in false }
+        isActive: @escaping () -> Bool = { false },
+        isLiveInstance: @escaping @Sendable (Int32) -> Bool = { _ in false }
     ) throws -> SessionPersistenceController {
         let directory = try directory ?? {
             let url = FileManager.default.temporaryDirectory
@@ -211,6 +401,7 @@ import Testing
             registry: PendingHydrationRegistry(),
             ownerInstanceID: ownerInstanceID,
             ownerPID: 4242,
+            isActive: isActive,
             isLiveInstance: isLiveInstance,
             controllersProvider: { [] }
         )
@@ -230,24 +421,24 @@ import Testing
         let isSecond = persistence.adoptOwnership(of: previousRun)
 
         #expect(!isSecond)
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
-    @Test func aLiveForeignOwnerMakesThisInstancePassive() throws {
+    @Test func aLiveForeignOwnerMakesAnInactiveLaunchPassive() throws {
         let persistence = try makePersistence { pid in pid == 12_345 }
         let otherApp = storedSnapshot(ownerInstanceID: UUID(), ownerPID: 12_345)
 
         let isSecond = persistence.adoptOwnership(of: otherApp)
 
         #expect(isSecond)
-        #expect(persistence.isDisabledBySecondInstance)
-        #expect(persistence.foreignOwnerPID == 12_345)
+        #expect(persistence.isPassive)
+        #expect(persistence.deferredOwners[otherApp.ownerInstanceID] == 12_345)
     }
 
     @Test func firstEverLaunchHasNoOwnerToDeferTo() throws {
         let persistence = try makePersistence { _ in true }
         #expect(!persistence.adoptOwnership(of: nil))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
     @Test func ourOwnFileIsNeverTreatedAsForeign() throws {
@@ -257,7 +448,7 @@ import Testing
 
         // Alive pid, but it is us.
         #expect(!persistence.adoptOwnership(of: ours))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
     }
 
     @Test func unownedRecoveredFieldsDoNotClaimOwnership() throws {
@@ -270,7 +461,18 @@ import Testing
         // pid 0 is never alive, so corrupt owner bookkeeping reads as unowned
         // and this process keeps saving.
         #expect(!persistence.adoptOwnership(of: recovered))
-        #expect(!persistence.isDisabledBySecondInstance)
+        #expect(!persistence.isPassive)
+    }
+
+    @Test func anActiveLaunchNeverDefers() throws {
+        let persistence = try makePersistence(
+            isActive: { true },
+            isLiveInstance: { $0 == 12_345 }
+        )
+        let otherApp = storedSnapshot(ownerInstanceID: UUID(), ownerPID: 12_345)
+
+        #expect(!persistence.adoptOwnership(of: otherApp))
+        #expect(!persistence.isPassive)
     }
 
 }

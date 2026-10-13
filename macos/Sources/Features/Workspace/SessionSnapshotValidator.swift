@@ -6,9 +6,9 @@ import Foundation
 /// This exists because `WorkspaceSessionStore.init(restoredWorkspaces:selection:)`
 /// defends its invariants with `precondition`, not optionals. The session file
 /// is an ordinary file a user can edit, so an empty workspace list would
-/// otherwise take the process down during launch - the one moment the
-/// crash-loop marker cannot help, since it is cleared only after a successful
-/// boot.
+/// otherwise take the process down during launch. Restore-attempt ledger
+/// records keep a failed restoration from being retried automatically, but the
+/// ledger cannot make an invalid snapshot safe to construct.
 ///
 /// Identity and resource violations reject the whole file; a selection pointing
 /// at something that no longer exists is clamped, because losing which tab was
@@ -16,7 +16,7 @@ import Foundation
 enum SessionSnapshotValidator {
     /// Shared resource bounds for live projections and decoded files.
     enum Limits {
-        static let windows = 12
+        static let windows = 32
         static let workspacesPerWindow = 128
         static let panesPerWorkspace = 512
         static let paneTreeDepth = 32
@@ -25,7 +25,7 @@ enum SessionSnapshotValidator {
         static let stringLength = 4096
     }
 
-    enum Rejection: Error, Equatable, CustomStringConvertible {
+    enum Rejection: Error, Equatable, CustomStringConvertible, Sendable {
         case schemaVersion(found: Int, expected: Int)
         case noWindows
         case windowWithoutWorkspaces(windowID: UUID)

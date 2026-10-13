@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - Placement
@@ -72,7 +73,7 @@ struct WorkspaceControls: View {
     /// controller, so a click carries the same authority as `⌘N` / `⌘⇧T`.
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
-    var filesPanelController: FilesPanelController? = nil
+    var filesPanelController: FilesPanelController?
 
     /// The same key `TerminalView` binds, so toggling from any host moves the
     /// same sidebar.
@@ -85,6 +86,9 @@ struct WorkspaceControls: View {
 
     @State private var sidebarSyncInspection: SessionPersistenceController.SidebarSyncInspection?
     @State private var showingSidebarSync = false
+    @State private var saveHealth: SessionPersistenceController.SaveHealth = .healthy
+    @State private var restoreAttemptsUnavailable = false
+    @State private var reopenableCount = 0
 
     private var singleWorkspacePolicy: SidebarSingleWorkspacePolicy {
         SidebarSingleWorkspacePolicy(rawValue: singleWorkspacePolicyRaw) ?? .alwaysGrouped
@@ -92,7 +96,9 @@ struct WorkspaceControls: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: { sidebarVisible.toggle() }) {
+            Button {
+                sidebarVisible.toggle()
+            } label: {
                 Image(systemName: "sidebar.left")
             }
             .buttonStyle(.plain)
@@ -101,6 +107,17 @@ struct WorkspaceControls: View {
 
             if let filesPanelController {
                 FilesPanelToggleButton(controller: filesPanelController)
+            }
+
+            if reopenableCount > 0 {
+                Button(action: reopenSavedWindows) {
+                    Image(systemName: "macwindow.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .help(reopenableCount == 1
+                    ? "1 saved window is not open. Click to reopen it."
+                    : "\(reopenableCount) saved windows are not open. Click to reopen them.")
+                .accessibilityLabel("Reopen Saved Windows")
             }
 
             Menu {
@@ -116,29 +133,87 @@ struct WorkspaceControls: View {
                         singleWorkspacePolicyRaw = singleWorkspacePolicy.toggled.rawValue
                     })
                 Divider()
-                Button("Check Sidebar Sync…") {
-                    refreshSidebarSync()
-                    showingSidebarSync = true
+                if reopenableCount > 0 {
+                    Button("Reopen Saved Windows (\(reopenableCount))", action: reopenSavedWindows)
+                }
+                // Saving is automatic; the sheet is only reachable while the
+                // badge reports a problem it can explain.
+                if needsAttention {
+                    Button("Check Sidebar Sync…") {
+                        refreshSidebarSync()
+                        showingSidebarSync = true
+                    }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "ellipsis.circle")
+                    if needsAttention {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.orange)
+                            .offset(x: 4, y: -4)
+                    }
+                }
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Workspace actions")
             .accessibilityLabel("Workspace Actions")
+            .accessibilityValue(accessibilityValue)
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
         .sheet(isPresented: $showingSidebarSync) {
             SidebarSyncSheet(
                 inspection: sidebarSyncInspection,
+                saveHealth: saveHealth,
+                restoreAttemptsUnavailable: restoreAttemptsUnavailable,
                 refresh: refreshSidebarSync,
-                saveCurrentState: synchronizeSidebarState,
-                takeOver: takeOverSidebarSync
+                saveCurrentState: synchronizeSidebarState
             )
         }
+        .onAppear(perform: refreshPersistenceHealth)
+        .onReceive(NotificationCenter.default.publisher(for: SessionPersistenceController.healthDidChange)) { notification in
+            guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence,
+                  let source = notification.object as? SessionPersistenceController,
+                  source === persistence else { return }
+            refreshPersistenceHealth()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: SessionPersistenceController.dormantWindowsDidChange)) { notification in
+            guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence,
+                  let source = notification.object as? SessionPersistenceController,
+                  source === persistence else { return }
+            refreshDormantWindowCounts()
+        }
+    }
+
+    private var needsAttention: Bool {
+        saveHealth != .healthy || restoreAttemptsUnavailable
+    }
+
+    private var accessibilityValue: String {
+        if saveHealth != .healthy { return "Session saving paused" }
+        if restoreAttemptsUnavailable { return "Restore protection unavailable" }
+        return ""
+    }
+
+    private func refreshPersistenceHealth() {
+        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
+            reopenableCount = 0
+            return
+        }
+        saveHealth = persistence.saveHealth
+        restoreAttemptsUnavailable = persistence.restoreAttemptsUnavailable
+        refreshDormantWindowCounts()
+    }
+
+    private func refreshDormantWindowCounts() {
+        guard let persistence = (NSApp.delegate as? AppDelegate)?.sessionPersistence else {
+            reopenableCount = 0
+            return
+        }
+        reopenableCount = persistence.reopenableWindowIDs.count
     }
 
     private func refreshSidebarSync() {
@@ -153,18 +228,17 @@ struct WorkspaceControls: View {
             .synchronizeSidebarState()
     }
 
-    private func takeOverSidebarSync() {
-        sidebarSyncInspection = (NSApp.delegate as? AppDelegate)?
-            .sessionPersistence?
-            .takeOverOwnership()
+    private func reopenSavedWindows() {
+        (NSApp.delegate as? AppDelegate)?.reopenSavedWindows()
     }
 }
 
 private struct SidebarSyncSheet: View {
     let inspection: SessionPersistenceController.SidebarSyncInspection?
+    let saveHealth: SessionPersistenceController.SaveHealth
+    let restoreAttemptsUnavailable: Bool
     let refresh: () -> Void
     let saveCurrentState: () -> Void
-    let takeOver: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -173,10 +247,43 @@ private struct SidebarSyncSheet: View {
             Text("Sidebar Sync")
                 .font(.headline)
 
+            if saveHealth != .healthy {
+                Text("Saving paused: \(saveHealthText)")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+            }
+
+            if restoreAttemptsUnavailable {
+                Text("Restore protection unavailable: Chostty couldn't record restore attempts, so saved windows and tabs open only when you select them.")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+            }
+
             if let inspection {
                 Text(statusText(for: inspection.status))
                     .font(.subheadline)
                     .foregroundStyle(statusColor(for: inspection.status))
+
+                Text("Saved windows not open: \(inspection.reopenableWindowCount)")
+                    .font(.subheadline)
+
+                if inspection.heldBackWindowCount > 0 {
+                    Text("\(inspection.heldBackWindowCount) of them were held back because Chostty quit while restoring them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if inspection.heldBackTabCount > 0 {
+                    Text("Tabs held back: \(inspection.heldBackTabCount). Select a tab to open it.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if inspection.anotherInstanceRunning {
+                    Text("Another Chostty window session is running; saved windows can be reopened after it quits.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 HStack(alignment: .top, spacing: 20) {
                     SidebarSyncSnapshotOutline(title: "Current", snapshot: inspection.current)
@@ -196,16 +303,10 @@ private struct SidebarSyncSheet: View {
 
                 HStack {
                     Button("Refresh", action: refresh)
-                    if let owner = inspection.foreignOwner {
-                        Button("Show Owner") { activate(owner) }
-                    }
                     Spacer()
                     Button("Close") { dismiss() }
                     if inspection.canSynchronize {
                         Button("Save Current State", action: saveCurrentState)
-                            .buttonStyle(.borderedProminent)
-                    } else if inspection.foreignOwner != nil {
-                        Button("Take Over and Save", action: takeOver)
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -246,21 +347,48 @@ private struct SidebarSyncSheet: View {
         }
     }
 
-    private func ownerDescription(
-        _ owner: SessionPersistenceController.SidebarSyncInspection.ForeignOwner
-    ) -> String {
-        var parts = ["PID \(owner.pid)"]
-        if let launchDate = owner.launchDate {
-            parts.append("started \(launchDate.formatted(date: .abbreviated, time: .shortened))")
+    private var saveHealthText: String {
+        switch saveHealth {
+        case .healthy:
+            return ""
+        case .refused(let rejection):
+            return refusalText(for: rejection)
+        case .failing:
+            return "Session saves keep failing, usually because of disk space or permissions. They will retry on the next change."
         }
-        if let bundlePath = owner.bundlePath {
-            parts.append(bundlePath)
-        }
-        return parts.joined(separator: " · ")
     }
 
-    private func activate(_ owner: SessionPersistenceController.SidebarSyncInspection.ForeignOwner) {
-        _ = NSRunningApplication(processIdentifier: owner.pid)?.activate(options: [.activateAllWindows])
+    private func refusalText(for rejection: SessionSnapshotValidator.Rejection) -> String {
+        switch rejection {
+        case .schemaVersion:
+            return "The session format is unsupported. Update Chostty or remove the saved session."
+        case .noWindows:
+            return "There are no windows to save. Open a window and try again."
+        case .windowWithoutWorkspaces:
+            return "A window has no workspace. Create a workspace before saving."
+        case .workspaceWithoutTabs:
+            return "A workspace has no tabs. Create a tab before saving."
+        case .duplicateIdentifier:
+            return "Two panes have the same identifier. Close the duplicate pane and try again."
+        case .paneTreeTooDeep:
+            return "A pane layout is too deeply nested. Close or rearrange panes and try again."
+        case .limitExceeded(let kind, let count, let limit):
+            if kind == "window" {
+                let excess = count - limit
+                let noun = excess == 1 ? "window" : "windows"
+                let unopened = inspection?.reopenableWindowCount ?? 0
+                let savedWindows = unopened == 1
+                    ? " (including 1 saved window that is not open)"
+                    : " (including \(unopened) saved windows that are not open)"
+                return "The session has \(count) windows\(unopened > 0 ? savedWindows : ""); "
+                    + "the limit is \(limit). Close \(excess) \(noun) and try again."
+            }
+            return "The \(kind) limit was exceeded. Reduce the session size and try again."
+        case .invalidSplitRatio:
+            return "A pane split has an invalid size. Resize or close the affected pane and try again."
+        case .stringTooLong:
+            return "A saved name or title is too long. Shorten it and try again."
+        }
     }
 
     private func unavailableText(
@@ -271,12 +399,6 @@ private struct SidebarSyncSheet: View {
             return ""
         case .persistenceDisabled:
             return "Saving is unavailable because session persistence is disabled."
-        case .ownedByAnotherLiveInstance(let owner):
-            return """
-                Saving is paused because another running Chostty owns the saved session.
-                \(ownerDescription(owner))
-                Take Over writes this window's state and makes the other instance stop saving.
-                """
         case .noLiveState:
             return "Saving is unavailable because there are no live terminal windows."
         }
@@ -372,7 +494,7 @@ struct WorkspaceControlsStrip: View {
     let representedURL: URL?
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
-    var filesPanelController: FilesPanelController? = nil
+    var filesPanelController: FilesPanelController?
 
     /// One standard titlebar height, so the strip stands in for the titlebar
     /// rather than reading as an extra band of content.

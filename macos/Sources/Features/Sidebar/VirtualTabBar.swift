@@ -37,9 +37,10 @@ struct VirtualTabBar: View {
     var onCloseToTheRight: (UUID) -> Void
 
     /// Called when a tab dragged in from ANOTHER window is dropped on the
-    /// strip. The tab joins this window's selected workspace and becomes
-    /// presented. Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID) -> Bool)? = nil
+    /// strip, with the dropped-on tab's index. The tab joins this window's
+    /// selected workspace there and becomes presented. Same-window drops keep
+    /// the reorder path.
+    var onReceiveForeignTab: ((UUID, Int) -> Bool)?
 
     @State private var dropTarget: WorkspaceDragPayload?
 
@@ -131,7 +132,7 @@ struct VirtualTabBar: View {
               let index = workspace.tabs.firstIndex(where: { $0.id == over })
         else { return }
         if store.liveSession(forTabID: moving) == nil {
-            _ = onReceiveForeignTab?(moving)
+            _ = onReceiveForeignTab?(moving, index)
             return
         }
         store.moveTab(moving, toWorkspace: workspace.id, at: index)
@@ -194,7 +195,6 @@ private struct VirtualTabBarStrip: View {
     }
 }
 
-
 /// A single tab in the strip.
 private struct VirtualTabBarItem: View {
     /// Observed so a background tab's title/bell updates live. The session's
@@ -247,10 +247,17 @@ private struct VirtualTabBarItem: View {
         HStack(spacing: 5) {
             // Reserved at all times so a tab that starts or stops ringing does
             // not resize itself and shove its neighbours sideways.
-            Image(systemName: "bell.fill")
+            Image(systemName: session.isHeldBack
+                ? "exclamationmark.arrow.circlepath"
+                : session.hydrationFailed ? "exclamationmark.triangle" : "bell.fill")
                 .font(.system(size: 8.5))
-                .foregroundStyle(.orange)
-                .opacity(session.bell ? 1 : 0)
+                .foregroundStyle(session.isHeldBack || session.hydrationFailed ? Color.primary : Color.orange)
+                .opacity(session.isHeldBack || session.hydrationFailed || session.bell ? 1 : 0)
+                .help(session.isHeldBack
+                    ? "Held back: Chostty quit while opening this tab. Select it to open."
+                    : session.hydrationFailed
+                        ? "Couldn't open this tab. Select it to retry."
+                        : "")
 
             if isRenaming {
                 InlineRenameField(

@@ -213,8 +213,9 @@ class AppDelegate: NSObject,
         terminalCommands = TerminalCommandRouter()
         terminalCommands.dispatcher = surfaceDispatcher
 
-        // The gate closes itself in test hosts, under the kill switch, and for
-        // launches with an explicit open intent.
+        // The gate closes itself in test hosts and under the kill switch. A
+        // launch with an explicit open intent still saves; it only skips
+        // applying the stored windows at boot.
         pendingHydration = PendingHydrationRegistry()
         sessionPersistence = SessionPersistenceController(
             repository: SessionSnapshotRepository(),
@@ -374,98 +375,79 @@ class AppDelegate: NSObject,
         if !applicationHasBecomeActive {
             applicationHasBecomeActive = true
 
-            // Let's launch our first window. We only do this if we have no other windows. It
-            // is possible to have other windows in a few scenarios:
-            //   - if we're opening a URL since `application(_:openFile:)` is called before this.
-            //   - if we're restoring from persisted state
-            // Anything that already opened a window (a URL, a file) wins: this
-            // branch is skipped and no snapshot is applied over what the user
-            // asked for. `initial-window = false` still means no window.
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
-                undoManager.disableUndoRegistration()
-                if !restoreSessionWindows() {
-                    _ = TerminalController.newWindow(ghostty)
+            let stored = sessionPersistence?.adoptStoredSession(
+                liveWindowIDs: Set(TerminalController.open.map(\.physicalUUID))
+            )
+            if let persistence = sessionPersistence,
+               let stored {
+                let quarantine = persistence.restoreQuarantine()
+                let decision = SessionPersistenceController.bootDecision(
+                    windows: stored.snapshot.windows,
+                    quarantinedWindows: quarantine.windows,
+                    mayApplyOnBoot: persistence.mayApplyOnBoot,
+                    anotherInstanceRunning: persistence.otherInstanceRunning(),
+                    hasOpenWindow: !TerminalController.open.isEmpty,
+                    initialWindow: derivedConfig.initialWindow
+                )
+                let promoted = promote(decision.apply, trigger: .boot)
+
+                if promoted > 0, stored.source == .primary {
+                    do {
+                        try SessionSnapshotRepository().promotePrimaryToBackup()
+                    } catch {
+                        SessionPersistenceController.logger.warning(
+                            "session.restore.backupPromotionFailed error=\(String(describing: error), privacy: .public)"
+                        )
+                    }
                 }
-                undoManager.enableUndoRegistration()
+
+                if promoted > 0 {
+                    SessionPersistenceController.logger.notice(
+                        "session.restore.applied windows=\(promoted, privacy: .public) source=\(String(describing: stored.source), privacy: .public) pendingTabs=\(self.pendingHydration.count, privacy: .public)"
+                    )
+                }
+                if !decision.keepDormant.isEmpty {
+                    SessionPersistenceController.logger.notice(
+                        "session.restore.keptDormant reason=\(decision.reason.map { String(describing: $0) } ?? "none", privacy: .public) windows=\(decision.keepDormant.count, privacy: .public)"
+                    )
+                }
+                if !quarantine.windows.isEmpty {
+                    SessionPersistenceController.logger.warning(
+                        "session.restore.heldBack kind=window ids=\(quarantine.windows.count, privacy: .public)"
+                    )
+                }
+            }
+
+            if TerminalController.open.isEmpty && derivedConfig.initialWindow {
+                _ = TerminalController.newWindow(ghostty)
             }
         }
+        sessionPersistence?.noteActivation()
     }
 
-    /// - Returns: `true` when at least one window was created. `false` means
-    ///   the caller should open an ordinary window.
     @MainActor
-    private func restoreSessionWindows() -> Bool {
-        let gate = SessionPersistenceGate(configEnabled: ghostty.config.macosSessionPersistence)
-        guard gate.shouldApplyOnBoot else {
-            Self.logger.info("session.restore.skipped reason=gateClosed")
-            return false
-        }
+    private func promote(
+        _ windows: [WindowSnapshot],
+        trigger: TerminalController.PromotionTrigger
+    ) -> Int {
+        guard !windows.isEmpty else { return 0 }
+        guard let sessionPersistence else { return 0 }
 
-        let repository = SessionSnapshotRepository()
-        let outcome = repository.load()
-        guard case .loaded(let snapshot, let source) = outcome else {
-            switch outcome {
-            case .absent:
-                Self.logger.info("session.restore.skipped reason=noSnapshot")
-            case .unusable(let reason):
-                Self.logger.warning("session.restore.skipped reason=unusable detail=\(reason, privacy: .public)")
-            case .loaded:
-                break
-            }
-            return false
-        }
-
-        // One ownership decision per launch. A file left behind by a process
-        // that has since exited is not an ownership claim.
-        sessionPersistence?.adoptOwnership(of: snapshot)
-
-        // The previous launch died while applying; skip this time rather than
-        // reproduce the crash. Clearing the marker lets the next launch retry.
-        if gate.crashLoopMarkerIsSet() {
-            gate.setCrashLoopMarker(false)
-            Self.logger.warning("session.restore.skipped reason=previousLaunchDiedApplying")
-            return false
-        }
-
-        gate.setCrashLoopMarker(true)
-        defer { gate.setCrashLoopMarker(false) }
-
-        var created = false
-        for window in snapshot.windows {
-            guard let graph = TerminalControllerGraphFactory.makeFromSnapshot(
-                ghostty: ghostty,
-                window: window,
-                registry: pendingHydration
-            ) else { continue }
-
-            let controller = TerminalController(ghostty, graph: graph)
-            controller.showWindow(self)
-            created = true
-        }
-
-        guard created else {
-            Self.logger.warning("session.restore.skipped reason=noWindowBuilt windows=\(snapshot.windows.count)")
-            return false
-        }
-
-        Self.logger.notice(
-            "session.restore.applied windows=\(snapshot.windows.count) source=\(String(describing: source), privacy: .public) pendingTabs=\(self.pendingHydration.count)"
+        undoManager.disableUndoRegistration()
+        let controllers = TerminalController.promoteStoredWindows(
+            windows,
+            ghostty: ghostty,
+            bindings: .init(
+                registry: pendingHydration,
+                construct: nil,
+                persistence: sessionPersistence
+            ),
+            heldBackTabIDs: sessionPersistence.restoreQuarantine().tabs,
+            trigger: trigger,
+            present: { $0.showWindow(self) }
         )
-
-        // Seed the backup after a successful boot. Changed saves then replace
-        // it with the immediately preceding validated primary.
-        if source == .primary {
-            do {
-                try repository.promotePrimaryToBackup()
-            } catch {
-                // Not fatal; any existing backup remains the fallback.
-                Self.logger.warning(
-                    "session.restore.backupPromotionFailed error=\(String(describing: error), privacy: .public)"
-                )
-            }
-        }
-
-        return true
+        undoManager.enableUndoRegistration()
+        return controllers.count
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -473,6 +455,8 @@ class AppDelegate: NSObject,
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        sessionPersistence?.beginTermination()
+        pendingHydration?.cancelAllHydration()
         let windows = NSApplication.shared.windows
         if windows.isEmpty { return .terminateNow }
 
@@ -518,9 +502,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Synchronous: an ordinary quit must lose nothing. The timer interval
-        // only bounds a crash or SIGKILL, where this never runs.
-        sessionPersistence?.persistNow()
+        // Synchronous: an ordinary quit captures the live graph before any
+        // close notifications can remove controllers.
+        sessionPersistence?.beginTermination()
+        sessionPersistence?.finishOwnRestoreAttempts()
 
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
@@ -539,16 +524,39 @@ class AppDelegate: NSObject,
         // This is possible with flag set to false if there a race where the
         // window is still initializing and is not visible but the user clicked
         // the dock icon.
-        guard TerminalController.all.isEmpty else { return true }
+        guard TerminalController.open.isEmpty else { return true }
 
         // If the application isn't active yet then we don't want to process
         // this because we're not ready. This happens sometimes in Xcode runs
         // but I haven't seen it happen in releases. I'm unsure why.
         guard applicationHasBecomeActive else { return true }
 
+        if let sessionPersistence {
+            let promoted = MainActor.assumeIsolated {
+                let candidates = sessionPersistence.dockReopenCandidateIDs
+                guard !candidates.isEmpty else { return 0 }
+                return promote(
+                    sessionPersistence.storedWindows(matching: Set(candidates)),
+                    trigger: .dockReopen
+                )
+            }
+            if promoted > 0 { return false }
+        }
+
         // No visible windows, open a new one.
         _ = TerminalController.newWindow(ghostty)
         return false
+    }
+
+    @MainActor
+    @objc func reopenSavedWindows() {
+        guard let sessionPersistence else { return }
+        _ = promote(
+            sessionPersistence.storedWindows(
+                matching: Set(sessionPersistence.reopenableWindowIDs)
+            ),
+            trigger: .userReopen
+        )
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -673,7 +681,6 @@ class AppDelegate: NSObject,
         }) {
             return nil
         }
-
 
         // Intercept reserved workspace/tab-switch shortcuts
         // (Cmd+1-9, Cmd+Shift+[/], Ctrl+Tab/Ctrl+Shift+Tab) BEFORE any
@@ -813,7 +820,6 @@ class AppDelegate: NSObject,
         }
         return collisions
     }
-
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         syncFloatOnTopMenu(notification.object as? NSWindow)
@@ -1764,6 +1770,7 @@ extension AppDelegate {
                 if [.OK, .alertFirstButtonReturn].contains(response) {
                     await NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
+                    await resumeAfterCancelledTermination()
                     await NSApp.reply(toApplicationShouldTerminate: false)
                 }
             }
@@ -1785,6 +1792,7 @@ extension AppDelegate {
             case .alertSecondButtonReturn:
                 return .terminateNow
             default:
+                MainActor.assumeIsolated { resumeAfterCancelledTermination() }
                 return .terminateCancel
             }
         }
@@ -1804,12 +1812,23 @@ extension AppDelegate {
                     await controller.window?.close()
                     continue
                 } else {
+                    await resumeAfterCancelledTermination()
                     await NSApp.reply(toApplicationShouldTerminate: false)
                     // Cancel the review
                     return
                 }
             }
             await NSApp.reply(toApplicationShouldTerminate: true)
+        }
+    }
+
+    @MainActor
+    func resumeAfterCancelledTermination() {
+        sessionPersistence?.cancelTermination()
+        TerminalController.open.forEach {
+            $0.scheduleWorkspaceHydration(
+                workspaceID: $0.workspaceStore.snapshot.selection.workspaceID
+            )
         }
     }
 }

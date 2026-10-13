@@ -40,7 +40,7 @@ struct iOS_GhosttyInitView: View {
         VStack {
             Image("AppIconImage")
                 .resizable()
-                .aspectRatio(contentMode: .fit)
+                .scaledToFit()
                 .frame(maxHeight: 96)
             Text("Chostty")
             Text("State: \(ghostty_app.readiness.rawValue)")

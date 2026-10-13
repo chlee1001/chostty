@@ -211,6 +211,7 @@ final class WorkspaceSessionStore: ObservableObject {
     /// that the registry has not caught up to. Set by the controller; the store
     /// itself has no knowledge of the registry.
     var willCommit: (([WorkspaceSession], Selection) -> Void)?
+    var didEditMetadata: (() -> Void)?
 
     // MARK: Init
 
@@ -620,6 +621,7 @@ final class WorkspaceSessionStore: ObservableObject {
         // Metadata edits skip `commit`, so `mountGeneration` stays put and the
         // periodic save would otherwise never see the new name.
         session.bumpMetadataGeneration()
+        didEditMetadata?()
     }
 
     /// Sets a tab's background tint. Metadata only, as above.
@@ -627,6 +629,7 @@ final class WorkspaceSessionStore: ObservableObject {
         guard let session = session(forTabID: tabID) else { return }
         session.tabColor = color == .none ? nil : String(color.rawValue)
         session.bumpMetadataGeneration()
+        didEditMetadata?()
     }
 
     /// Commits a reordered/renamed candidate, repairing the selection pair
@@ -902,6 +905,7 @@ final class WorkspaceSessionStore: ObservableObject {
     /// Cmd+Z quietly discarded the user's directory, color and collapse
     /// choices. Those fields are therefore parameters rather than defaults.
     @discardableResult
+    // swiftlint:disable:next function_parameter_count
     func insertWorkspace(
         id workspaceID: UUID,
         name: String,

@@ -353,15 +353,15 @@ import Testing
         #expect(moving.isTornDown == false)
     }
 
-    @Test func dragThresholdRejectsJitter() {
+    @Test func dragThresholdRejectsJitter() throws {
         typealias Source = VirtualTabDragSource.DragSourceView
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 400, height: 200),
             styleMask: [.titled], backing: .buffered, defer: false)
         let press = NSPoint(x: 200, y: 150)
 
-        func dragged(at point: NSPoint) -> NSEvent {
-            try! #require(NSEvent.mouseEvent(
+        func dragged(at point: NSPoint) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(
                 with: .leftMouseDragged,
                 location: point,
                 modifierFlags: [],
@@ -374,14 +374,15 @@ import Testing
         }
 
         // Sub-threshold jitter never starts a session…
-        #expect(Source.crossedThreshold(
-            from: press, to: dragged(at: NSPoint(x: 201, y: 151))) == false)
+        let jitter = try dragged(at: NSPoint(x: 201, y: 151))
+        #expect(Source.crossedThreshold(from: press, to: jitter) == false)
         // …at exactly the threshold it does…
-        #expect(Source.crossedThreshold(
-            from: press, to: dragged(at: NSPoint(x: 203, y: 150))))
+        let threshold = try dragged(at: NSPoint(x: 203, y: 150))
+        #expect(Source.crossedThreshold(from: press, to: threshold))
         // …and with no recorded press (missed mouseDown) it fails open so a
         // drag is never silently swallowed.
-        #expect(Source.crossedThreshold(from: nil, to: dragged(at: press)))
+        let unpressed = try dragged(at: press)
+        #expect(Source.crossedThreshold(from: nil, to: unpressed))
     }
 
     @Test func undoRestoresEmptiedWorkspaceIdentity() throws {
@@ -457,6 +458,172 @@ import Testing
         #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
         #expect(destination.presentedSessionID == moving.id)
         #expect(moving.isTornDown == false)
+    }
+
+    @Test func receiveForeignTabDroppedOnATabLandsAtThatTab() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let workspace = try #require(destination.workspaceStore.snapshot.workspaces.first)
+        let before = workspace.tabs.map(\.id)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: 1))
+
+        let after = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(after == [before[0], moving.id, before[1]])
+        #expect(destination.presentedSessionID == moving.id)
+    }
+
+    @Test func receiveForeignTabWithoutAnIndexAppends() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let workspace = try #require(destination.workspaceStore.snapshot.workspaces.first)
+        let before = workspace.tabs.map(\.id)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: nil))
+
+        let after = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(after == before + [moving.id])
+    }
+
+    @Test func undoingALastTabReceiveLeavesOneOwner() throws {
+        let source = try makeController(tabs: 1)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        source.window = window
+        let undoManager = try #require(destination.undoManager)
+        #expect(source.undoState != nil)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        // The bare test window has no delegate, so mark the close that
+        // `windowWillClose` records in the app.
+        source.isWindowClosed = true
+        let closedSourceTabs = source.workspaceStore.snapshot.workspaces.flatMap(\.tabs).map(\.id)
+        undoManager.undo()
+
+        // Undo rebuilds the closed source window, and only that: the closed
+        // controller does not get the tab put back into it as well.
+        let rebuilt = openOwners(of: moving.id, excluding: [source, destination])
+        #expect(rebuilt.count == 1)
+        #expect(source.workspaceStore.snapshot.workspaces.flatMap(\.tabs).map(\.id) == closedSourceTabs)
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(destination.presentedSessionID != moving.id)
+        #expect(moving.isTornDown == false)
+
+        undoManager.redo()
+        #expect(openOwners(of: moving.id, excluding: [source, destination]).isEmpty)
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(destination.presentedSessionID == moving.id)
+    }
+
+    @Test func undoAndRedoOfAnIndexedReceiveKeepPositions() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let sourceBefore = try #require(source.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        let workspace = try #require(destination.workspaceStore.snapshot.workspaces.first)
+        let before = workspace.tabs.map(\.id)
+        let undoManager = try #require(destination.undoManager)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: 1))
+        undoManager.undo()
+
+        let sourceAfterUndo = try #require(source.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        let destinationAfterUndo = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(sourceAfterUndo == sourceBefore)
+        #expect(destinationAfterUndo == before)
+        #expect(destination.presentedSessionID != moving.id)
+
+        undoManager.redo()
+        let destinationAfterRedo = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(destinationAfterRedo == [before[0], moving.id, before[1]])
+    }
+
+    @Test func undoKeepsTheTabWhenItsSourceClosedSinceTheMove() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let undoManager = try #require(destination.undoManager)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        // The source window closed after the move; mark what `windowWillClose`
+        // records in the app.
+        source.isWindowClosed = true
+        undoManager.undo()
+
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(moving.isTornDown == false)
+    }
+
+    @Test func undoOfAnEarlierMoveSkipsATabThatMovedOnSince() throws {
+        let source = try makeController(tabs: 2)
+        let middle = try makeController(tabs: 1)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let undoManager = try #require(middle.undoManager)
+
+        #expect(middle.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        #expect(destination.receiveForeignTab(moving.id, from: middle, intoWorkspace: nil, at: nil))
+        // Closing the later window drops the undo that targets it (its own
+        // Close Window undo, not modeled here, would first rebuild an owner
+        // of the tab); the first move's undo is next.
+        undoManager.removeAllActions(withTarget: destination)
+        undoManager.undo()
+
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(middle.workspaceStore.liveSession(forTabID: moving.id) == nil)
+    }
+
+    @Test func undoingATearOffAfterTheTabMovedOnLeavesOneOwner() throws {
+        let source = try makeController(tabs: 2)
+        let receiver = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let tornOff = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let undoManager = try #require(source.undoManager)
+
+        // Dragging the torn-off window's only tab elsewhere closes that window.
+        #expect(receiver.receiveForeignTab(moving.id, from: tornOff, intoWorkspace: nil, at: nil))
+        tornOff.isWindowClosed = true
+        undoManager.removeAllActions(withTarget: tornOff)
+        // The first undo rebuilds the torn-off window with the tab; the next
+        // is the tear-off's own undo, which must not restore it a second time.
+        undoManager.undo()
+        undoManager.undo()
+
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(openOwners(of: moving.id, excluding: []).count == 1)
+        #expect(moving.isTornDown == false)
+    }
+
+    @Test func undoingATearOffOfAClosedTabRestoresNothing() throws {
+        let source = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let tornOff = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let undoManager = try #require(source.undoManager)
+
+        // Simulate the teardown that finalizing the tab's close lease performs.
+        // Undo closes the torn-off window first, so no open window owns the
+        // tab and only the torn-down check stops the restore.
+        moving.tearDown()
+        undoManager.undo()
+
+        #expect(tornOff.isWindowClosed)
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(openOwners(of: moving.id, excluding: []).isEmpty)
+    }
+
+    /// Open windows other than `excluded` whose store owns `tabID`.
+    private func openOwners(of tabID: UUID, excluding excluded: [TerminalController]) -> [TerminalController] {
+        TerminalController.open.filter { controller in
+            !excluded.contains { $0 === controller }
+                && controller.workspaceStore.liveSession(forTabID: tabID) != nil
+        }
     }
 
     @Test func receiveForeignTabUndoRestoresSource() throws {

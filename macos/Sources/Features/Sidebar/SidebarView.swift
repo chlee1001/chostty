@@ -88,24 +88,23 @@ struct SidebarView: View {
     var onSelectTab: (UUID, UUID) -> Void
 
     /// Called when the user closes a tab.
-    var onCloseTab: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
 
     /// Called when the user closes a workspace.
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseWorkspace: ((UUID) -> Void)?
     /// Called when the user picks "Reopen Closed Tab" from the empty-area
     /// context menu. The owning controller resolves `ClosedTabHistory`;
     /// presentation never touches it directly.
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window is dropped on a
-    /// workspace row. The tab joins that workspace and becomes presented.
-    /// Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
+    /// workspace row or a tab row: (tab, workspace, index). The tab joins
+    /// that workspace and becomes presented, before the dropped-on tab or,
+    /// with a nil index, at the end. Same-window drops keep the reorder path.
+    var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// The sidebar search/filter query. Private view state — filtering is
     /// presentation-only and never reaches the store.
     @State private var filterText: String = ""
-
-
 
     init(
         workspaceSessionStore: WorkspaceSessionStore,
@@ -115,7 +114,7 @@ struct SidebarView: View {
         onCloseTab: ((UUID) -> Void)? = nil,
         onCloseWorkspace: ((UUID) -> Void)? = nil,
         onReopenClosedTab: @escaping () -> Void = {},
-        onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil,
+        onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)? = nil,
         filesPanelController: FilesPanelController? = nil
     ) {
         self.workspaceSessionStore = workspaceSessionStore
@@ -192,7 +191,9 @@ struct SidebarView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
             if !filterText.isEmpty {
-                Button(action: { filterText = "" }) {
+                Button {
+                    filterText = ""
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -257,13 +258,15 @@ struct SidebarDivider: View {
 struct WorkspaceSessionList: View {
     @ObservedObject var store: WorkspaceSessionStore
     var onSelectTab: (UUID, UUID) -> Void
-    var onCloseTab: ((UUID) -> Void)? = nil
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
+    var onCloseWorkspace: ((UUID) -> Void)?
     var onNewWorkspace: () -> Void = {}
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window lands on a workspace
-    /// row. Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil
+    /// row or a tab row: (tab, workspace, index). The index is the dropped-on
+    /// tab's position to insert before, or nil on a workspace row to append.
+    /// Same-window drops keep the reorder path.
+    var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// Search/filter query from the sidebar header. Empty means "show
     /// everything", reproducing unfiltered rendering exactly.
@@ -282,7 +285,6 @@ struct WorkspaceSessionList: View {
     private func toggleSingleWorkspacePolicy() {
         singleWorkspacePolicyRaw = singleWorkspacePolicy.toggled.rawValue
     }
-
 
     /// Row currently under the pointer during a drag, used to draw the
     /// insertion indicator.
@@ -406,30 +408,26 @@ struct WorkspaceSessionList: View {
     /// Resolves a drag/drop pair into the right store mutation.
     ///
     /// Dropping a tab onto a workspace header moves it into that workspace;
-    /// dropping onto another tab reorders relative to it. Workspaces only
-    /// reorder among themselves. A dropped tab unknown to this store came
-    /// from another window: it is received instead of moved.
+    /// dropping onto another tab moves it to that tab's index. Workspaces only
+    /// reorder among themselves. A dropped tab unknown to this store came from
+    /// another window: it is received before the dropped-on tab instead.
     private func handleDrop(source: WorkspaceDragPayload, target: WorkspaceDragPayload) {
         switch (source, target) {
         case let (.tab(moving), .tab(over)):
-            if store.liveSession(forTabID: moving) == nil {
-                guard let ws = store.snapshot.workspaces.first(where: { w in
-                    w.tabs.contains { $0.id == over }
-                }) else { return }
-                _ = onReceiveForeignTab?(moving, ws.id)
-                return
-            }
             guard let ws = store.snapshot.workspaces.first(where: { w in
                 w.tabs.contains { $0.id == over }
             }), let index = ws.tabs.firstIndex(where: { $0.id == over }) else { return }
+            if store.liveSession(forTabID: moving) == nil {
+                _ = onReceiveForeignTab?(moving, ws.id, index)
+                return
+            }
             store.moveTab(moving, toWorkspace: ws.id, at: index)
 
         case let (.tab(moving), .workspace(wsID)):
             if store.liveSession(forTabID: moving) == nil {
-                _ = onReceiveForeignTab?(moving, wsID)
+                _ = onReceiveForeignTab?(moving, wsID, nil)
                 return
             }
-        case let (.tab(moving), .workspace(wsID)):
             // Append to the end of the target workspace.
             guard let ws = store.snapshot.workspaces.first(where: { $0.id == wsID })
             else { return }
@@ -469,8 +467,8 @@ private struct WorkspaceSessionRow: View {
     @ObservedObject var store: WorkspaceSessionStore
     @Binding var dropTarget: WorkspaceDragPayload?
     var onSelectTab: (UUID, UUID) -> Void
-    var onCloseTab: ((UUID) -> Void)? = nil
-    var onCloseWorkspace: ((UUID) -> Void)? = nil
+    var onCloseTab: ((UUID) -> Void)?
+    var onCloseWorkspace: ((UUID) -> Void)?
     var onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
 
     /// Search/filter query, used only to compute `effectiveCollapsed`
@@ -596,7 +594,9 @@ private struct WorkspaceSessionRow: View {
                 if let onCloseWorkspace, store.snapshot.workspaces.count > 1 {
                     // Always laid out, revealed on hover. Inserting it on hover
                     // would reflow the row just as the pointer arrives.
-                    Button(action: { onCloseWorkspace(workspace.id) }) {
+                    Button {
+                        onCloseWorkspace(workspace.id)
+                    } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.secondary)
@@ -718,7 +718,7 @@ private struct TabSessionRow: View {
     let isSelected: Bool
     @Binding var dropTarget: WorkspaceDragPayload?
     let onTap: () -> Void
-    var onClose: (() -> Void)? = nil
+    var onClose: (() -> Void)?
     var onDrop: (WorkspaceDragPayload, WorkspaceDragPayload) -> Void
     @State private var hover = false
     @State private var branch: String?
@@ -799,10 +799,17 @@ private struct TabSessionRow: View {
             // Reserved at all times. Inserting the bell only while it is
             // ringing reflows the row, so a tab that starts/stops ringing
             // would shove the close button sideways under the pointer.
-            Image(systemName: "bell.fill")
+            Image(systemName: tab.isHeldBack
+                ? "exclamationmark.arrow.circlepath"
+                : tab.hydrationFailed ? "exclamationmark.triangle" : "bell.fill")
                 .font(.system(size: 9))
-                .foregroundStyle(.orange)
-                .opacity(tab.bell ? 1 : 0)
+                .foregroundStyle(tab.isHeldBack || tab.hydrationFailed ? Color.primary : Color.orange)
+                .opacity(tab.isHeldBack || tab.hydrationFailed || tab.bell ? 1 : 0)
+                .help(tab.isHeldBack
+                    ? "Held back: Chostty quit while opening this tab. Select it to open."
+                    : tab.hydrationFailed
+                        ? "Couldn't open this tab. Select it to retry."
+                        : "")
 
             if let onClose {
                 // Always laid out, only revealed on hover. Inserting it on
