@@ -569,14 +569,36 @@ import Testing
 
         #expect(middle.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
         #expect(destination.receiveForeignTab(moving.id, from: middle, intoWorkspace: nil, at: nil))
-        // Closing the last window drops the undo that targets it, which
-        // leaves the first move's undo on top.
+        // Closing the later window drops the undo that targets it (its own
+        // Close Window undo, not modeled here, would first rebuild an owner
+        // of the tab); the first move's undo is next.
         undoManager.removeAllActions(withTarget: destination)
         undoManager.undo()
 
         #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
         #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
         #expect(middle.workspaceStore.liveSession(forTabID: moving.id) == nil)
+    }
+
+    @Test func undoingATearOffAfterTheTabMovedOnLeavesOneOwner() throws {
+        let source = try makeController(tabs: 2)
+        let receiver = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let tornOff = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let undoManager = try #require(source.undoManager)
+
+        // Dragging the torn-off window's only tab elsewhere closes that window.
+        #expect(receiver.receiveForeignTab(moving.id, from: tornOff, intoWorkspace: nil, at: nil))
+        tornOff.isWindowClosed = true
+        undoManager.removeAllActions(withTarget: tornOff)
+        // The first undo rebuilds the torn-off window with the tab; the next
+        // is the tear-off's own undo, which must not restore it a second time.
+        undoManager.undo()
+        undoManager.undo()
+
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(openOwners(of: moving.id, excluding: []).count == 1)
+        #expect(moving.isTornDown == false)
     }
 
     /// Open windows other than `excluded` whose store owns `tabID`.

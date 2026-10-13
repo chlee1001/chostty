@@ -1873,7 +1873,12 @@ class BaseTerminalController: NSWindowController,
                 withTarget: self,
                 expiresAfter: undoExpiration
             ) { target in
-                guard let restored = lease.consume() else { return }
+                // Restore only a tab no open window owns. The torn-off window
+                // normally closed a step earlier; if the tab has since moved
+                // or that window was rebuilt, a second owner would present the
+                // same surfaces twice and fail every save's validation.
+                guard TerminalController.open.allSatisfy({ $0.workspaceStore.liveSession(forTabID: tabID) == nil }),
+                      let restored = lease.consume() else { return }
                 target.workspaceStore.register(restored)
                 if target.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
                     target.workspaceStore.insertTab(
