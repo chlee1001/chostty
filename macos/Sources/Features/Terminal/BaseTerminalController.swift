@@ -1932,8 +1932,8 @@ class BaseTerminalController: NSWindowController,
     ///
     /// Order (every step is load-bearing):
     /// 1. Guards — the tab must NOT already live here (same-window drops keep
-    ///    their existing reorder path), and exactly one OTHER controller must
-    ///    own it, or the drop is a defined no-op.
+    ///    their existing reorder path), and another open controller must own
+    ///    it, or the drop is a defined no-op.
     /// 2. Write-back — if the tab is presented in its source window, that
     ///    controller's `surfaceTree` is authoritative; the source writes back
     ///    before removal.
@@ -1944,10 +1944,12 @@ class BaseTerminalController: NSWindowController,
     /// 5. Source cleanup — if that was the source window's last tab, close the
     ///    window without an undo of its own; the undo below rebuilds it.
     /// 6. Undo group — ONE group on the process-wide undo manager. Undo takes
-    ///    the tab out of this window, then puts it back in the source (or
-    ///    rebuilds the closed source window with it), so exactly one window
-    ///    owns it. Redo re-runs the full receive. Lease finalize is a no-op:
-    ///    the session stays alive in the destination either way.
+    ///    the tab out of this window and puts it back in the source while that
+    ///    is open, or rebuilds the source window this move closed. When this
+    ///    window no longer owns the tab, or neither source exists, undo leaves
+    ///    it where it is: a tab owned by two windows makes every save fail
+    ///    validation. Redo re-runs the full receive. Lease finalize is a
+    ///    no-op: the session stays alive either way.
     @discardableResult
     func receiveForeignTab(_ tabID: UUID, intoWorkspace workspaceID: UUID?, at index: Int? = nil) -> Bool {
         // 1. Guards.
@@ -2049,11 +2051,13 @@ class BaseTerminalController: NSWindowController,
                 withTarget: self,
                 expiresAfter: undoExpiration
             ) { [weak source] target in
-                // Give the tab back only to a window that can take it: the
-                // source while it is open, or a rebuild of the one this move
-                // closed. Otherwise it stays here rather than vanish.
+                // Give the tab back only while this window still owns it (a
+                // later move may have taken it elsewhere), and only to a window
+                // that can take it: the source while it is open, or a rebuild
+                // of the one this move closed. Otherwise it stays put.
                 let openSource = source.flatMap { $0.isWindowClosed ? nil : $0 }
-                guard closedSourceState != nil || openSource != nil,
+                guard target.workspaceStore.liveSession(forTabID: tabID) != nil,
+                      closedSourceState != nil || openSource != nil,
                       let moved = lease.consume() else { return }
                 // The destination's presented tree is authoritative for the
                 // tab it is giving back; keep it before the tab leaves.

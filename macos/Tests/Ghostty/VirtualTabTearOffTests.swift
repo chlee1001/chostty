@@ -560,6 +560,25 @@ import Testing
         #expect(moving.isTornDown == false)
     }
 
+    @Test func undoOfAnEarlierMoveSkipsATabThatMovedOnSince() throws {
+        let source = try makeController(tabs: 2)
+        let middle = try makeController(tabs: 1)
+        let destination = try makeController(tabs: 1)
+        let moving = source.workspaceStore.allSessions[0]
+        let undoManager = try #require(middle.undoManager)
+
+        #expect(middle.receiveForeignTab(moving.id, from: source, intoWorkspace: nil, at: nil))
+        #expect(destination.receiveForeignTab(moving.id, from: middle, intoWorkspace: nil, at: nil))
+        // Closing the last window drops the undo that targets it, which
+        // leaves the first move's undo on top.
+        undoManager.removeAllActions(withTarget: destination)
+        undoManager.undo()
+
+        #expect(destination.workspaceStore.liveSession(forTabID: moving.id) === moving)
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(middle.workspaceStore.liveSession(forTabID: moving.id) == nil)
+    }
+
     /// Open windows other than `excluded` whose store owns `tabID`.
     private func openOwners(of tabID: UUID, excluding excluded: [TerminalController]) -> [TerminalController] {
         TerminalController.open.filter { controller in
