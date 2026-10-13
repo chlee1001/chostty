@@ -604,13 +604,16 @@ import Testing
     @Test func undoingATearOffOfAClosedTabRestoresNothing() throws {
         let source = try makeController(tabs: 2)
         let moving = source.workspaceStore.allSessions[0]
-        _ = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let tornOff = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
         let undoManager = try #require(source.undoManager)
 
-        // The tab was closed in its new window and its close lease finalized.
+        // Simulate the teardown that finalizing the tab's close lease performs.
+        // Undo closes the torn-off window first, so no open window owns the
+        // tab and only the torn-down check stops the restore.
         moving.tearDown()
         undoManager.undo()
 
+        #expect(tornOff.isWindowClosed)
         #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
         #expect(openOwners(of: moving.id, excluding: []).isEmpty)
     }
