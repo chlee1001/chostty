@@ -601,6 +601,20 @@ import Testing
         #expect(moving.isTornDown == false)
     }
 
+    @Test func undoingATearOffOfAClosedTabRestoresNothing() throws {
+        let source = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        _ = try #require(source.detachTabToNewWindow(tabID: moving.id, screenPoint: nil))
+        let undoManager = try #require(source.undoManager)
+
+        // The tab was closed in its new window and its close lease finalized.
+        moving.tearDown()
+        undoManager.undo()
+
+        #expect(source.workspaceStore.liveSession(forTabID: moving.id) == nil)
+        #expect(openOwners(of: moving.id, excluding: []).isEmpty)
+    }
+
     /// Open windows other than `excluded` whose store owns `tabID`.
     private func openOwners(of tabID: UUID, excluding excluded: [TerminalController]) -> [TerminalController] {
         TerminalController.open.filter { controller in
