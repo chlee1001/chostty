@@ -709,6 +709,7 @@ private enum FileLock {
                 throw LockError.lockFailed(error)
             }
             if ProcessInfo.processInfo.systemUptime >= deadline {
+                SessionPersistenceController.logger.warning("session.persist.lockTimeout file=\(lockURL.lastPathComponent, privacy: .public)")
                 throw LockError.timeout
             }
             usleep(10_000)

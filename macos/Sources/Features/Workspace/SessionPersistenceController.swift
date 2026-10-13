@@ -820,7 +820,11 @@ final class SessionPersistenceController {
             }
             applySaveResult(.yielded)
         case .retired:
-            retiredAcknowledged.formUnion(retire.subtracting(receipt.remainingRetireWindowIDs))
+            let acknowledged = retire.subtracting(receipt.remainingRetireWindowIDs)
+            retiredAcknowledged.formUnion(acknowledged)
+            Self.logger.notice(
+                "session.persist.retired windows=\(acknowledged.count, privacy: .public) remaining=\(receipt.remainingRetireWindowIDs.count, privacy: .public)"
+            )
             // The health maps to `.saved` because the write succeeded.
             applySaveResult(.saved)
         case .written, .skippedIdentical:

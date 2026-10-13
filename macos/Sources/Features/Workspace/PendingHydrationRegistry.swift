@@ -128,11 +128,22 @@ final class PendingHydrationRegistry {
 
     func cancelHydration(owner: AnyObject) {
         let ownerID = ObjectIdentifier(owner)
+        let queued = hydrationQueue.count
         hydrationQueue.removeAll { $0.ownerID == ownerID }
+        logCancelled(queued - hydrationQueue.count, scope: "window")
     }
 
     func cancelAllHydration() {
+        let queued = hydrationQueue.count
         hydrationQueue.removeAll()
+        logCancelled(queued, scope: "all")
+    }
+
+    private func logCancelled(_ count: Int, scope: String) {
+        guard count > 0 else { return }
+        Self.logger.notice(
+            "session.hydrate.cancelled scope=\(scope, privacy: .public) tabs=\(count, privacy: .public)"
+        )
     }
 
     private func scheduleStep(after delay: TimeInterval) {

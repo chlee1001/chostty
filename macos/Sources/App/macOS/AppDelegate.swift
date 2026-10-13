@@ -408,7 +408,7 @@ class AppDelegate: NSObject,
                 }
                 if !decision.keepDormant.isEmpty {
                     SessionPersistenceController.logger.notice(
-                        "session.restore.keptDormant reason=\(String(describing: decision.reason), privacy: .public) windows=\(decision.keepDormant.count, privacy: .public)"
+                        "session.restore.keptDormant reason=\(decision.reason.map { String(describing: $0) } ?? "none", privacy: .public) windows=\(decision.keepDormant.count, privacy: .public)"
                     )
                 }
                 if !quarantine.windows.isEmpty {
