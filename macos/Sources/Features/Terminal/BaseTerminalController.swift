@@ -2007,7 +2007,12 @@ class BaseTerminalController: NSWindowController,
         //    proven pattern; single ownership is restored below either way.)
         let targetWorkspaceID = workspaceID ?? workspaceStore.snapshot.selection.workspaceID
         workspaceStore.register(session)
-        workspaceStore.addTab(session, toWorkspace: targetWorkspaceID)
+        if let index {
+            // Dropped onto a tab: land where it was dropped, as a local move would.
+            workspaceStore.insertTab(session, intoWorkspace: targetWorkspaceID, at: index)
+        } else {
+            workspaceStore.addTab(session, toWorkspace: targetWorkspaceID)
+        }
 
         // 4. Present the received tab here.
         selectSession(workspaceID: targetWorkspaceID, tabID: session.id)

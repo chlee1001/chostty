@@ -460,6 +460,33 @@ import Testing
         #expect(moving.isTornDown == false)
     }
 
+    @Test func receiveForeignTabDroppedOnATabLandsAtThatTab() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let workspace = try #require(destination.workspaceStore.snapshot.workspaces.first)
+        let before = workspace.tabs.map(\.id)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: 1))
+
+        let after = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(after == [before[0], moving.id, before[1]])
+        #expect(destination.presentedSessionID == moving.id)
+    }
+
+    @Test func receiveForeignTabWithoutAnIndexAppends() throws {
+        let source = try makeController(tabs: 2)
+        let destination = try makeController(tabs: 2)
+        let moving = source.workspaceStore.allSessions[0]
+        let workspace = try #require(destination.workspaceStore.snapshot.workspaces.first)
+        let before = workspace.tabs.map(\.id)
+
+        #expect(destination.receiveForeignTab(moving.id, from: source, intoWorkspace: workspace.id, at: nil))
+
+        let after = try #require(destination.workspaceStore.snapshot.workspaces.first).tabs.map(\.id)
+        #expect(after == before + [moving.id])
+    }
+
     @Test func receiveForeignTabUndoRestoresSource() throws {
         let source = try makeController(tabs: 2)
         let destination = try makeController(tabs: 1)

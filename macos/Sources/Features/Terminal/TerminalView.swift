@@ -165,8 +165,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                             onReopenClosedTab: {
                                 viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
                             },
-                            onReceiveForeignTab: { tabID, workspaceID in
-                                viewModel.receiveForeignTab(tabID, intoWorkspace: workspaceID, at: nil)
+                            onReceiveForeignTab: { tabID, workspaceID, index in
+                                viewModel.receiveForeignTab(tabID, intoWorkspace: workspaceID, at: index)
                             },
                             filesPanelController: viewModel.filesPanelController
                         )
@@ -198,8 +198,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         onCloseToTheRight: { tabID in
                             viewModel.closeTabsOnTheRight(fromTab: tabID)
                         },
-                        onReceiveForeignTab: { tabID in
-                            viewModel.receiveForeignTab(tabID, intoWorkspace: nil, at: nil)
+                        onReceiveForeignTab: { tabID, index in
+                            viewModel.receiveForeignTab(tabID, intoWorkspace: nil, at: index)
                         }
                     )
 

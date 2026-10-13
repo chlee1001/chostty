@@ -99,7 +99,7 @@ struct SidebarView: View {
     /// Called when a tab dragged in from ANOTHER window is dropped on a
     /// workspace row. The tab joins that workspace and becomes presented.
     /// Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)?
+    var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// The sidebar search/filter query. Private view state — filtering is
     /// presentation-only and never reaches the store.
@@ -113,7 +113,7 @@ struct SidebarView: View {
         onCloseTab: ((UUID) -> Void)? = nil,
         onCloseWorkspace: ((UUID) -> Void)? = nil,
         onReopenClosedTab: @escaping () -> Void = {},
-        onReceiveForeignTab: ((UUID, UUID) -> Bool)? = nil,
+        onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)? = nil,
         filesPanelController: FilesPanelController? = nil
     ) {
         self.workspaceSessionStore = workspaceSessionStore
@@ -263,7 +263,7 @@ struct WorkspaceSessionList: View {
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window lands on a workspace
     /// row. Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID, UUID) -> Bool)?
+    var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// Search/filter query from the sidebar header. Empty means "show
     /// everything", reproducing unfiltered rendering exactly.
@@ -411,21 +411,18 @@ struct WorkspaceSessionList: View {
     private func handleDrop(source: WorkspaceDragPayload, target: WorkspaceDragPayload) {
         switch (source, target) {
         case let (.tab(moving), .tab(over)):
-            if store.liveSession(forTabID: moving) == nil {
-                guard let ws = store.snapshot.workspaces.first(where: { w in
-                    w.tabs.contains { $0.id == over }
-                }) else { return }
-                _ = onReceiveForeignTab?(moving, ws.id)
-                return
-            }
             guard let ws = store.snapshot.workspaces.first(where: { w in
                 w.tabs.contains { $0.id == over }
             }), let index = ws.tabs.firstIndex(where: { $0.id == over }) else { return }
+            if store.liveSession(forTabID: moving) == nil {
+                _ = onReceiveForeignTab?(moving, ws.id, index)
+                return
+            }
             store.moveTab(moving, toWorkspace: ws.id, at: index)
 
         case let (.tab(moving), .workspace(wsID)):
             if store.liveSession(forTabID: moving) == nil {
-                _ = onReceiveForeignTab?(moving, wsID)
+                _ = onReceiveForeignTab?(moving, wsID, nil)
                 return
             }
             // Append to the end of the target workspace.

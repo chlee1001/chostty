@@ -39,7 +39,7 @@ struct VirtualTabBar: View {
     /// Called when a tab dragged in from ANOTHER window is dropped on the
     /// strip. The tab joins this window's selected workspace and becomes
     /// presented. Nil-accepting: same-window drops keep the reorder path.
-    var onReceiveForeignTab: ((UUID) -> Bool)?
+    var onReceiveForeignTab: ((UUID, Int) -> Bool)?
 
     @State private var dropTarget: WorkspaceDragPayload?
 
@@ -131,7 +131,7 @@ struct VirtualTabBar: View {
               let index = workspace.tabs.firstIndex(where: { $0.id == over })
         else { return }
         if store.liveSession(forTabID: moving) == nil {
-            _ = onReceiveForeignTab?(moving)
+            _ = onReceiveForeignTab?(moving, index)
             return
         }
         store.moveTab(moving, toWorkspace: workspace.id, at: index)
