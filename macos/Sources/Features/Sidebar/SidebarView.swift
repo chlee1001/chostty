@@ -262,7 +262,9 @@ struct WorkspaceSessionList: View {
     var onNewWorkspace: () -> Void = {}
     var onReopenClosedTab: () -> Void = {}
     /// Called when a tab dragged in from ANOTHER window lands on a workspace
-    /// row. Nil-accepting: same-window drops keep the reorder path.
+    /// row or a tab row: (tab, workspace, index). The index is the dropped-on
+    /// tab's position to insert before, or nil on a workspace row to append.
+    /// Same-window drops keep the reorder path.
     var onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)?
 
     /// Search/filter query from the sidebar header. Empty means "show
@@ -405,9 +407,9 @@ struct WorkspaceSessionList: View {
     /// Resolves a drag/drop pair into the right store mutation.
     ///
     /// Dropping a tab onto a workspace header moves it into that workspace;
-    /// dropping onto another tab reorders relative to it. Workspaces only
-    /// reorder among themselves. A dropped tab unknown to this store came
-    /// from another window: it is received instead of moved.
+    /// dropping onto another tab places it at that tab's position. Workspaces
+    /// only reorder among themselves. A dropped tab unknown to this store came
+    /// from another window: it is received at the same place instead of moved.
     private func handleDrop(source: WorkspaceDragPayload, target: WorkspaceDragPayload) {
         switch (source, target) {
         case let (.tab(moving), .tab(over)):

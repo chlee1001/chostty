@@ -37,8 +37,9 @@ struct VirtualTabBar: View {
     var onCloseToTheRight: (UUID) -> Void
 
     /// Called when a tab dragged in from ANOTHER window is dropped on the
-    /// strip. The tab joins this window's selected workspace and becomes
-    /// presented. Nil-accepting: same-window drops keep the reorder path.
+    /// strip, with the dropped-on tab's index. The tab joins this window's
+    /// selected workspace there and becomes presented. Same-window drops keep
+    /// the reorder path.
     var onReceiveForeignTab: ((UUID, Int) -> Bool)?
 
     @State private var dropTarget: WorkspaceDragPayload?

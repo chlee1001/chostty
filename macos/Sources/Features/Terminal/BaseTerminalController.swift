@@ -1937,23 +1937,24 @@ class BaseTerminalController: NSWindowController,
     /// 2. Write-back — if the tab is presented in its source window, that
     ///    controller's `surfaceTree` is authoritative; the source writes back
     ///    before removal.
-    /// 3. Transfer — source `removeTab` + `unregister`, then this store
-    ///    `addTab` into the target workspace (remove-then-create, so surface
-    ///    ownership never duplicates).
+    /// 3. Transfer — this store adopts first (`insertTab` at the drop index,
+    ///    or `addTab` to append when there is none), then the source
+    ///    `removeTab` + `unregister`s it.
     /// 4. Present — the received tab becomes this window's presented tab.
-    /// 5. Source cleanup — if the source window is now empty, close it. Its
-    ///    window-close undo runs in the same group (see below).
-    /// 6. Undo group — ONE group on the process-wide undo manager. The
-    ///    destination-remove action registers FIRST and the source-restore
-    ///    action registers SECOND, so reverse-order execution restores the
-    ///    source before removing from the destination. Redo re-runs the full
-    ///    receive. Lease finalize is a no-op: the session stays alive in the
-    ///    destination either way.
+    /// 5. Source cleanup — if that was the source window's last tab, close the
+    ///    window without an undo of its own; the undo below rebuilds it.
+    /// 6. Undo group — ONE group on the process-wide undo manager. Undo takes
+    ///    the tab out of this window, then puts it back in the source (or
+    ///    rebuilds the closed source window with it), so exactly one window
+    ///    owns it. Redo re-runs the full receive. Lease finalize is a no-op:
+    ///    the session stays alive in the destination either way.
     @discardableResult
     func receiveForeignTab(_ tabID: UUID, intoWorkspace workspaceID: UUID?, at index: Int? = nil) -> Bool {
         // 1. Guards.
         if workspaceStore.liveSession(forTabID: tabID) != nil { return false }
-        guard let source = TerminalController.all.first(where: {
+        // A closed window's store still lists the tabs it had; only an open
+        // window can be the source.
+        guard let source = TerminalController.open.first(where: {
             $0 !== self && $0.workspaceStore.liveSession(forTabID: tabID) != nil
         }) else { return false }
         return receiveForeignTab(tabID, from: source, intoWorkspace: workspaceID, at: index)
@@ -2017,7 +2018,9 @@ class BaseTerminalController: NSWindowController,
         // 4. Present the received tab here.
         selectSession(workspaceID: targetWorkspaceID, tabID: session.id)
 
+        let closedSourceState: TerminalController.UndoState?
         if sourceStore.removeTab(tabID) != nil {
+            closedSourceState = nil
             sourceStore.unregister(session.id)
             // Remount the source's committed successor when its presented tab left.
             if wasPresentedInSource {
@@ -2027,13 +2030,17 @@ class BaseTerminalController: NSWindowController,
                 }
             }
         } else {
-            // 5. This was the source window's last tab: close the window. Its
-            //    close-window undo joins this same group (registered inside the
-            //    call below, executing before the receive-undo on undo).
+            // 5. This was the source window's last tab: close the window. The
+            //    undo below rebuilds it from this state, so the close registers
+            //    no undo of its own: a second restore would also put the session
+            //    back into the closed controller, leaving two owners.
+            closedSourceState = source.undoState
+            undoManager?.disableUndoRegistration()
             source.closeWindowImmediately()
+            undoManager?.enableUndoRegistration()
         }
 
-        // 6a. Destination-remove undo (registers FIRST ⇒ executes LAST).
+        // 6. Undo: give the tab back, then re-run the receive on redo.
         let lease = DetachedUndoLease(payload: session) { _ in
             // Session-preserving by design: the moved session stays alive in
             // whichever window holds it even if this lease expires unused.
@@ -2044,30 +2051,46 @@ class BaseTerminalController: NSWindowController,
                 expiresAfter: undoExpiration
             ) { target in
                 guard let moved = lease.consume() else { return }
+                // The destination's presented tree is authoritative for the
+                // tab it is giving back; keep it before the tab leaves.
+                let wasPresentedHere = target.presentedSessionID == moved.id
+                if wasPresentedHere {
+                    moved.surfaceTree = target.surfaceTree
+                    moved.focusedSurfaceID = target.focusedSurface?.id
+                    moved.unmount()
+                }
                 target.workspaceStore.removeTab(moved.id)
                 target.workspaceStore.unregister(moved.id)
-                // 6b. Source-restore (registers SECOND ⇒ executes FIRST):
-                // put the session back where it came from, then re-run the
-                // receive on redo.
-                source.workspaceStore.register(moved)
-                if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
-                    source.workspaceStore.insertTab(
-                        moved,
-                        intoWorkspace: restoreWorkspaceID,
-                        at: restoreIndex)
-                } else {
-                    source.workspaceStore.insertWorkspace(
-                        id: restoreWorkspaceID,
-                        name: restoreWorkspaceName,
-                        sessions: [moved],
-                        selectedTabID: moved.id,
-                        at: restoreWorkspaceIndex,
-                        defaultDirectory: restoreWorkspaceDefaultDirectory,
-                        color: restoreWorkspaceColor,
-                        isCollapsed: restoreWorkspaceCollapsed)
+                if wasPresentedHere {
+                    let sel = target.workspaceStore.snapshot.selection
+                    target.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
                 }
-                let sel = source.workspaceStore.snapshot.selection
-                source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                // 6b. Source-restore: put the session back where it came
+                // from, then re-run the receive on redo. A source window the
+                // receive closed comes back whole, with this tab in it.
+                if let closedSourceState {
+                    _ = TerminalController(target.ghostty, with: closedSourceState)
+                } else {
+                    source.workspaceStore.register(moved)
+                    if source.workspaceStore.snapshot.workspaces.contains(where: { $0.id == restoreWorkspaceID }) {
+                        source.workspaceStore.insertTab(
+                            moved,
+                            intoWorkspace: restoreWorkspaceID,
+                            at: restoreIndex)
+                    } else {
+                        source.workspaceStore.insertWorkspace(
+                            id: restoreWorkspaceID,
+                            name: restoreWorkspaceName,
+                            sessions: [moved],
+                            selectedTabID: moved.id,
+                            at: restoreWorkspaceIndex,
+                            defaultDirectory: restoreWorkspaceDefaultDirectory,
+                            color: restoreWorkspaceColor,
+                            isCollapsed: restoreWorkspaceCollapsed)
+                    }
+                    let sel = source.workspaceStore.snapshot.selection
+                    source.selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+                }
                 undoManager.registerUndo(
                     withTarget: target.ghostty,
                     expiresAfter: target.undoExpiration
