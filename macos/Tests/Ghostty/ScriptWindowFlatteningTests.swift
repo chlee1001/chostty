@@ -61,6 +61,28 @@ struct ScriptWindowFlatteningTests {
         #expect(actualIDs == expectedIDs)
     }
 
+    /// `name override` reads and writes the addressed tab's own override, so
+    /// two tabs in one window never share a title.
+    @Test func nameOverrideIsPerTab() throws {
+        let ws = makeWorkspace(name: "Alpha", tabCount: 2)
+        let selection = Selection(workspaceID: ws.id, tabID: ws.tabs[0].id)
+        let controller = try #require(TerminalControllerTestHarness.make(
+            workspaces: [ws],
+            selection: selection))
+
+        let tabs = ScriptWindow(primaryController: controller).tabs
+        #expect(tabs.count == 2)
+        tabs[1].titleOverride = "second"
+
+        #expect(tabs[1].titleOverride == "second")
+        #expect(tabs[0].titleOverride == "")
+        #expect(controller.workspaceStore.allSessions[1].titleOverride == "second")
+
+        tabs[1].titleOverride = ""
+        #expect(tabs[1].titleOverride == "")
+        #expect(controller.workspaceStore.allSessions[1].titleOverride == nil)
+    }
+
     /// `workspace name of tab 3` (1-based) equals the SECOND workspace's
     /// name, and `index` is 1-based over the flattened enumeration.
     @Test func workspaceNameAndOneBasedIndexOfThirdTab() throws {

@@ -51,7 +51,8 @@ enum ConfigReference {
         "macos-auto-secure-input", "macos-secure-input-indication", "macos-applescript",
         "linux-cgroup-hard-fail", "gtk-opengl-debug", "gtk-titlebar",
         "gtk-titlebar-hide-when-maximized", "gtk-wide-tabs", "gtk-horizontal-tab-scroll",
-        "desktop-notifications", "progress-style",
+        "desktop-notifications", "progress-style", "gtk-tabs-inverted", "link-osc8",
+        "vt-window-resize-allowed", "vt-xt-checksum-report",
     ]
 
     /// Run `+show-config --default --docs` on the app's own executable.

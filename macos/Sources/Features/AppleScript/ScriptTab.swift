@@ -73,7 +73,7 @@ final class ScriptTab: NSObject {
         return stableID
     }
 
-    /// Exposed as the AppleScript `title` property.
+    /// Exposed as the AppleScript `name` property.
     ///
     /// Returns THIS tab's own title, not the window's — a tab's title can
     /// differ from its window's when several tabs share one window.
@@ -93,6 +93,24 @@ final class ScriptTab: NSObject {
         guard NSApp.isAppleScriptEnabled else { return "" }
         guard let controller else { return "" }
         return controller.workspaceStore.workspace(forTabID: tabID)?.name ?? ""
+    }
+
+    /// Exposed as the AppleScript `name override` property.
+    ///
+    /// Gets or sets THIS tab's title override (the same one the tab strip and
+    /// sidebar show), not the window's. Setting an empty string clears it.
+    @objc(titleOverride)
+    var titleOverride: String {
+        get {
+            guard NSApp.isAppleScriptEnabled else { return "" }
+            return session?.titleOverride ?? ""
+        }
+        set {
+            guard NSApp.isAppleScriptEnabled else { return }
+            guard let controller else { return }
+            controller.workspaceStore.renameTab(tabID, to: newValue)
+            controller.applyTitleToWindow()
+        }
     }
 
     /// Exposed as the AppleScript `index` property.

@@ -7,7 +7,7 @@ struct FilesPanelMenuValidationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let menuURL = root.appendingPathComponent("Sources/App/macOS/MainMenu.xib")
+        let menuURL = root.appendingPathComponent("Sources/App/MainMenu.xib")
         let source = try String(contentsOf: menuURL, encoding: .utf8)
         let itemStart = try #require(source.range(of: "<menuItem title=\"Show Files Panel\""))
         let itemTail = source[itemStart.lowerBound...]
@@ -23,7 +23,7 @@ struct FilesPanelMenuValidationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let delegateURL = root.appendingPathComponent("Sources/App/macOS/AppDelegate.swift")
+        let delegateURL = root.appendingPathComponent("Sources/App/AppDelegate.swift")
         let source = try String(contentsOf: delegateURL, encoding: .utf8)
 
         #expect(source.contains("case #selector(toggleFilesPanel(_:))"))

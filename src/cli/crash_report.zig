@@ -44,22 +44,26 @@ pub fn run(alloc_gpa: Allocator) !u8 {
     var stdout_writer = stdout_file.writer(global.io(), &buffer);
     const stdout = &stdout_writer.interface;
 
-    const result = runInner(alloc, &stdout_file, stdout);
+    var environ_map = try global.environMap();
+    defer environ_map.deinit();
+    const result = runInner(global.io(), alloc, &environ_map, &stdout_file, stdout);
     stdout.flush() catch {};
     return result;
 }
 
 fn runInner(
+    io: std.Io,
     alloc: Allocator,
+    environ_map: *const std.process.Environ.Map,
     stdout_file: *std.Io.File,
     stdout: *std.Io.Writer,
 ) !u8 {
-    const crash_dir = try crash.defaultDir(alloc);
+    const crash_dir = try crash.defaultDir(io, alloc, environ_map);
     var reports: std.ArrayList(crash.Report) = .empty;
     errdefer reports.deinit(alloc);
 
-    var it = try crash_dir.iterator();
-    while (try it.next()) |report| try reports.append(alloc, .{
+    var it = try crash_dir.iterator(io);
+    while (try it.next(io)) |report| try reports.append(alloc, .{
         .name = try alloc.dupe(u8, report.name),
         .mtime = report.mtime,
     });
@@ -81,7 +85,7 @@ fn runInner(
         const diff = now - report.mtime;
         const since = if (diff <= 0) "now" else s: {
             const d = Config.Duration{ .duration = @intCast(diff) };
-            break :s try std.fmt.bufPrint(&buf, "{f} ago", .{d.round(std.time.ns_per_s)});
+            break :s try std.mem.print(&buf, "{f} ago", .{d.round(std.time.ns_per_s)});
         };
         try stdout.print("{s} ({s})\n", .{ report.name, since });
     }

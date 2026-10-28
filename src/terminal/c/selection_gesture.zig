@@ -241,7 +241,7 @@ pub fn event_new(
     event_type: EventType,
 ) callconv(lib.calling_conv) Result {
     const out = out_event orelse return .invalid_value;
-    _ = std.enums.fromInt(EventType, @intFromEnum(event_type)) orelse
+    _ = std.enums.fromInt(EventType, @backingInt(event_type)) orelse
         return .invalid_value;
 
     const alloc = lib.alloc.default(alloc_);
@@ -343,8 +343,8 @@ pub fn event_set(
     value: ?*const anyopaque,
 ) callconv(lib.calling_conv) Result {
     if (comptime std.debug.runtime_safety) {
-        _ = std.enums.fromInt(EventOption, @intFromEnum(option)) orelse {
-            log.warn("selection_gesture_event_set invalid option value={d}", .{@intFromEnum(option)});
+        _ = std.enums.fromInt(EventOption, @backingInt(option)) orelse {
+            log.warn("selection_gesture_event_set invalid option value={d}", .{@backingInt(option)});
             return .invalid_value;
         };
     }
@@ -365,8 +365,8 @@ pub fn get(
     out: ?*anyopaque,
 ) callconv(lib.calling_conv) Result {
     if (comptime std.debug.runtime_safety) {
-        _ = std.enums.fromInt(Data, @intFromEnum(data)) orelse {
-            log.warn("selection_gesture_get invalid data value={d}", .{@intFromEnum(data)});
+        _ = std.enums.fromInt(Data, @backingInt(data)) orelse {
+            log.warn("selection_gesture_get invalid data value={d}", .{@backingInt(data)});
             return .invalid_value;
         };
     }
@@ -743,7 +743,7 @@ fn instantFromNs(ns: u64) std.Io.Timestamp {
 }
 
 fn validBehavior(behavior: Behavior) bool {
-    _ = std.enums.fromInt(Behavior, @intFromEnum(behavior)) orelse return false;
+    _ = std.enums.fromInt(Behavior, @backingInt(behavior)) orelse return false;
     return true;
 }
 
@@ -752,7 +752,8 @@ test "selection gesture lifecycle and get" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -788,7 +789,8 @@ test "selection gesture get_multi" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -832,7 +834,8 @@ test "selection gesture get_multi returns first failing index" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -944,7 +947,8 @@ test "selection gesture event applies press" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -991,7 +995,8 @@ test "selection gesture event press requires ref" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1019,7 +1024,8 @@ test "selection gesture event null output still reports no selection" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1053,7 +1059,8 @@ test "selection gesture event applies release" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1104,7 +1111,8 @@ test "selection gesture release without ref marks dragged" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1151,7 +1159,8 @@ test "selection gesture event applies drag" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1223,7 +1232,8 @@ test "selection gesture drag requires ref and geometry" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1267,7 +1277,8 @@ test "selection gesture event applies autoscroll tick" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1350,7 +1361,8 @@ test "selection gesture autoscroll tick requires viewport and geometry" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1389,7 +1401,8 @@ test "selection gesture event applies deep press" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
@@ -1444,7 +1457,8 @@ test "selection gesture deep press without active anchor returns no value" {
     try testing.expectEqual(Result.success, terminal_c.new(
         &lib.alloc.test_allocator,
         &terminal,
-        .{ .cols = 5, .rows = 2, .max_scrollback = 10_000 },
+        5,
+        2,
     ));
     defer terminal_c.free(terminal);
 
