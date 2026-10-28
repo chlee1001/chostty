@@ -34,6 +34,8 @@ Ghostty는 MIT 라이선스다. 포크, 수정, 비공개 또는 상업적 재�
 이름은 일부러 그대로 둔다. `Ghostty` Swift 모듈, `GhosttyKit`, `GHOSTTY_*` 환경
 변수, `xterm-ghostty` terminfo, `share/ghostty` 리소스 경로, `~/.config/ghostty/`,
 모든 AppleScript four-char code, Linux/GTK의 `ghostty` 실행 파일 이름이 그렇다.
+SSH 호스트 관리자는 이 고정 호환 목록이나 Ghostty의 표준 설정 경로를 바꾸지
+않는다.
 
 **업데이터.** 패키징한 정식 릴리스는 Sparkle을 켜고 이 저장소 최신 릴리스의
 appcast와 업데이트 압축 파일을 Ed25519 공개키로 검증한다. 소스 빌드는 자동으로
@@ -44,6 +46,13 @@ appcast와 업데이트 압축 파일을 Ed25519 공개키로 검증한다. 소�
 0.2.12까지의 릴리스는 한 번 직접 업그레이드해야 한다. 개인키를 잃어버려도 마찬가지로
 새 공개키를 넣은 릴리스를 한 번 직접 설치해야 한다. upstream Ghostty의 appcast는
 절대 쓰지 않는다. 쓰면 Chostty가 순정 Ghostty로 바뀐다.
+
+**크래시 리포터 없음.** GhosttyKit은 `-Dsentry=false`로 빌드한다. 그래서 앱에는
+Sentry와 Breakpad 코드가 들어가지 않고 앱 자체의 크래시 리포트도 남지 않는다.
+`+crash-report`가 보여 주는 것은 같은 디렉터리를 쓰는 upstream Ghostty나 이전
+Chostty 빌드가 남긴 리포트뿐이다. upstream은 macOS에서 이 기능을 기본으로 켜
+두므로, 여기서 `zig build`할 때는 늘 이 플래그를 붙여야 한다. 빼고 만든
+Debug 빌드는 SSH pane마다 앱 실행 파일을 `+ssh`로 실행하므로 `[sentry]` 줄도 찍힌다.
 
 **Files 패널 Reader.** 오른쪽 Files 패널에서 파일을 열면 선택한 Virtual Tab에 읽기
 전용 문서 탭이 붙고 터미널 surface는 내려가지 않는다. Virtual Tab마다 열린 문서를
@@ -85,7 +94,7 @@ libghostty 파서로 검사해 문제가 있으면 저장하기 전에 해당 �
 순서, 접힘 상태, 탭 제목, 탭별 분할 배치, Pane별 작업 디렉터리를 적어 두고 다음
 실행 때 그 구조를 되살린다.
 
-다시 시작하면 Pane마다 기록된 작업 디렉터리에서 **새 셸**이 뜬다. 예전 프로세스,
+다시 시작하면 로컬 pane마다 기록된 작업 디렉터리에서 **새 셸**이 뜬다. 예전 프로세스,
 화면, 스크롤백은 남지 않으며 터미널 내용은 디스크에 전혀 쓰지 않는다. 기록된
 디렉터리가 사라졌으면 홈 디렉터리로 몰래 바꾸지 않고 그 항목을 버린다. 이 포크에서
 탭을 만드는 다른 경로와 같은 방식이다.
@@ -142,6 +151,204 @@ Chostty로 치지 않는다.
 `window-save-state`는 upstream에서 물려받아 여전히 파싱되지만 macOS 앱은 무시하고
 늘 `never`처럼 동작한다. 위 동작을 정하는 키는 `macos-session-persistence`다.
 
+## SSH 연결
+
+`~/.ssh/config`에 적은 호스트는 `⌘⇧P`에서 새 탭이나 오른쪽 split으로 연다. SSH 탭은
+사이드바에 목적지와 연결 상태를 표시한다. `ssh-env`는 기본으로 켜며 `no-ssh-env`로
+끈다. Chostty가 설정 파일의 출처를 확인하지 못하면 `ssh-env`를 강제로 켜지 않고 해당
+설정을 따른다. Quick Terminal에는 SSH 진입점이 없다.
+
+SSH pane은 스냅샷의 선택 필드 `ssh`에 호스트 연결 정보만 저장한다. 앱을 다시 시작하거나
+Reopen Closed Tab으로 열면 서버에 접속하지 않고 **Connect**를 기다린다. Duplicate Tab은
+새로 접속한다. 연결이 끊겨도 pane은 남으며 재접속하거나 닫을 수 있다. 호스트를 삭제하면
+재접속만 막고 이미 연결된 세션은 유지한다.
+
+SSH 진단 기록은 통합 로그의 `ssh`, `ssh-askpass`, `ssh-tunnel` 카테고리에 남는다.
+
+```sh
+log stream --level debug --predicate 'subsystem BEGINSWITH "kr.co.devch.chostty" AND category BEGINSWITH "ssh"'
+```
+
+이벤트는 `connect.requested`, `state.changed`, `resolver.ran`, `askpass.request`,
+`tunnel.phase`처럼 분류, 개수, 소요 시간만 기록한다. 별칭과 경로는 private로 가리고,
+비밀번호, 프롬프트, 답, 토큰, argv는 기록하지 않는다.
+
+### SSH 호스트 관리자
+
+Chostty가 소유한 호스트는
+`<XDG config home>/chostty/ssh/hosts.conf`에 두고, 선택 사항인 표시 이름과 즐겨찾기는
+옆의 `hosts.meta.json`에 둔다. `XDG_CONFIG_HOME`이 비어 있거나 없으면 `~/.config`를
+쓴다. Finder로 연 앱은 셸 프로필이 아니라 launchd 환경을 물려받는다. 호스트 파일의
+권한은 소유자 전용(`0600`)이며 새로 만드는 `chostty`, `ssh` 디렉터리의 권한은
+`0700`이다.
+
+관리자는 일반 터미널 창에만 적용한다. **Window > Manage SSH Hosts…**, 명령 팔레트의
+**SSH: Manage Hosts…**, SSH 팝오버 아래쪽에서 연다. 관리 호스트만
+`ssh -F hosts.conf`로 실행한다. `~/.ssh/config`, 그 Include, 시스템 설정은 읽기
+전용으로 둔다. Chostty 소유 표식이 있는 블록만 고칠 수 있고 표식 없는 블록은 읽기
+전용이다.
+
+열거나 검색할 때는 `ssh -G`를 실행하지 않는다. `Match exec`가 있으면 **Resolve**와
+**Duplicate to Edit**는 명시적으로 동의한 뒤에만 실행한다. Duplicate to Edit은 새롭고
+고유한 별칭이 필요하다. OpenSSH 기본값과 다른 지원 General/Advanced 옵션만 복사하고,
+지원하지 않는 설정은 **Not copied**로 보여 주며 자격 증명은 복사하지 않는다. 디스크
+해시가 바뀌면 **Reload** 또는 **Overwrite**를 고른다.
+
+**IdentityFile** 행에는 경로를 직접 입력하거나 **Choose…**로 파일을 고른다. 홈 폴더
+아래 파일은 `~/…`로 저장하고 `%`는 이스케이프한다. 관리 파일은 값을 따옴표로 감싸지
+않으므로 공백이 든 경로와 `.pub` 파일은 거부한다. **ProxyJump**에서는 **None**,
+카탈로그의 다른 호스트, **Custom** 가운데 하나를 고른다. Custom은 Jump User, HostName,
+Port 칸으로 입력하고, 여러 홉이면 텍스트로 고친다. 점프 호스트에 따로 키나 옵션이
+필요하면 그 호스트를 추가한 뒤 목록에서 고른다. Keychain은 목적지 호스트의 프롬프트에만
+답하므로 점프 호스트 비밀번호는 터미널에서 입력한다. **Check Jump Host**는 홉 하나만
+확인한다. `ssh -G`를 실행한 뒤 `ssh -T … true`를 `BatchMode=yes`,
+`StrictHostKeyChecking=yes`, `ControlPath=none`으로 실행하고, agent·X11·포트 포워딩은
+끈다. 관리 파일이 있으면 그 파일을 쓴다. 패널과 터널처럼 로그인 셸의 `PATH`와
+`SSH_AUTH_SOCK`을 쓴다. 확인 중에는 묻지 않고, 호스트 키를 기록하지 않으며,
+다중화 세션을 재사용하지 않고, 비밀번호를 보내지 않는다. 결과는 로그인 성공, 키 인증
+거부, 모르는 호스트 키나 바뀐 호스트 키, 연결 불가, 실패, 해석 불가 가운데 하나로
+알려 준다. `Match exec`가 있으면 **Resolve**와 같은 동의를 받는다.
+
+### 비밀번호 관리와 자동 전달
+
+관리 호스트는 **Password in Keychain**을 고를 수 있다. User, HostName, Port를 모두
+명시해야 하며, 일치하는 `Host`, 앞선 `Match`, 전역 endpoint 설정, 이른 `Include`가
+호스트에 영향을 줄 수 있으면 고를 수 없다. 일치하지 않는 `Host` 블록은 막지 않는다.
+저장한 실제 바이트로 자격을 판단한다. 외부 설정은 계속 읽기 전용이다. 메타데이터에는
+인증 선택만 기록한다. 비밀번호는 호스트 UUID를 키로 삼아 파일 기반 로그인 Keychain 서비스
+`<bundle id>.ssh.password`에만 저장하며 `hosts.conf`,
+`hosts.meta.json`, 스냅샷, 인자, 환경, 로그에는 넣지 않는다.
+터널은 아래에서 설명한다.
+
+별칭만 바꾸면 기존 Keychain 항목을 쓴다. User, HostName, Port를 바꾸려면
+**Use for <destination>** 또는 **Replace Password…**를 선택해야 한다. 관리자가
+다른 접속 대상에 비밀번호를 몰래 재사용하지 않는다. 키 passphrase는 저장하지 않는다.
+Apple OpenSSH에서 키를 다룰 때는 `UseKeychain yes`, `AddKeysToAgent yes`를 쓴다.
+
+자동 비밀번호 전달은 `ghostty_init` 전에 시작한다. 서비스 전체 listener는 메타데이터를
+읽기 전에 시작하고, pane coordinator가 첫 연결과 재접속마다 pane별 nonce를 발급하고
+예약한다. 실행 인자에는 nonce를 넣지 않는다. 허용은 발급 뒤 단조 시계 기준
+120초에 만료한다. kernel socket-peer와 정확히 세 단계인 부모 hop 고정은 nonce 발급이
+아니라 자격 증명 요청을 막는다. Keychain을 명시적으로 고른 시스템 `/usr/bin/ssh`만
+자동 secret을 받을 수 있다. `PATH`에서 찾은 다른 클라이언트는 수동 인증을 쓴다.
+
+C helper는 libc `readpassphrase` 대신 바이트를 직접 읽는다. libc는 비어 있지 않은
+EOF와 NUL을 확실히 구분하지 못한다. 이와 별개로 Darwin canonical mode에서는
+1024바이트 경계의 종료 문자가 실제로 사라진다. reader는 `ISIG`를 잠시 켠 뒤
+`TCSAFLUSH`로 저장해 둔 TTY 상태 전체를 복원한다. supervisor는 `-icanon`, `-isig`가
+모두 잡혀야 연결된 것으로 보아 helper 인증을 connecting 상태에 둔다. 일반 실패 때는
+EOF보다 먼저 확인한 SSH consumer를 멈춘다. `confirm`, `none` mode는 consumer를
+종료하지 않는다. TTY가 없는 확인 요청이나 확인할 수 없는 일반 부모는 종료할 때까지
+stdout을 붙든다. 빈 키 passphrase 요청은 키를 건너뛰지 않고 취소한다.
+
+helper가 갑자기 죽거나 외부 `SIGKILL`을 받거나 supervisor를 고정하기 전에 크래시하거나
+Darwin PID check-to-kill 경합이 나면 OpenSSH가 빈 시도를 할 수 있다. 빈 시도를 절대
+막는다고 보장하지 않는다. 성공하면 helper가 소유 버퍼를 명시적으로 지우고 fatal handler를
+유지한 채 native `_exit(0)`을 부른다. 고정한 뒤 helper가 크래시하면 fatal signal
+handler가 EOF를 읽기 전에 consumer 부모를 죽인다.
+
+broker는 일시적인 accept 오류를 재시도하고 치명적인 unavailable 상태를 알린다.
+서비스는 연결마다 가용성을 다시 확인하고 kernel rewalk 전에 최종 파일과 attribute를
+재검증한다.
+
+저장소 밖에서 한 번씩 확인한 내용도 있다. helper를 단독으로, 또 번들 안에서 고아가
+아닌 실제 foreground process group으로 돌렸을 때 Ctrl-Z와 지연 suspend를 거부했고 TTY를
+그대로 복원했다. live broker 확인은 시스템 `ssh`, 번들 helper, 앱+SSH PTY supervisor를
+부모 hop 세 단계로 거쳤다. fake store에서 한 번 가져와 제공했고, 유효한 nonce를 가진
+무관한 같은 UID peer는 거부했다. store가 가짜였으므로 실제 Keychain 접근이나 비밀번호
+바이트를 증명하지는 않는다. SSH가 보낸 `none` 질문과 하드웨어 FIDO 키는 아직 확인하지
+않았다. 알려진 한계를 참고한다.
+
+개발 중에는 ad-hoc 코드 ID가 빌드나 업데이트 뒤 Keychain 승인을 다시 물을 수 있다.
+**Always Allow**는 그 코드 ID의 이후 접근을 신뢰하지만 모든 업데이트에서 프롬프트가
+없다는 뜻은 아니다. 배포 기준은 Developer ID 서명 릴리스다. 이 저장소에는 서명 키나
+자격 증명을 넣지 않는다.
+
+### SSH 터널
+
+SSH 관리 창의 **TUNNELS** 섹션은 카탈로그 호스트의 `-L`, `-R`, `-D` 포워딩을
+`hosts.meta.json`에 저장한다. 터널은 멈춘 상태에서만 고치거나 지울 수 있고, 시작에
+실패해도 설정은 남는다. bind 주소가 `127.0.0.1`, `::1`, `localhost`가 아니면 동의
+창에서 **Allow**를 눌러야 저장된다. **Cancel**을 누르면 저장도 시작도 하지 않으며,
+주소나 포트, 종류를 바꾸면 다시 묻는다. `-R`의 원격 bind는 서버가 정한다. 서버의 `GatewayPorts`가
+`clientspecified`나 `yes`가 아니면 sshd는 루프백에서만 연결을 받는다. 호스트 SSH 설정의 `LocalForward`,
+`RemoteForward`, `DynamicForward`도 터널 ssh에 그대로 적용되며 이 동의 대상이
+아니다.
+
+터널은 관리 창, SSH 팝오버, 명령 팔레트의 **SSH: Start Tunnel <name>**과
+**SSH: Stop Tunnel <name>**에서 시작하고 멈춘다. `/usr/bin/ssh -N`을 실행하며
+`ExitOnForwardFailure=yes`, `ForkAfterAuthentication=no`,
+`PermitLocalCommand=no`를 주고 연결 공유는 쓰지 않는다. ssh가 부르는 보조 도구는
+로그인 셸 `PATH`에서 찾는다. `-F hosts.conf`는 관리 호스트에만 붙는다. 인증 질문과
+호스트 키 신뢰는 아래 "터널 인증과 호스트 키 신뢰" 절에서 설명한다. `-L`과 `-D`는
+ssh가 bind 포트에서 연결을 받기 시작하면 **ready**가 된다. `-R`은 준비 신호가 없어
+**running, unconfirmed**로 표시한다. 실패 문구는 대화형 인증, 모르는 호스트 키,
+바뀐 호스트 키, 사용 중인 로컬 포트, 서버의 포워딩 거부, 그 밖의 종료로 나뉜다.
+대상이 포워딩된 연결 하나를 거부해도 터널은 ready로 남고 마지막 채널 오류를 함께
+보인다. SSH 버튼 배지는 실행 중인 터널 수다.
+
+ssh의 stderr는 64 KiB 메모리 버퍼에만 두고 로그에는 분류 결과만 남긴다. 앱을
+종료하면 확인 창 없이 모든 터널을 멈추고(SIGTERM, 2초, SIGKILL) 다음 실행 때 다시
+시작하지 않는다. ssh는 `chostty-ssh-tunnel-watchdog.sh` 아래에서 돌며, 앱이 쥔
+stdin 생명줄이 닫히거나 앱이 더는 부모 프로세스가 아니면 ssh를 멈춘다. 부모 확인을
+둔 이유는 터널 파이프를 여는 사이에 fork된 터미널 pane이 생명줄을 물려받을 수 있어서다.
+Darwin은 파이프 생성과 `FD_CLOEXEC` 설정을 따로 호출하고, libghostty는 `exec` 전에
+descriptor를 정리하지 않는다. 런타임 루트에 터널마다 기록을 남기므로, 앱이 비정상
+종료한 뒤 살아남은 ssh는 다음 실행 때 uid, 시작 시각, 실행 파일을 확인한 다음
+회수한다. 관리 호스트를 지우면 실행 중인 터널을 먼저 멈추고 터널 정의도 지운다.
+터널을 멈추지 못하면 호스트를 지우지 않는다.
+
+### 터널 인증과 호스트 키 신뢰
+
+터널에는 터미널이 없어서 ssh가 대신 앱에 묻는다. 터널마다 Chostty 실행 파일을
+가리키는 `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`, 32바이트 난수 토큰을 준다.
+토큰은 환경 변수에만 있고 인자에는 넣지 않으며 터널이 끝나면 폐기한다. broker는
+요청한 프로세스가 Chostty 실행 파일이고, 그 부모가 `/usr/bin/ssh`이고, 그 ssh의
+부모가 앱이 이 터널을 위해 띄운 watchdog이고, watchdog의 부모가 앱일 때만 답한다.
+pid, 부모, uid, 시작 시각을 비교하며 답을 보내기 직전에 한 번 더 확인한다. 확인에
+실패한 요청은 터널을 **SSH asked for input Chostty couldn't verify.**로 끝낸다.
+같은 이유로 질문을 하는 `ProxyJump` 홉은 지원하지 않는다. 그 ssh는 터널 ssh의
+자식이 아니다. 앱이 답하지 않으면 helper는 빈 답을 쓰지 않고 자신이 띄운 ssh를
+끝낸다.
+
+broker가 떠 있으면 터널은 `BatchMode`를 빼고 `StrictHostKeyChecking=ask`를 쓴다.
+질문 창이 열려 있는 동안 터널 상태는 **waiting for authentication**이다.
+
+- 모르는 호스트 키는 **Trust the host key for <alias>?** 창을 연다. 창에는 별칭으로
+  해석한 접속 대상, ssh가 보인 fingerprint, ssh가 표시한 질문 원문이 나온다. ssh가
+  다른 호스트나 포트를 묻거나 fingerprint를 보이지 않으면 경고 수준을 critical로
+  올리고, Return은 **Cancel**을 선택한다. **Trust and Connect**는 `yes`로 답하고,
+  키는 ssh가 직접 터널의 `UserKnownHostsFile`에 덧붙인다. **Cancel**은 `no`로 답하며
+  터널은 **The host key was not trusted.**로 실패한다.
+- ssh가 이미 아는 키와 충돌한다고 보고하는 질문(호스트에 알려진 다른 키 유형, IP
+  주소의 다른 키, DNS 불일치, 그 밖의 모든 ssh 경고)은 sheet를 띄우지 않고 `no`로
+  답한다. 터널은 **SSH reported a conflict with a known host key. Check it in a terminal
+  tab.**로 실패한다. 바뀐 키는 ssh가 직접 거부한다. `known_hosts`는 그대로 두며
+  터널은 바뀐 키 문구로 실패한다.
+- 키 passphrase나 일회용 코드 같은 다른 질문은 **SSH needs input for <name>** 창을
+  연다. 답은 한 번만 전달하고 저장하지 않는다. **Cancel**을 누르면 터널은
+  **Authentication was cancelled.**로 실패한다. 110초 동안 답이 없으면 창이 닫히고
+  **Authentication timed out.**로 실패한다.
+- `SSH_ASKPASS_PROMPT=confirm`은 **Allow**/**Cancel** 창을 연다. `none`은 안내만
+  띄우고 터널이 ready가 되거나 실패하면 닫는다. 키 처리가 끝나면 ssh가 안내용
+  helper를 직접 끝낸다.
+- **Password in Keychain** 호스트에서는 ssh가 정확히 `<user>@<host>'s password:`로
+  물을 때 호스트 자격을 다시 확인한 다음 Keychain 비밀번호로 답한다. ssh 프로세스
+  하나에 한 번만 답하고, 두 번째 요청은 **Saved password was rejected.**로 실패한다.
+  잠긴 항목, 거부된 접근, 없는 항목은 각각 다른 문구로 실패한다. 저장된 비밀번호에
+  줄바꿈이나 NUL이 있으면 **Saved password contains characters SSH can't receive.**로
+  실패한다. 비밀번호는 창에 보이지 않는다.
+
+질문 창은 key 창이나 main 창에 sheet로 붙고 SSH 팝오버에는 붙지 않는다. 열린 창이
+없으면 앱 모달 알림으로 띄운다. 터널을 멈추면 그 질문 창도 닫는다. broker를 쓸 수
+없으면 Keychain 호스트의 터널은 **Saved password broker is unavailable.**로 실패하고,
+나머지 터널은 `BatchMode=yes`와 `StrictHostKeyChecking=yes`로 돌아간다. 이때 모르는
+키는 **Connect once in a terminal tab to trust this host.**로 실패한다. watchdog은
+ssh를 띄운 뒤 자기 셸에서 askpass 변수를 지워 다른 하위 프로세스로 넘기지 않는다.
+변수는 ssh 환경에 남으며, ssh는 이를 `ProxyCommand`, `KnownHostsCommand`, `Match exec`
+명령 같은 자기 자식에게 넘긴다. 이 명령들은 터미널에서와 같은 신뢰 경계에서 실행한다.
+ssh 바로 아래에서 Chostty 실행 파일을 직접 실행하는 명령은 프로세스 확인을 통과한다.
+
 ## 예약 단축키
 
 | 키                        | 동작                                     |
@@ -160,6 +367,12 @@ Chostty로 치지 않는다.
 동작한다. `⌘⌥` 화살표와 그냥 `⌘[` / `⌘]`는 일부러 가져가지 않았다. upstream에서
 실제로 쓰는 `goto_split` 바인딩이기 때문이다.
 
+편집 메뉴에는 항상 표준 단축키 `⌘Z`, `⌘⇧Z`, `⌘X`, `⌘C`, `⌘V`, `⌘A`가 걸려 있다.
+그래서 터미널 밖의 텍스트 필드(SSH Hosts, 시트, 사이드바)에서도 편집할 수 있다.
+터미널에 포커스가 있으면 이 단축키에 걸린 터미널 바인딩이 먼저 실행된다. 이 중
+하나를 unbind하면 터미널은 그 키 입력을 그대로 받지 않고, 편집 메뉴 항목이 대신
+처리한다.
+
 ## 워크스페이스 컨트롤
 
 사이드바 토글과 워크스페이스 동작 메뉴는 제목 표시줄의 신호등 버튼 바로 오른쪽에
@@ -174,13 +387,18 @@ Chostty로 치지 않는다.
 패널인 quick terminal, 그리고 띠를 그리면 이 설정이 없애려던 창 장식을 되돌려 놓게 되는
 `macos-titlebar-style = hidden`이다.
 
+일반 터미널 창은 세 위치 모두에서 파일 패널 버튼 다음에 **SSH Hosts**를 표시한다.
+팝오버에서 등록된 호스트와 최근 접속을 검색하고 Return으로 새 탭을 열거나
+Option-Return으로 오른쪽을 분할한다. Escape를 누르면 터미널로 포커스가 돌아간다.
+팝오버를 열 때는 `ssh -G`를 실행하지 않는다. Quick Terminal에는 이 버튼이 없다.
+
 판단은 전부 `WorkspaceControlsPlacement.forStandaloneWindow`에서 하고
 `WorkspaceControlsPlacementTests`가 경우의 수를 모두 검사한다.
 
 ## 빌드
 
 ```sh
-zig build -Doptimize=ReleaseFast -Demit-macos-app=false   # GhosttyKit 갱신
+zig build -Doptimize=ReleaseFast -Demit-macos-app=false -Dsentry=false   # GhosttyKit 갱신
 ./macos/build.nu --configuration Release --action build
 ```
 
@@ -320,10 +538,18 @@ Pillow가 필요하다. `macos-icon` 값과 Swift asset 이름(`CustomIconGhost`
   Ghostty도 똑같으니 새로 생긴 문제가 아니라 물려받은 문제다. `new window`는 `in`을
   받지 않고 매개변수 없이도 잘 된다. 고치려면 dictionary를 바꿔야 하는데 dictionary는
   일부러 고정해 두었으므로 그대로 둔다. `in front window`를 붙여 쓴다.
-- Collapse All, Expand All, 단일 워크스페이스 정책 토글은 메뉴에서만 쓸 수 있고 명령
-  팔레트에는 없다. 팔레트는 Ghostty 설정에서 만들어지며 앱 자체 명령을 넣을 곳이 없다.
+- Collapse All, Expand All, 단일 워크스페이스 정책 토글은 메뉴에서만 쓸 수 있다.
+  워크스페이스와 SSH 명령은 앱 자체 명령 팔레트 소스에서 제공한다.
 - 소스를 고정한 검사는 modifier가 지워지거나 옮겨진 경우는 잡지만 옆에 하나 더 붙은
   경우는 잡지 못한다.
+- 실제 서버에서 사람이 직접 확인한 것은 Keychain 비밀번호 로그인, ProxyJump 호스트,
+  두 앱 인스턴스에서 동시에 돌린 터널이다. 다음 수동 확인은 아직 하지 않았다. 하드웨어
+  FIDO 키(키가 없었다), VoiceOver(사용자가 미뤘다), Keychain 동의·ACL 프롬프트와 잠긴
+  Keychain, PAM keyboard-interactive 서버, SSH가 보낸 `none` 질문, 실제 호스트 키 신뢰
+  시트, 비밀번호·보안 입력 터널, Debug와 Release의 Keychain 분리, ad-hoc 서명 업데이트
+  뒤 첫 연결. 이 확인을 통과하기 전까지 SSH 기능은 릴리스 준비가 끝나지 않은 것으로 본다.
+- SSH 탭과 로컬 탭이 섞인 그룹을 닫았다가 다시 열면 모든 탭을 기록된 메타데이터로 새로
+  만든다. 그래서 로컬 탭은 원래 프로세스가 아니라 새 셸로 돌아온다.
 
 ## 개발할 때
 

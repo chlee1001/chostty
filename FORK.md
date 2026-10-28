@@ -39,6 +39,8 @@ or a script already depends on is deliberately unchanged: the `Ghostty` Swift
 module, `GhosttyKit`, `GHOSTTY_*` environment variables, `xterm-ghostty`
 terminfo, `share/ghostty` resource paths, `~/.config/ghostty/`, every AppleScript
 four-char code, and the `ghostty` executable name on Linux/GTK.
+The SSH-host manager does not alter this frozen compatibility list or
+Ghostty's canonical configuration paths.
 
 **Updater.** Packaged stable releases enable Sparkle and verify this repository's
 latest-release appcast and update archive using the Ed25519 public key.
@@ -50,6 +52,14 @@ repository and must match the bundled public key before packaging. Releases
 through 0.2.12 require one manual upgrade. Losing the private key likewise
 requires a new public key and one manual release. Never use upstream Ghostty's
 appcast: it would replace Chostty with stock Ghostty.
+
+**No crash reporter.** GhosttyKit is built with `-Dsentry=false`, so the app
+links no Sentry or Breakpad code and writes no crash reports of its own;
+`+crash-report` only lists reports left by upstream Ghostty or earlier Chostty
+builds, which share its directory. Upstream's default is on for macOS, so every
+`zig build` here must pass the flag. Without it a Debug build also prints
+`[sentry]` lines into every SSH pane, because each pane runs the app executable
+as `+ssh`.
 
 **Files panel Reader.** Opening a file from the right Files panel adds a
 read-only document tab to the selected Virtual Tab without unmounting its
@@ -98,7 +108,7 @@ workspaces, virtual tabs and panes: names, colors, order, collapsed state,
 tab titles, each tab's split layout, and each pane's working directory. On the
 next launch that structure comes back.
 
-After a restart each pane is a **new shell** started in the recorded working
+After a restart each local pane is a **new shell** started in the recorded working
 directory. The previous processes, their screens and the scrollback are gone,
 and no terminal contents are ever written to disk. A recorded directory that no
 longer exists is dropped rather than silently swapped for your home directory,
@@ -167,6 +177,233 @@ disables itself for test hosts.
 app ignores it and always behaves as `never`; `macos-session-persistence` is the
 key that controls the behavior described above.
 
+## SSH connections
+
+Hosts declared in `~/.ssh/config` are available from `⌘⇧P` as a new tab or a
+right-hand split. SSH tabs show their destination and connection status in the
+sidebar. `ssh-env` is on by default; use `no-ssh-env` to turn it off. When
+Chostty cannot determine the configuration source, it follows that
+configuration instead of forcing `ssh-env` on. Quick Terminal has no SSH entry
+point.
+
+SSH panes retain only their host binding in the optional `ssh` snapshot field.
+After a restart or Reopen Closed Tab they wait for **Connect** without contacting
+the server; Duplicate Tab starts a new connection. A lost connection stays in
+the pane until you reconnect or close it. Removing a host prevents reconnecting
+but does not interrupt an existing connection.
+
+SSH diagnostics go to the unified log under the `ssh`, `ssh-askpass`, and
+`ssh-tunnel` categories:
+
+```sh
+log stream --level debug --predicate 'subsystem BEGINSWITH "kr.co.devch.chostty" AND category BEGINSWITH "ssh"'
+```
+
+Events record classifications, counts, and timings, such as `connect.requested`,
+`state.changed`, `resolver.ran`, `askpass.request`, and `tunnel.phase`. Aliases
+and paths are private; passwords, prompts, answers, tokens, and argv are never
+logged.
+
+### SSH-host manager
+
+Chostty places its own hosts in
+`<XDG config home>/chostty/ssh/hosts.conf`, with `hosts.meta.json` beside it
+for optional display names and favorites. An unset or empty `XDG_CONFIG_HOME`
+means `~/.config`. Finder-launched apps inherit launchd's environment, not shell
+profiles. The host file is owner-only (`0600`); newly created `chostty` and
+`ssh` directories are `0700`.
+
+The manager applies only to normal terminal windows, through **Window > Manage
+SSH Hosts…**, **SSH: Manage Hosts…** in the command palette, or the SSH popover
+footer. Managed hosts alone launch with `ssh -F hosts.conf`. `~/.ssh/config`,
+its Includes, and system configuration remain read-only. Blocks carrying the
+Chostty ownership marker are editable; unmarked blocks are read-only.
+
+Opening or searching never runs `ssh -G`. **Resolve** and **Duplicate to Edit**
+require explicit consent before running it when `Match exec` is present.
+Duplicate to Edit requires a new unique alias, copies only supported
+General/Advanced differences from OpenSSH defaults, lists unsupported settings
+as **Not copied**, and never copies credentials. A changed on-disk hash presents
+**Reload** or **Overwrite**.
+
+**IdentityFile** rows take a typed path or **Choose…**, which writes a file
+under the home folder as `~/…` and escapes `%`; paths with spaces and `.pub`
+files are refused because the managed file does not quote values. **ProxyJump**
+offers **None**, any other host in the catalog, or **Custom** with Jump User,
+HostName, and Port fields (a multi-hop value is edited as text). A jump host
+that needs its own key or options should be added as a host and chosen from the
+list; a jump host's password is typed in the terminal, because the Keychain
+answers only the destination host's prompt. **Check Jump Host** checks a single
+hop: it runs `ssh -G`, then `ssh -T … true` with `BatchMode=yes`,
+`StrictHostKeyChecking=yes`, `ControlPath=none`, agent, X11, and port
+forwarding off, and, once it exists, the managed file. Like panes and tunnels,
+it uses the login shell's `PATH` and `SSH_AUTH_SOCK`. The check never prompts,
+records no host key, reuses no multiplexed session, and sends no password. It
+reports signed in, key authentication refused, unknown or changed host key,
+unreachable, failed, or unresolved. With `Match exec` present it asks for the
+same consent as **Resolve**.
+
+### Password management and automatic delivery
+
+Managed hosts can select **Password in Keychain**. It requires explicit User,
+HostName, and Port, and is unavailable when a matching `Host`, any
+preceding `Match`, a global endpoint option, or an early `Include` can affect
+the host; nonmatching `Host` blocks do not disqualify it. Eligibility examines
+the exact saved bytes. External configuration remains read-only. The metadata
+records only the authentication choice; the password is stored under the host
+UUID in the file-based login Keychain service `<bundle id>.ssh.password`, never in
+`hosts.conf`, `hosts.meta.json`, snapshots, arguments, environment, or logs.
+Tunnels are described below.
+
+Changing only an alias keeps the existing Keychain item. Changing User,
+HostName, or Port requires **Use for <destination>** or **Replace Password…**;
+the manager never silently reuses a password for a different endpoint. It never
+stores key passphrases. For Apple OpenSSH, use `UseKeychain yes` and
+`AddKeysToAgent yes` for key handling.
+
+Automatic password delivery starts before `ghostty_init`. A services-wide
+listener starts before metadata hydration, and the pane coordinator issues and
+reserves a per-pane nonce for the first connection and for each reconnect;
+launch arguments never carry one. Grants expire 120 monotonic seconds after
+issuance. Kernel socket-peer and exact three-parent-hop pin checks gate
+credential requests, not nonce issuance. Delivery is explicit Keychain opt-in
+and is limited to system `/usr/bin/ssh`; other `PATH` clients keep manual
+authentication.
+
+The C helper uses a direct byte reader rather than libc `readpassphrase`, which
+cannot distinguish a nonempty EOF or NUL reliably. Separately, Darwin canonical
+mode measurably loses the terminator at the 1024-byte boundary. The reader
+temporarily enables `ISIG`, then restores the complete saved TTY state with
+`TCSAFLUSH`. The supervisor treats a connection as connected only after both
+`-icanon` and `-isig`, keeping helper authentication in its connecting state.
+On ordinary failure it stops the verified SSH consumer before EOF. `confirm`
+and `none` modes never terminate the consumer; a no-TTY confirmation or
+unverifiable ordinary parent holds stdout until exit. A blank key-passphrase
+request cancels rather than skipping the key.
+
+An abrupt helper death, external `SIGKILL`, crash before supervisor pinning, or
+Darwin PID check-to-kill race can still leave OpenSSH to make a blank attempt;
+the design makes no absolute blank-prevention claim. On success the helper
+explicitly wipes owned buffers, retains fatal handlers through exit, then calls
+native `_exit(0)`. If the helper crashes after pinning, its fatal-signal handler
+kills the consuming parent before it reads EOF.
+
+The broker retries transient accept errors and reports fatal unavailability.
+Services recheck availability for each connection, then revalidate the final
+file and attributes before the kernel rewalk.
+
+One-time checks outside this repository ran the helper standalone and bundled
+in a genuine non-orphaned foreground process group: Ctrl-Z and delayed suspend
+were rejected and the TTY was restored exactly. A live broker check drove
+system `ssh`, the bundled helper and the app-plus-SSH PTY supervisor through
+three parent hops; it served one fetch from a fake store and denied an
+unrelated same-UID peer holding a valid nonce. Because the store was fake, that
+check does not prove real Keychain access or password bytes. SSH-origin `none`
+and hardware FIDO keys remain unverified; see Known gaps.
+
+During development, an ad-hoc code identity can prompt for Keychain
+authorization again after builds or updates. **Always Allow** trusts that code
+identity for later access, not necessarily for every update. A Developer ID
+signed release is the intended distribution expectation; no signing keys or
+credentials are in this repository.
+
+### SSH tunnels
+
+The SSH manager's **TUNNELS** section saves `-L`, `-R`, and `-D` forwards for a
+catalog host in `hosts.meta.json`. A tunnel can be edited or deleted only while
+stopped, and a failed start keeps its settings. A bind address other than
+`127.0.0.1`, `::1`, or `localhost` needs **Allow** in a consent alert;
+**Cancel** saves and starts nothing, and changing the address, port, or type
+asks again. For `-R`, the server decides the remote bind: unless its
+`GatewayPorts` is `clientspecified` or `yes`, sshd listens on loopback only. `LocalForward`, `RemoteForward`, and
+`DynamicForward` lines in the host's SSH configuration still apply to the
+tunnel's ssh and are not covered by this consent.
+
+Tunnels start and stop from the manager, the SSH popover, or **SSH: Start
+Tunnel <name>** and **SSH: Stop Tunnel <name>** in the command palette. They
+run `/usr/bin/ssh -N` with `ExitOnForwardFailure=yes`,
+`ForkAfterAuthentication=no`, and `PermitLocalCommand=no`, without connection
+sharing, with the login-shell `PATH` for ssh's own helpers; only managed hosts
+add `-F hosts.conf`. Authentication prompts and host-key trust are described
+under "Tunnel authentication and host-key trust" below. `-L` and `-D` turn **ready** once ssh listens
+on the bind port. `-R` has no readiness signal and shows **running,
+unconfirmed**. Failures distinguish interactive authentication, unknown and
+changed host keys, a local port in use, a refused server forward, and other
+exits. A target that refuses one forwarded connection leaves the tunnel ready
+and shows the last channel error. The SSH button badge counts running tunnels.
+
+ssh's stderr stays in a 64 KiB memory buffer and logs record only the
+classification. Quitting stops every tunnel without confirmation (SIGTERM, two
+seconds, SIGKILL); nothing restarts on the next launch. Each ssh runs under
+`chostty-ssh-tunnel-watchdog.sh`, which stops it when the app's stdin lifeline
+closes or when the app stops being its parent. The parent check exists because
+a terminal pane forked while a tunnel pipe is being opened can inherit the
+lifeline: Darwin creates the pipe and sets `FD_CLOEXEC` in separate calls, and
+libghostty does not sweep descriptors before `exec`. A per-tunnel record under
+the runtime root lets the next launch reap an ssh that outlived a crash, after
+checking its uid, start time, and executable. Deleting a managed host stops its
+running tunnels first and removes their definitions; if a tunnel cannot be
+stopped, the host is kept.
+
+### Tunnel authentication and host-key trust
+
+A tunnel has no terminal, so its ssh asks the app instead. Each tunnel gets
+`SSH_ASKPASS` pointing at the Chostty executable, `SSH_ASKPASS_REQUIRE=force`,
+and a 32-byte random token that lives only in the environment, never in
+arguments, and is revoked when the tunnel ends. The broker answers a tunnel
+request only when the asking process is the Chostty executable, its parent is
+`/usr/bin/ssh`, that ssh's parent is the watchdog the app launched for this
+tunnel, and the watchdog's parent is the app; pid, parent, uids, and start time
+are compared, and the chain is checked again before each answer. A request that
+fails the check ends the tunnel with **SSH asked for input Chostty couldn't
+verify.** For that reason `ProxyJump` hops that prompt are not supported:
+their ssh is not the tunnel's own child. Whenever the app gives no answer, the
+helper ends its ssh instead of writing an empty one.
+
+With the broker running, a tunnel drops `BatchMode` and uses
+`StrictHostKeyChecking=ask`. While a prompt is open the tunnel shows **waiting
+for authentication**.
+
+- An unknown host key opens **Trust the host key for <alias>?** with the
+  destination resolved for the alias, the fingerprint ssh showed, and ssh's
+  question as written. The alert is critical when ssh asks about a different
+  host or port or shows no fingerprint, and Return selects **Cancel**. **Trust
+  and Connect** answers `yes`, and ssh itself appends the key to the tunnel's
+  `UserKnownHostsFile`. **Cancel** answers `no` and the tunnel fails with
+  **The host key was not trusted.**
+- A question in which ssh reports a conflict with a key it already knows
+  (another key type known for the host, a different key for the IP address, a
+  DNS mismatch, or any ssh warning) gets `no` without a sheet, and the tunnel
+  fails with **SSH reported a conflict with a known host key. Check it in a
+  terminal tab.** A changed key is refused by ssh itself: `known_hosts` is left
+  as it was and the tunnel fails with the changed-key message.
+- Other questions, such as a key passphrase or a one-time code, open **SSH
+  needs input for <name>**. The answer is relayed once and not saved; **Cancel**
+  fails the tunnel with **Authentication was cancelled.** An unanswered prompt
+  closes after 110 seconds with **Authentication timed out.**
+- `SSH_ASKPASS_PROMPT=confirm` opens **Allow**/**Cancel**; `none` shows a
+  notice that closes when the tunnel turns ready or fails. ssh ends a notice
+  helper itself once the key is done.
+- For a **Password in Keychain** host, ssh's exact `<user>@<host>'s password:`
+  prompt is answered from the Keychain after the host's eligibility is checked
+  again, once per ssh process. A second request fails with **Saved password
+  was rejected.** A locked, denied, or missing item fails with its own message,
+  and a saved password with a line break or NUL fails with **Saved password
+  contains characters SSH can't receive.** The password is never shown in a
+  sheet.
+
+Prompts open as a sheet on the key or main window, never on the SSH popover,
+and as an app-modal alert when no window is open. Stopping a tunnel closes its
+prompt. When the broker is unavailable, a Keychain host's tunnels fail with
+**Saved password broker is unavailable.** and other tunnels fall back to
+`BatchMode=yes` and `StrictHostKeyChecking=yes`, where an unknown key fails
+with **Connect once in a terminal tab to trust this host.** The watchdog unsets
+the askpass variables in its own shell after starting ssh so they do not reach
+its other subprocesses. They remain in ssh's environment, and ssh passes them to
+its own children such as `ProxyCommand`, `KnownHostsCommand`, and `Match exec`
+commands. Those commands run with the same trust as in a terminal: one that
+runs the Chostty executable directly under ssh passes the process check.
+
 ## Reserved shortcuts
 
 | Chord | Action |
@@ -185,6 +422,12 @@ These are matched on hardware key codes, not characters, so they behave
 identically under non-Latin input sources. `⌘⌥` arrows and bare `⌘[` / `⌘]` are
 deliberately NOT claimed — they are live `goto_split` bindings upstream.
 
+The Edit menu always carries the standard `⌘Z`, `⌘⇧Z`, `⌘X`, `⌘C`, `⌘V` and `⌘A`
+chords, so text fields outside the terminal (SSH Hosts, sheets, the sidebar) can
+edit. A focused terminal still runs its own bindings for these chords first. If
+you unbind one, the terminal does not receive the raw chord; the Edit menu item
+handles it instead.
+
 ## Workspace controls
 
 The sidebar toggle and workspace actions menu sit in the titlebar, immediately
@@ -201,13 +444,18 @@ header instead: the quick terminal, a borderless panel with no titlebar and no
 room for a strip, and `macos-titlebar-style = hidden`, where a strip would hand
 back the window chrome the setting exists to remove.
 
+Ordinary terminal windows also show **SSH Hosts** after the files-panel button
+in each placement. The popover filters registered hosts and recent connections;
+Return opens a new tab, Option-Return splits right, and Escape returns focus to
+the terminal. Opening it does not run `ssh -G`. Quick Terminal omits this button.
+
 `WorkspaceControlsPlacement.forStandaloneWindow` is the whole decision, and
 `WorkspaceControlsPlacementTests` covers its matrix.
 
 ## Building
 
 ```sh
-zig build -Doptimize=ReleaseFast -Demit-macos-app=false   # refresh GhosttyKit
+zig build -Doptimize=ReleaseFast -Demit-macos-app=false -Dsentry=false   # refresh GhosttyKit
 ./macos/build.nu --configuration Release --action build
 ```
 
@@ -367,10 +615,22 @@ still resolve; only the artwork changed.
   dictionary change and the dictionary is deliberately frozen; pass `in front
   window`.
 - Collapse All, Expand All and the single-workspace policy toggle are reachable
-  from menus, not the command palette; the palette is driven by Ghostty config
-  and has no app-local command source.
+  from menus, not the command palette. Workspace and SSH commands are available
+  in the app-local command palette source.
 - Source-pinned assertions catch a modifier being removed or moved, but not one
   being added alongside.
+- SSH has been checked by hand against a real server for a Keychain password
+  sign-in, a ProxyJump host and two app instances running tunnels at once.
+  These manual checks are still unverified: a hardware FIDO key (none was
+  available), VoiceOver (deferred by the user), the Keychain consent and ACL
+  prompt and a locked Keychain, a PAM keyboard-interactive server, SSH-origin
+  `none` prompts, the live host-key trust sheet, password and secure-input
+  tunnels, Debug and Release Keychain separation, and the first connect after
+  an ad-hoc signed update. Treat the SSH feature as not release-ready until
+  those checks pass.
+- Reopening a closed group that mixes SSH and local tabs rebuilds every tab
+  from its recorded metadata, so the local tabs come back as fresh shells
+  rather than their original processes.
 
 ## Working on this
 
