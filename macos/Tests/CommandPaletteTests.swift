@@ -15,7 +15,7 @@ struct CommandPaletteFilterTests {
         subtitle: String? = nil,
         description: String? = nil,
         leadingColor: Color? = nil,
-        sortKey: ObjectIdentifier? = nil
+        sortKey: AnySortKey? = nil
     ) -> CommandOption {
         CommandOption(
             title: title,
@@ -56,12 +56,12 @@ struct CommandPaletteFilterTests {
         let first = option(
             title: "Focus: Shell",
             subtitle: "/tmp",
-            sortKey: ObjectIdentifier(firstKey)
+            sortKey: AnySortKey(ObjectIdentifier(firstKey))
         )
         let second = option(
             title: "Focus: Shell",
             subtitle: "/tmp",
-            sortKey: ObjectIdentifier(secondKey)
+            sortKey: AnySortKey(ObjectIdentifier(secondKey))
         )
 
         let forward = sortedTerminalPaletteOptions([first, second])

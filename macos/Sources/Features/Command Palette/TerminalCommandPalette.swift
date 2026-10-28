@@ -209,7 +209,7 @@ struct TerminalCommandPaletteView: View {
                     subtitle: subtitle,
                     leadingIcon: "rectangle.on.rectangle",
                     leadingColor: displayColor?.displayColor.map { Color($0) },
-                    sortKey: ObjectIdentifier(surface)
+                    sortKey: AnySortKey(ObjectIdentifier(surface))
                 ) {
                     NotificationCenter.default.post(
                         name: Ghostty.Notification.ghosttyPresentTerminal,

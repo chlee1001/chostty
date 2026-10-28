@@ -880,7 +880,6 @@ class TerminalController: BaseTerminalController {
         if notification.object == nil {
             // Update our derived config
             self.derivedConfig = DerivedConfig(config)
-            syncRestoration(config)
 
             // If we have no surfaces in our window (is that possible?) then we update
             // our window appearance based on the root config. If we have surfaces, we
@@ -1320,16 +1319,6 @@ class TerminalController: BaseTerminalController {
         }
     }
 
-    override func windowDidBecomeKey(_ notification: Notification) {
-        super.windowDidBecomeKey(notification)
-        terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: true)
-    }
-
-    override func windowDidResignKey(_ notification: Notification) {
-        super.windowDidResignKey(notification)
-        terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: false)
-    }
-
     override func windowDidMove(_ notification: Notification) {
         super.windowDidMove(notification)
 
@@ -1482,49 +1471,14 @@ class TerminalController: BaseTerminalController {
             closeWindowImmediately()
             return
         }
-        if confirmControllers.count == 1 {
-            // We call confirmClose on the proper controller so the alert is
-            // attached to the window that needs confirmation.
-            confirmControllers[0].confirmClose(
-                messageText: "Close Window?",
-                informativeText: "All terminal sessions in this window will be terminated.",
-            ) {
-                self.closeWindowImmediately()
-            }
-            return
-        }
 
-        Task {
-            let alert = NSAlert.reviewWindowsAlert(
-                messageText: "You have \(confirmControllers.count) windows with running processes. Do you want to review these windows before closing?",
-                terminateNowButtonTitle: "Close"
-            )
-            switch await alert.beginSheetModal(for: window) {
-            case .alertFirstButtonReturn:
-                await reviewWindows(confirmControllers, window: window)
-            case .alertSecondButtonReturn:
-                closeWindowImmediately()
-            default:
-                break
-            }
-        }
-    }
-
-    private func reviewWindows(_ controllers: [TerminalController], window: NSWindow) async {
-        for controller in controllers {
-            let response = await controller.confirmCloseAsync(
-                messageText: "Close Window?",
-                informativeText: "All terminal sessions in this window will be terminated.",
-            )
-
-            if [.OK, .alertFirstButtonReturn].contains(response) {
-                // Close this tab
-                controller.closeTabImmediately()
-                continue
-            } else {
-                // Cancel the review
-                return
-            }
+        // We call confirmClose on the proper controller so the alert is
+        // attached to the window that needs confirmation.
+        confirmController.confirmClose(
+            messageText: "Close Window?",
+            informativeText: "All terminal sessions in this window will be terminated.",
+        ) {
+            self.closeWindowImmediately()
         }
     }
 
