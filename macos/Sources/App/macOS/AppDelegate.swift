@@ -113,6 +113,8 @@ class AppDelegate: NSObject,
     private(set) var terminalCommands: TerminalCommandRouter!
     private(set) var surfaceDispatcher: SurfaceEventDispatcher!
     let filesPanelWatchBroker = FilesPanelWatchBroker()
+    private(set) var sshServices: SSHServices!
+    private var sshRuntimeRoot: SSHRuntimeRoot?
 
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
@@ -212,6 +214,20 @@ class AppDelegate: NSObject,
         surfaceDispatcher.registry = surfaceOwners
         terminalCommands = TerminalCommandRouter()
         terminalCommands.dispatcher = surfaceDispatcher
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let runtimeBase = FileManager.default.temporaryDirectory.appendingPathComponent("chostty-ssh", isDirectory: true)
+        SSHRuntimeRoot.reclaimStale(root: runtimeBase)
+        do {
+            sshRuntimeRoot = try SSHRuntimeRoot(root: runtimeBase)
+        } catch {
+            // Without an owner file the next launch cannot reclaim this directory.
+            SSHLog.logger.error("SSH runtime root unavailable: \(error.localizedDescription, privacy: .private)")
+        }
+        let runtimeRoot = sshRuntimeRoot?.url
+            ?? runtimeBase.appendingPathComponent(String(getpid()), isDirectory: true)
+        let paths = SSHPaths(home: home, runtimeRoot: runtimeRoot)
+        sshServices = SSHServices(paths: paths)
+        sshServices.catalog.prewarm()
 
         // The gate closes itself in test hosts and under the kill switch. A
         // launch with an explicit open intent still saves; it only skips
@@ -506,6 +522,13 @@ class AppDelegate: NSObject,
         // close notifications can remove controllers.
         sessionPersistence?.beginTermination()
         sessionPersistence?.finishOwnRestoreAttempts()
+        // Tunnels stop without confirmation. The reaper pass also catches an
+        // ssh whose tunnel is no longer tracked. A tunnel that survives keeps
+        // its runtime root, and the next launch reclaims it from the record.
+        let tunnelsStopped = sshServices?.tunnels.manager.stopAll() ?? true
+        if let sshRuntimeRoot, tunnelsStopped, SSHTunnelReaper.reap(in: sshRuntimeRoot.url) {
+            sshRuntimeRoot.removeOwnRoot()
+        }
 
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
@@ -1119,6 +1142,10 @@ class AppDelegate: NSObject,
         ConfigEditorController.shared.show(configPath: ghostty.configFilePath)
     }
 
+    @IBAction func showSSHHosts(_ sender: Any?) {
+        SSHHostsWindowController.shared.show(services: sshServices)
+    }
+
     @IBAction func openConfigExternally(_ sender: Any?) {
         ghostty.openConfigExternally()
     }
@@ -1210,6 +1237,21 @@ class AppDelegate: NSObject,
     static func pinUndoShortcut(on item: NSMenuItem?) {
         item?.keyEquivalent = "z"
         item?.keyEquivalentModifierMask = [.command]
+    }
+
+    @MainActor
+    static func pinStandardEditShortcuts(
+        redo: NSMenuItem?,
+        copy: NSMenuItem?,
+        paste: NSMenuItem?,
+        selectAll: NSMenuItem?
+    ) {
+        redo?.keyEquivalent = "z"
+        redo?.keyEquivalentModifierMask = [.command, .shift]
+        for (item, key) in [(copy, "c"), (paste, "v"), (selectAll, "a")] {
+            item?.keyEquivalent = key
+            item?.keyEquivalentModifierMask = [.command]
+        }
     }
 
     /// Pins `item` to Cmd+Shift+T — "Reopen Closed Tab"'s only displayed
@@ -1601,6 +1643,13 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "paste_from_clipboard", menuItem: self.menuPaste)
         syncMenuShortcut(config, action: "paste_from_selection", menuItem: self.menuPasteSelection)
         syncMenuShortcut(config, action: "select_all", menuItem: self.menuSelectAll)
+        // Pin standard edit chords for native text inputs; terminal bindings
+        // retain precedence in `performKeyEquivalent`.
+        AppDelegate.pinStandardEditShortcuts(
+            redo: self.menuRedo,
+            copy: self.menuCopy,
+            paste: self.menuPaste,
+            selectAll: self.menuSelectAll)
         syncMenuShortcut(config, action: "start_search", menuItem: self.menuFind)
         syncMenuShortcut(config, action: "end_search", menuItem: self.menuHideFindBar)
         syncMenuShortcut(config, action: "search_selection", menuItem: self.menuSelectionForFind)

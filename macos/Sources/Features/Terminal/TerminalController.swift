@@ -19,11 +19,13 @@ import GhosttyKit
 /// store, surface, or session — `workspaceStore` is therefore nonoptional.
 enum TerminalControllerGraphFactory {
     typealias SurfaceConstructor = (Ghostty.SurfaceConfiguration, UUID) -> Ghostty.SurfaceView?
+    typealias SSHConfigurationFactory = (SSHPaneBinding, Bool) -> Ghostty.SurfaceConfiguration?
 
     struct RestoreBindings {
         let registry: PendingHydrationRegistry
         let construct: SurfaceConstructor?
         var persistence: SessionPersistenceController?
+        var sshConfiguration: SSHConfigurationFactory?
     }
 
     /// A fully initialized graph handed to a controller's designated
@@ -184,7 +186,8 @@ enum TerminalControllerGraphFactory {
                             restoredSurface(
                                 forLeaf: $0,
                                 workspaceDefaultDirectory: workspaceSnapshot.defaultDirectory,
-                                construct: construct
+                                construct: construct,
+                                sshConfiguration: bindings.sshConfiguration
                             )
                         }
                     ) {
@@ -248,7 +251,7 @@ enum TerminalControllerGraphFactory {
 
     /// Restores an old no-pane tab as one fresh pane instead of an empty tab.
     static func restorableTree(of tab: TabSnapshot) -> PaneTreeSnapshot {
-        tab.paneTree ?? .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil))
+        tab.paneTree ?? .leaf(PaneLeafSnapshot(uuid: UUID(), cwd: nil, title: nil, ssh: nil))
     }
 
     /// Working directory a restored pane should start in: its own recorded
@@ -283,6 +286,12 @@ enum TerminalControllerGraphFactory {
             session.title = title
         }
         session.pwd = representative.cwd
+        if let binding = leaves.lazy.compactMap({ $0.ssh?.binding }).first {
+            session.ssh = SSHTabPresentation(
+                alias: binding.reference.alias,
+                destination: binding.displayDestination,
+                status: SSHPaneStatus(connection: .waiting, reconnectBlock: nil))
+        }
     }
 
     @MainActor
@@ -300,16 +309,43 @@ enum TerminalControllerGraphFactory {
         return config
     }
 
+    /// SSH pane configuration from the injected factory, or from the app's
+    /// connect service when none is injected.
+    @MainActor
+    static func launchConfiguration(
+        for binding: SSHPaneBinding,
+        autoConnect: Bool,
+        factory: SSHConfigurationFactory?
+    ) -> Ghostty.SurfaceConfiguration? {
+        if let factory {
+            return factory(binding, autoConnect)
+        }
+        return (NSApp.delegate as? AppDelegate)?
+            .sshServices?
+            .connectService
+            .launchConfiguration(for: binding, autoConnect: autoConnect)
+    }
+
     @MainActor
     static func restoredSurface(
         forLeaf leaf: PaneLeafSnapshot,
         workspaceDefaultDirectory: String?,
-        construct: SurfaceConstructor
+        construct: SurfaceConstructor,
+        sshConfiguration: SSHConfigurationFactory? = nil
     ) -> Ghostty.SurfaceView? {
-        let config = surfaceConfiguration(
-            forLeaf: leaf,
-            workspaceDefaultDirectory: workspaceDefaultDirectory
-        )
+        let config: Ghostty.SurfaceConfiguration
+        if let binding = leaf.ssh?.binding {
+            guard let sshConfig = launchConfiguration(
+                for: binding,
+                autoConnect: false,
+                factory: sshConfiguration)
+            else { return nil }
+            config = sshConfig
+        } else {
+            config = surfaceConfiguration(
+                forLeaf: leaf,
+                workspaceDefaultDirectory: workspaceDefaultDirectory)
+        }
         guard let view = construct(config, leaf.uuid) else { return nil }
         if let workingDirectory = config.workingDirectory {
             view.pwd = workingDirectory
@@ -377,6 +413,11 @@ class TerminalController: BaseTerminalController {
     }()
 
     override var filesPanelController: FilesPanelController? { ownedFilesPanelController }
+    private lazy var ownedSSHCapability: SSHCapability? = {
+        guard let services = (NSApp.delegate as? AppDelegate)?.sshServices else { return nil }
+        return SSHCapability(controller: self, services: services)
+    }()
+    override var sshCapability: SSHCapability? { ownedSSHCapability }
 
     /// Designated initializer that adopts an already-built normalized graph.
     override init(_ ghostty: Ghostty.App,
@@ -1137,7 +1178,8 @@ class TerminalController: BaseTerminalController {
                 onReopenClosedTab: { [weak self] in
                     self?.performWorkspaceControlsCommand(.reopenClosedTab)
                 },
-                filesPanelController: filesPanelController))
+                filesPanelController: filesPanelController,
+                sshCapability: sshCapability))
         }
         syncWorkspaceControlsPlacement()
 

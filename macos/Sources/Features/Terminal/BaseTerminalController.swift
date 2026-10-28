@@ -60,6 +60,7 @@ class BaseTerminalController: NSWindowController,
     /// exist without a fully initialized store and committed initial snapshot.
     let workspaceStore: WorkspaceSessionStore
     var filesPanelController: FilesPanelController? { nil }
+    var sshCapability: SSHCapability? { nil }
 
     /// The session ID last **successfully presented** (mounted) on this
     /// controller. Distinct from the store's desired selection: a desired
@@ -145,7 +146,7 @@ class BaseTerminalController: NSWindowController,
 
     /// Pane UUIDs each session's subscriptions currently cover, so a rebuild
     /// can be skipped when the pane set did not actually change.
-    private var sessionSubscribedLeafIDs: [UUID: Set<UUID>] = [:]
+    private var sessionSubscribedLeafIDs: [UUID: [UUID]] = [:]
 
     /// Restoration dependencies injected with the initial graph.
     private(set) var injectedRestoreBindings: TerminalControllerGraphFactory.RestoreBindings?
@@ -621,6 +622,7 @@ class BaseTerminalController: NSWindowController,
             titleOverride: removedSession.titleOverride,
             pwd: removedSession.pwd,
             tabColor: TerminalTabColor.fromStored(removedSession.tabColor),
+            ssh: Self.firstSSHBinding(in: removedSession.surfaceTree),
             tabID: removedSession.id
         )
 
@@ -739,6 +741,7 @@ class BaseTerminalController: NSWindowController,
                     titleOverride: session.titleOverride,
                     pwd: session.pwd,
                     tabColor: TerminalTabColor.fromStored(session.tabColor),
+                    ssh: Self.firstSSHBinding(in: session.surfaceTree),
                     tabID: session.id
                 )
                 return (record, lease)
@@ -1016,12 +1019,31 @@ class BaseTerminalController: NSWindowController,
     /// this one had no such check, so it handed a dead path straight to a new
     /// surface while `TerminalCommandRouter` was carefully falling through for
     /// exactly the same condition.
-    static func reopenConfig(for record: ClosedTabHistory.Record) -> Ghostty.SurfaceConfiguration {
+    ///
+    /// SSH records return the pane's waiting configuration, or nil when no
+    /// SSH runtime is available; they never fall back to a local shell.
+    static func reopenConfig(
+        for record: ClosedTabHistory.Record,
+        sshConfiguration: TerminalControllerGraphFactory.SSHConfigurationFactory?
+    ) -> Ghostty.SurfaceConfiguration? {
+        if let binding = record.ssh {
+            return TerminalControllerGraphFactory.launchConfiguration(
+                for: binding,
+                autoConnect: false,
+                factory: sshConfiguration)
+        }
+
         var config = Ghostty.SurfaceConfiguration()
         if let pwd = record.pwd, TerminalCommandRouter.directoryExists(pwd) {
             config.workingDirectory = pwd
         }
         return config
+    }
+
+    private static func firstSSHBinding(
+        in tree: SplitTree<Ghostty.SurfaceView>
+    ) -> SSHPaneBinding? {
+        tree.first(where: { $0.sshChannel != nil })?.sshChannel?.binding
     }
 
     func reopenClosedTab() {
@@ -1043,7 +1065,8 @@ class BaseTerminalController: NSWindowController,
         var lastWorkspaceID: UUID?
         var lastTabID: UUID?
 
-        if entry.leaseGroup.isAllDetached,
+        if entry.records.allSatisfy({ $0.ssh == nil }),
+           entry.leaseGroup.isAllDetached,
            let sessions = entry.leaseGroup.consumeAll(),
            sessions.count == entry.records.count {
             for (record, session) in zip(entry.records, sessions) {
@@ -1060,8 +1083,17 @@ class BaseTerminalController: NSWindowController,
 
             guard let ghosttyApp = ghostty.app else { return }
 
-            for record in entry.records {
-                let config = Self.reopenConfig(for: record)
+            // An SSH record whose launch cannot be built (missing bundle
+            // resources) is skipped; the other tabs still come back.
+            let reopenable = entry.records.compactMap { record in
+                Self.reopenConfig(for: record, sshConfiguration: nil).map { (record, $0) }
+            }
+            if reopenable.count != entry.records.count {
+                SSHLog.logger.error(
+                    "reopen.skipped count=\(entry.records.count - reopenable.count, privacy: .public)")
+            }
+
+            for (record, config) in reopenable {
                 let newSurface = Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
                 let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
                 let session = TerminalSessionState(id: UUID(), surfaceTree: newTree)
@@ -1109,7 +1141,10 @@ class BaseTerminalController: NSWindowController,
     /// becomes selected in the SOURCE workspace even when that workspace was
     /// not the selected one.
     @discardableResult
-    func duplicateTab(_ tabID: UUID) -> UUID? {
+    func duplicateTab(
+        _ tabID: UUID,
+        sshConfiguration: TerminalControllerGraphFactory.SSHConfigurationFactory? = nil
+    ) -> UUID? {
         let store = workspaceStore
         guard let sourceWorkspace = store.workspace(forTabID: tabID),
               let sourceSession = store.session(forTabID: tabID),
@@ -1121,6 +1156,24 @@ class BaseTerminalController: NSWindowController,
         // not `focusedSurface`/`surfaceTree`, which describe whatever tab this
         // controller currently presents.
         let sourceTree = sourceSession.id == presentedSessionID ? surfaceTree : sourceSession.surfaceTree
+        if let binding = Self.firstSSHBinding(in: sourceTree) {
+            guard let config = TerminalControllerGraphFactory.launchConfiguration(
+                for: binding,
+                autoConnect: true,
+                factory: sshConfiguration)
+            else { return nil }
+
+            let newSurface = Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
+            let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
+            let newSession = TerminalSessionState(id: UUID(), surfaceTree: newTree)
+            newSession.titleOverride = sourceSession.titleOverride
+            store.insertTab(newSession, intoWorkspace: sourceWorkspace.id, at: sourceIndex + 1)
+
+            let sel = store.snapshot.selection
+            selectSession(workspaceID: sel.workspaceID, tabID: sel.tabID)
+            return newSession.id
+        }
+
         let inheritSource = sourceTree.first(where: { $0.id == sourceSession.focusedSurfaceID })
             ?? sourceTree.first
 
@@ -2247,6 +2300,24 @@ class BaseTerminalController: NSWindowController,
                 }
                 .store(in: &set)
 
+            // The tab shows its first SSH pane in tree order. A change to the
+            // leaf order rebuilds these subscriptions, so `panes` stays current.
+            let sshPane = panes.first(where: { $0.sshChannel != nil })
+            tree.valuesPublisher(valueKeyPath: \.sshStatus, publisherKeyPath: \.$sshStatus)
+                .map { statuses -> SSHTabPresentation? in
+                    guard let sshPane, let channel = sshPane.sshChannel,
+                          let status = statuses[sshPane.id] ?? sshPane.sshStatus else { return nil }
+                    return SSHTabPresentation(
+                        alias: channel.alias,
+                        destination: channel.binding.displayDestination,
+                        status: status)
+                }
+                .removeDuplicates()
+                .sink { [weak session] presentation in
+                    session?.ssh = presentation
+                }
+                .store(in: &set)
+
             // Every pane is watched so a background directory change still
             // moves `metadataGeneration` and reaches the next save. Only the
             // representative pane writes `session.pwd`: that field means "the
@@ -2266,7 +2337,7 @@ class BaseTerminalController: NSWindowController,
             }
 
             sessionMetadataCancellables[session.id] = set
-            sessionSubscribedLeafIDs[session.id] = Set(panes.map(\.id))
+            sessionSubscribedLeafIDs[session.id] = panes.map(\.id)
         }
     }
 
@@ -2391,6 +2462,7 @@ class BaseTerminalController: NSWindowController,
             .first { $0.tabs.contains { $0.id == session.id } }?
             .defaultDirectory
         let construct = restoredSurfaceConstructor
+        let sshConfiguration = injectedRestoreBindings?.sshConfiguration
 
         let snapshotTree = TerminalControllerGraphFactory.restorableTree(of: stored)
         guard let tree = SessionSnapshotProjection.surfaceTree(
@@ -2400,7 +2472,8 @@ class BaseTerminalController: NSWindowController,
                 TerminalControllerGraphFactory.restoredSurface(
                     forLeaf: leaf,
                     workspaceDefaultDirectory: defaultDirectory,
-                    construct: construct
+                    construct: construct,
+                    sshConfiguration: sshConfiguration
                 )
             }
         ) else {
@@ -2449,10 +2522,10 @@ class BaseTerminalController: NSWindowController,
 
     /// ``rebuildSessionMetadataSubscriptions()`` skips sessions that already
     /// have an entry, so the entry is dropped first; otherwise panes created by
-    /// a split are never watched. Skipping when the leaf set is unchanged keeps
+    /// a split are never watched. Skipping when the leaf order is unchanged keeps
     /// a divider drag from rebuilding every subscription per mouse event.
     func refreshMetadataSubscriptions(for session: TerminalSessionState, panes: [Ghostty.SurfaceView]) {
-        let leafIDs = Set(panes.map(\.id))
+        let leafIDs = panes.map(\.id)
         guard sessionSubscribedLeafIDs[session.id] != leafIDs else { return }
         sessionMetadataCancellables.removeValue(forKey: session.id)
         sessionSubscribedLeafIDs.removeValue(forKey: session.id)

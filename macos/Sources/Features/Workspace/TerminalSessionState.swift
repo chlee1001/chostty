@@ -58,6 +58,9 @@ final class TerminalSessionState: ObservableObject, Identifiable {
     /// A user-supplied title override; takes precedence over `title`.
     @Published var titleOverride: String?
 
+    /// The presentation of the first SSH pane in tree order, if this tab has one.
+    @Published var ssh: SSHTabPresentation?
+
     /// A restored tab whose previous construction attempt outlived its owner.
     /// It stays pending until explicitly selected.
     @Published var isHeldBack = false

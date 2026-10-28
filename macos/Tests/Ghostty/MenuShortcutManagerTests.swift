@@ -70,4 +70,30 @@ struct MenuShortcutManagerTests {
         #expect(reopenItem.keyEquivalent == "t")
         #expect(reopenItem.keyEquivalentModifierMask == [.command, .shift])
     }
+
+    @MainActor
+    @Test func standardEditShortcutsSurviveConfigSync() throws {
+        let config = try TemporaryConfig("")
+        let manager = Ghostty.MenuShortcutManager()
+        manager.reset()
+        let redo = NSMenuItem(title: "Redo", action: nil, keyEquivalent: "")
+        let copy = NSMenuItem(title: "Copy", action: nil, keyEquivalent: "")
+        let paste = NSMenuItem(title: "Paste", action: nil, keyEquivalent: "")
+        let selectAll = NSMenuItem(title: "Select All", action: nil, keyEquivalent: "")
+        manager.syncMenuShortcut(config, action: "redo", menuItem: redo)
+        manager.syncMenuShortcut(config, action: "copy_to_clipboard", menuItem: copy)
+        manager.syncMenuShortcut(config, action: "paste_from_clipboard", menuItem: paste)
+        #expect(redo.keyEquivalent.isEmpty)
+        #expect(copy.keyEquivalent.isEmpty)
+        #expect(paste.keyEquivalent.isEmpty)
+
+        AppDelegate.pinStandardEditShortcuts(redo: redo, copy: copy, paste: paste, selectAll: selectAll)
+
+        #expect(redo.keyEquivalent == "z")
+        #expect(redo.keyEquivalentModifierMask == [.command, .shift])
+        for (item, key) in [(copy, "c"), (paste, "v"), (selectAll, "a")] {
+            #expect(item.keyEquivalent == key)
+            #expect(item.keyEquivalentModifierMask == .command)
+        }
+    }
 }

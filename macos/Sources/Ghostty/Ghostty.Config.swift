@@ -138,6 +138,18 @@ extension Ghostty {
             return .init(rawValue: v)
         }
 
+        var shellIntegrationFeatures: ShellIntegrationFeatures {
+            guard let config = self.config else {
+                return .defaults
+            }
+            var value: CUnsignedInt = 0
+            let key = "shell-integration-features"
+            guard ghostty_config_get(config, &value, key, UInt(key.lengthOfBytes(using: .utf8))) else {
+                return .defaults
+            }
+            return .init(rawValue: value)
+        }
+
         var bellAudioPath: ConfigPath? {
             guard let config = self.config else { return nil }
             var v = ghostty_config_path_s()
@@ -847,6 +859,20 @@ extension Ghostty.Config {
         static let attention = BellFeatures(rawValue: 1 << 2)
         static let title = BellFeatures(rawValue: 1 << 3)
         static let border = BellFeatures(rawValue: 1 << 4)
+    }
+
+    struct ShellIntegrationFeatures: OptionSet, Sendable {
+        let rawValue: CUnsignedInt
+
+        static let cursor = ShellIntegrationFeatures(rawValue: 1 << 0)
+        static let sudo = ShellIntegrationFeatures(rawValue: 1 << 1)
+        static let title = ShellIntegrationFeatures(rawValue: 1 << 2)
+        static let sshEnv = ShellIntegrationFeatures(rawValue: 1 << 3)
+        static let sshTerminfo = ShellIntegrationFeatures(rawValue: 1 << 4)
+        static let path = ShellIntegrationFeatures(rawValue: 1 << 5)
+
+        /// libghostty's default when the config does not set the key.
+        static let defaults: ShellIntegrationFeatures = [.cursor, .title, .path]
     }
 
     struct SplitPreserveZoom: OptionSet {

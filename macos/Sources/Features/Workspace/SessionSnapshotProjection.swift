@@ -9,6 +9,7 @@ import Foundation
 /// surface costs a PTY, a renderer thread and three IO threads, so leaf
 /// creation is injected: production builds a real surface, tests build
 /// `spawnsSurface: false` views and start nothing.
+@MainActor
 enum SessionSnapshotProjection {
     /// Builds the live view for one leaf.
     ///
@@ -43,11 +44,29 @@ enum SessionSnapshotProjection {
     /// Shell-controlled metadata is bounded before reaching file validation.
     static func leaf(from view: Ghostty.SurfaceView) -> PaneLeafSnapshot {
         let title = truncatedToStringLimit(view.title)
+        let ssh = view.sshChannel.flatMap { channel in
+            let binding = SSHPaneBinding(
+                reference: channel.binding.reference,
+                displayDestination: sanitizedDisplayDestination(channel.binding.displayDestination)
+            )
+            return PaneSSHSnapshot(binding: binding)
+        }
         return PaneLeafSnapshot(
             uuid: view.id,
             cwd: view.pwd.map(truncatedToStringLimit),
-            title: title.isEmpty ? nil : title
+            title: title.isEmpty ? nil : title,
+            ssh: ssh
         )
+    }
+
+    private static func sanitizedDisplayDestination(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let scalars = value.unicodeScalars.filter {
+            !($0.value < 0x20 || (0x7f...0x9f).contains($0.value))
+        }
+        let sanitized = String(String.UnicodeScalarView(scalars))
+        let truncated = truncatedToStringLimit(sanitized)
+        return truncated.isEmpty ? nil : truncated
     }
 
     private static func truncatedToStringLimit(_ value: String) -> String {

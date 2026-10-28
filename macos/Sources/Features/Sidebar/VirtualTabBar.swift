@@ -271,6 +271,9 @@ private struct VirtualTabBarItem: View {
                 // Constant weight. Switching to semibold on selection makes the
                 // label wider, which reflows the strip on every click; selection
                 // is already conveyed by the fill and the border.
+                if session.ssh != nil {
+                    SSHTabBadge()
+                }
                 Text(label)
                     .font(.system(size: 11))
                     .lineLimit(1)

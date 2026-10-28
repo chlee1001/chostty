@@ -31,7 +31,7 @@ struct ReopenWorkingDirectoryTests {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let config = BaseTerminalController.reopenConfig(for: record(pwd: dir.path))
+        let config = try #require(BaseTerminalController.reopenConfig(for: record(pwd: dir.path), sshConfiguration: nil))
         #expect(config.workingDirectory == dir.path)
     }
 
@@ -44,7 +44,7 @@ struct ReopenWorkingDirectoryTests {
         let recorded = record(pwd: dir.path)
         try FileManager.default.removeItem(at: dir)
 
-        let config = BaseTerminalController.reopenConfig(for: recorded)
+        let config = try #require(BaseTerminalController.reopenConfig(for: recorded, sshConfiguration: nil))
         #expect(config.workingDirectory == nil)
     }
 
@@ -57,12 +57,12 @@ struct ReopenWorkingDirectoryTests {
         try Data().write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
 
-        let config = BaseTerminalController.reopenConfig(for: record(pwd: file.path))
+        let config = try #require(BaseTerminalController.reopenConfig(for: record(pwd: file.path), sshConfiguration: nil))
         #expect(config.workingDirectory == nil)
     }
 
-    @Test func noRecordedDirectoryLeavesTheConfigAlone() {
-        let config = BaseTerminalController.reopenConfig(for: record(pwd: nil))
+    @Test func noRecordedDirectoryLeavesTheConfigAlone() throws {
+        let config = try #require(BaseTerminalController.reopenConfig(for: record(pwd: nil), sshConfiguration: nil))
         #expect(config.workingDirectory == nil)
     }
 }

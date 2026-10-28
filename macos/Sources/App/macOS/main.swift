@@ -2,6 +2,13 @@ import AppKit
 import Cocoa
 import GhosttyKit
 
+if SSHAskpassEntry.isHelperInvocation(
+    arguments: CommandLine.arguments,
+    environment: ProcessInfo.processInfo.environment
+) {
+    exit(SSHAskpassHelper.run())
+}
+
 // Initialize Ghostty global state. We do this once right away because the
 // CLI APIs require it and it lets us ensure it is done immediately for the
 // rest of the app.

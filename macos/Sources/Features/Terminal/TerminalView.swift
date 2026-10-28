@@ -40,6 +40,7 @@ protocol TerminalViewModel: ObservableObject {
     /// graph factory before presentation.
     var workspaceStore: WorkspaceSessionStore { get }
     var filesPanelController: FilesPanelController? { get }
+    var sshCapability: SSHCapability? { get }
 
     /// Where this window renders the workspace controls (sidebar toggle, new
     /// workspace, workspace actions). Published on the controller: entering or
@@ -142,7 +143,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                         onReopenClosedTab: {
                             viewModel.performWorkspaceControlsCommand(.reopenClosedTab)
                         },
-                        filesPanelController: viewModel.filesPanelController)
+                        filesPanelController: viewModel.filesPanelController,
+                        sshCapability: viewModel.sshCapability)
                 }
 
                 HStack(spacing: 0) {
@@ -168,7 +170,8 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                             onReceiveForeignTab: { tabID, workspaceID, index in
                                 viewModel.receiveForeignTab(tabID, intoWorkspace: workspaceID, at: index)
                             },
-                            filesPanelController: viewModel.filesPanelController
+                            filesPanelController: viewModel.filesPanelController,
+                            sshCapability: viewModel.sshCapability
                         )
                         .frame(width: sidebarWidth)
 

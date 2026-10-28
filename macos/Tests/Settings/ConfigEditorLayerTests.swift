@@ -138,6 +138,19 @@ struct ConfigLayersTests {
         #expect(layers.includes.map { ($0.path as NSString).lastPathComponent } == ["b", "c"])
         #expect(layers.effective("font-size", main: main)?.value == "15")
         #expect(layers.externalValueCount(for: "palette").includes == 1)
+        #expect(!layers.hasUndecodableInclude)
+    }
+
+    @Test("only an include that is not UTF-8 counts as undecodable")
+    func undecodableInclude() throws {
+        let scratch = try Scratch()
+        try Data([0xFF, 0xFE, 0x00, 0xC3]).write(to: scratch.url("broken"))
+        let mainPath = try scratch.write("config", "config-file = broken\n")
+        let main = ConfigDocument(text: try String(contentsOfFile: mainPath, encoding: .utf8))
+        let layers = ConfigLayers(main: main, mainPath: mainPath, prefersDark: false, themeDirectories: [])
+
+        #expect(layers.hasUndecodableInclude)
+        #expect(layers.includes.isEmpty)
     }
 
     @Test("config-file paths expand like path.zig")
@@ -146,6 +159,36 @@ struct ConfigLayersTests {
         #expect(ConfigLayers.expandPath("/abs/../abs/x", relativeTo: "/base") == "/abs/x")
         #expect(ConfigLayers.expandPath("~/x", relativeTo: "/base") == NSHomeDirectory() + "/x")
         #expect(ConfigLayers.expandPath("?", relativeTo: "/base") == nil)
+    }
+
+    @Test("an unsaved edit to the main file is what effective reads")
+    func effectiveReadsTheEditedMainFile() {
+        let loaded = ConfigDocument(text: "font-size = 12\n")
+        let layers = ConfigLayers(main: loaded, mainPath: "/nonexistent/config", prefersDark: false, themeDirectories: [])
+        let edited = ConfigDocument(text: "font-size = 18\n")
+
+        #expect(layers.effective("font-size", main: edited) == .init(value: "18", source: .file))
+        #expect(layers.effective("font-size", main: ConfigDocument(text: "")) == nil)
+    }
+
+    @Test("multiple roots feed one breadth-first include queue")
+    func multipleRootsUseBreadthFirstIncludes() throws {
+        let scratch = try Scratch()
+        let includePath = try scratch.write("b", "shell-integration-features = no-ssh-env\n")
+        let first = ConfigDocument(text: "config-file = b\nshell-integration-features = no-ssh-env\n")
+        let second = ConfigDocument(text: "shell-integration-features = ssh-env\n")
+        let layers = ConfigLayers(
+            roots: [
+                (document: first, path: scratch.url("a").path),
+                (document: second, path: scratch.url("c").path),
+            ],
+            prefersDark: false,
+            themeDirectories: []
+        )
+
+        #expect(layers.roots.count == 2)
+        #expect(layers.includes.map(\.path) == [includePath])
+        #expect(layers.effective("shell-integration-features", main: first)?.value == "no-ssh-env")
     }
 
     @Test("the model re-resolves layers when the theme line changes")

@@ -360,7 +360,8 @@ struct SessionSnapshotRepository: Sendable {
                 return .leaf(PaneLeafSnapshot(
                     uuid: replacing(leaf.uuid),
                     cwd: leaf.cwd,
-                    title: leaf.title
+                    title: leaf.title,
+                    ssh: leaf.ssh
                 ))
             case .split(let direction, let ratio, let left, let right):
                 return .split(

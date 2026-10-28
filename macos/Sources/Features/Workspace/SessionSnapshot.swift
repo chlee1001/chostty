@@ -150,6 +150,143 @@ struct PaneLeafSnapshot: Codable, Equatable, Sendable {
     /// and then replaced by the new shell's own first title, so it never
     /// impersonates the old process.
     let title: String?
+
+    /// SSH host identity and display-only destination. Runtime launch state
+    /// and credentials deliberately remain outside the session file.
+    let ssh: PaneSSHSnapshot?
+}
+
+/// Persisted subset of ``SSHPaneBinding``.
+struct PaneSSHSnapshot: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case managed
+        case sshConfig
+    }
+
+    let kind: Kind
+    let hostID: UUID?
+    let alias: String
+    let displayDestination: String?
+}
+
+extension PaneLeafSnapshot {
+    private enum CodingKeys: String, CodingKey {
+        case uuid, cwd, title, ssh
+    }
+
+    /// A corrupt SSH binding must not discard the local pane layout.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        uuid = try container.decode(UUID.self, forKey: .uuid)
+        cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        ssh = (try? container.decodeIfPresent(PaneSSHSnapshot.self, forKey: .ssh))
+            .flatMap { $0 }
+    }
+}
+
+extension PaneSSHSnapshot {
+    private enum CodingKeys: String, CodingKey {
+        case kind, hostID, alias, displayDestination
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+        let hostID = try container.decodeIfPresent(UUID.self, forKey: .hostID)
+        let alias = try container.decode(String.self, forKey: .alias)
+        let displayDestination = try container.decodeIfPresent(String.self, forKey: .displayDestination)
+
+        guard Self.isValid(
+            kind: kind,
+            hostID: hostID,
+            alias: alias,
+            displayDestination: displayDestination
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .alias,
+                in: container,
+                debugDescription: "Invalid SSH pane snapshot"
+            )
+        }
+
+        self.kind = kind
+        self.hostID = hostID
+        self.alias = alias
+        self.displayDestination = displayDestination
+    }
+
+    /// Returns `nil` rather than allowing an invalid live binding into a
+    /// snapshot.
+    init?(binding: SSHPaneBinding) {
+        let (kind, hostID): (Kind, UUID?)
+        switch binding.reference.source {
+        case .managed(let value):
+            kind = .managed
+            hostID = value
+        case .sshConfig:
+            kind = .sshConfig
+            hostID = nil
+        }
+
+        guard Self.isValid(
+            kind: kind,
+            hostID: hostID,
+            alias: binding.reference.alias,
+            displayDestination: binding.displayDestination
+        ) else {
+            return nil
+        }
+
+        self.kind = kind
+        self.hostID = hostID
+        alias = binding.reference.alias
+        displayDestination = binding.displayDestination
+    }
+
+    /// Returns `nil` for a malformed manually-created snapshot.
+    var binding: SSHPaneBinding? {
+        guard Self.isValid(
+            kind: kind,
+            hostID: hostID,
+            alias: alias,
+            displayDestination: displayDestination
+        ) else {
+            return nil
+        }
+
+        let source: SSHHostSource
+        switch kind {
+        case .managed:
+            guard let hostID else { return nil }
+            source = .managed(hostID: hostID)
+        case .sshConfig:
+            source = .sshConfig
+        }
+        return SSHPaneBinding(
+            reference: SSHHostReference(source: source, alias: alias),
+            displayDestination: displayDestination
+        )
+    }
+
+    private static func isValid(
+        kind: Kind,
+        hostID: UUID?,
+        alias: String,
+        displayDestination: String?
+    ) -> Bool {
+        guard case .success = SSHAlias.validate(alias),
+              alias.utf8.count <= SessionSnapshotValidator.Limits.stringLength,
+              (displayDestination?.utf8.count ?? 0) <= SessionSnapshotValidator.Limits.stringLength else {
+            return false
+        }
+        switch kind {
+        case .managed:
+            return hostID != nil
+        case .sshConfig:
+            return hostID == nil
+        }
+    }
 }
 
 // MARK: - Convenience

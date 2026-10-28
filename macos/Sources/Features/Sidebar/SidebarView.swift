@@ -79,6 +79,7 @@ struct SidebarView: View {
     /// closing the sidebar cannot take its own reopen button with it.
     let controlsPlacement: WorkspaceControlsPlacement
     let filesPanelController: FilesPanelController?
+    let sshCapability: SSHCapability?
 
     /// Called when the user requests a new workspace.
     var onNewWorkspace: () -> Void = {}
@@ -115,7 +116,8 @@ struct SidebarView: View {
         onCloseWorkspace: ((UUID) -> Void)? = nil,
         onReopenClosedTab: @escaping () -> Void = {},
         onReceiveForeignTab: ((UUID, UUID, Int?) -> Bool)? = nil,
-        filesPanelController: FilesPanelController? = nil
+        filesPanelController: FilesPanelController? = nil,
+        sshCapability: SSHCapability? = nil
     ) {
         self.workspaceSessionStore = workspaceSessionStore
         self.controlsPlacement = controlsPlacement
@@ -126,6 +128,7 @@ struct SidebarView: View {
         self.onReopenClosedTab = onReopenClosedTab
         self.onReceiveForeignTab = onReceiveForeignTab
         self.filesPanelController = filesPanelController
+        self.sshCapability = sshCapability
     }
 
     var body: some View {
@@ -171,7 +174,8 @@ struct SidebarView: View {
                     store: workspaceSessionStore,
                     onNewWorkspace: onNewWorkspace,
                     onReopenClosedTab: onReopenClosedTab,
-                    filesPanelController: filesPanelController)
+                    filesPanelController: filesPanelController,
+                    sshCapability: sshCapability)
             }
         }
         .padding(.horizontal, 12)
@@ -764,14 +768,26 @@ private struct TabSessionRow: View {
                         },
                         onCancel: { isRenaming = false })
                 } else {
-                    Text(label)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 4) {
+                        if tab.ssh != nil {
+                            SSHTabBadge()
+                        }
+                        Text(label)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 HStack(spacing: 4) {
-                    if let branch {
+                    if let ssh = tab.ssh {
+                        Circle()
+                            .fill(sshColor(ssh.status.connection))
+                            .frame(width: 6, height: 6)
+                        Text("\(ssh.destination ?? ssh.alias) · \(sshDescription(ssh.status.connection))")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else if let branch {
                         Image(systemName: "arrow.triangle.branch")
                             .font(.system(size: 8.5))
                         Text(branch)
@@ -864,11 +880,31 @@ private struct TabSessionRow: View {
             }
         }
         .task(id: tab.pwd) {
+            guard tab.ssh == nil else {
+                branch = nil
+                return
+            }
             guard let pwd = tab.pwd, !pwd.isEmpty else {
                 branch = nil
                 return
             }
             branch = await GitMetadataService.shared.branch(forPwd: pwd)
+        }
+    }
+
+    private func sshDescription(_ state: SSHPaneConnectionState) -> String {
+        switch state {
+        case .waiting, .connecting: "not connected"
+        case .connected: "connected"
+        case .lost: "connection lost"
+        }
+    }
+
+    private func sshColor(_ state: SSHPaneConnectionState) -> Color {
+        switch state {
+        case .waiting, .connecting: .gray
+        case .connected: .green
+        case .lost: .red
         }
     }
 

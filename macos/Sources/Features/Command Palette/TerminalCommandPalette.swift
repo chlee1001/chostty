@@ -42,6 +42,11 @@ struct TerminalCommandPaletteView: View {
             }
         }
         .onChange(of: isPresented) { newValue in
+            if newValue,
+               let controller = surfaceView.window?.windowController as? BaseTerminalController {
+                controller.sshCapability?.services.catalog.refreshIfStale()
+            }
+
             // When the command palette disappears we need to send focus back to the
             // surface view we were overlaid on top of. There's probably a better way
             // to handle the first responder state here but I don't know it.
@@ -57,17 +62,27 @@ struct TerminalCommandPaletteView: View {
 
     /// All commands available in the command palette, combining update and terminal options.
     private var commandOptions: [CommandOption] {
+        Self.mergeCommandOptions(
+            updates: updateOptions,
+            others: jumpOptions + terminalOptions + workspaceOptions,
+            ssh: sshOptions)
+    }
+
+    static func mergeCommandOptions(
+        updates: [CommandOption],
+        others: [CommandOption],
+        ssh sshOptions: [CommandOption]
+    ) -> [CommandOption] {
         var options: [CommandOption] = []
         // Updates always appear first
-        options.append(contentsOf: updateOptions)
+        options.append(contentsOf: updates)
 
         // Sort the rest. We replace ":" with a character that sorts before space
         // so that "Foo:" sorts before "Foo Bar:". Use sortKey as a tie-breaker
         // for stable ordering when titles are equal.
-        options.append(contentsOf: (jumpOptions + terminalOptions + workspaceOptions).sorted { a, b in
-            let aNormalized = a.title.replacingOccurrences(of: ":", with: "\t")
-            let bNormalized = b.title.replacingOccurrences(of: ":", with: "\t")
-            let comparison = aNormalized.localizedCaseInsensitiveCompare(bNormalized)
+        func normalized(_ title: String) -> String { title.replacingOccurrences(of: ":", with: "\t") }
+        var sorted = others.sorted { a, b in
+            let comparison = normalized(a.title).localizedCaseInsensitiveCompare(normalized(b.title))
             if comparison != .orderedSame {
                 return comparison == .orderedAscending
             }
@@ -76,7 +91,14 @@ struct TerminalCommandPaletteView: View {
                 return aSortKey < bSortKey
             }
             return false
-        })
+        }
+        // SSH entries keep their own order (favorites first) as one block,
+        // placed where "SSH:" falls alphabetically.
+        let sshPosition = sorted.firstIndex {
+            normalized($0.title).localizedCaseInsensitiveCompare(normalized("SSH:")) == .orderedDescending
+        } ?? sorted.endIndex
+        sorted.insert(contentsOf: sshOptions, at: sshPosition)
+        options.append(contentsOf: sorted)
         return options
     }
 
@@ -190,6 +212,77 @@ struct TerminalCommandPaletteView: View {
         return Self.workspaceCommandOptions(store: controller.workspaceStore) { action in
             Self.perform(action, on: controller)
         }
+    }
+
+    private var sshOptions: [CommandOption] {
+        guard let controller = surfaceView.window?.windowController as? BaseTerminalController else { return [] }
+        let capability = controller.sshCapability
+        let tunnels: [SSHTunnelCommand] = capability.map { capability in
+            let controller = capability.services.tunnels
+            return controller.definitions.compactMap { definition -> SSHTunnelCommand? in
+                if controller.isRunning(definition.id) { return SSHTunnelCommand(definition: definition, isRunning: true) }
+                guard controller.startBlocker(for: definition) == nil else { return nil }
+                return SSHTunnelCommand(definition: definition, isRunning: false)
+            }
+        } ?? []
+        return Self.sshCommandOptions(
+            isAvailable: capability != nil,
+            hosts: capability?.services.catalog.snapshot.entries ?? [],
+            tunnels: tunnels
+        ) { action in
+            switch action {
+            case let .connect(reference): capability?.connect(reference, inSplit: false)
+            case let .connectInSplit(reference): capability?.connect(reference, inSplit: true)
+            case .manageHosts: capability?.showHosts()
+            case let .startTunnel(id): capability?.startTunnel(id)
+            case let .stopTunnel(id): capability?.stopTunnel(id)
+            }
+        }
+    }
+
+    enum SSHCommandAction {
+        case connect(SSHHostReference)
+        case connectInSplit(SSHHostReference)
+        case manageHosts
+        case startTunnel(UUID)
+        case stopTunnel(UUID)
+    }
+
+    /// A tunnel the palette can act on: running ones offer Stop, startable ones Start.
+    struct SSHTunnelCommand {
+        let definition: SSHTunnelDefinition
+        let isRunning: Bool
+    }
+
+    static func sshCommandOptions(
+        isAvailable: Bool,
+        hosts: [SSHHostEntry],
+        tunnels: [SSHTunnelCommand] = [],
+        perform: @escaping (SSHCommandAction) -> Void
+    ) -> [CommandOption] {
+        guard isAvailable else { return [] }
+        // Hosts arrive in catalog order, which already puts favorites first.
+        return hosts.flatMap { host in
+            [
+                CommandOption(title: "SSH: Connect to \(host.reference.alias)", leadingIcon: "terminal") {
+                    perform(.connect(host.reference))
+                },
+                CommandOption(title: "SSH: Connect to \(host.reference.alias) in Split", leadingIcon: "rectangle.split.2x1") {
+                    perform(.connectInSplit(host.reference))
+                },
+            ]
+        } + tunnels.map { tunnel in
+            let id = tunnel.definition.id
+            return tunnel.isRunning
+                ? CommandOption(title: "SSH: Stop Tunnel \(tunnel.definition.name)", leadingIcon: "stop.circle") {
+                    perform(.stopTunnel(id))
+                }
+                : CommandOption(title: "SSH: Start Tunnel \(tunnel.definition.name)", leadingIcon: "point.3.connected.trianglepath.dotted") {
+                    perform(.startTunnel(id))
+                }
+        } + [CommandOption(title: "SSH: Manage Hosts…", leadingIcon: "server.rack") {
+            perform(.manageHosts)
+        }]
     }
 
     /// Real command paths a workspace command-palette entry can invoke.

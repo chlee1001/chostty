@@ -236,4 +236,55 @@ import Testing
         )
         #expect(decoded == .purple)
     }
+
+    @Test func rekeyingAPanePreservesItsSSHBinding() {
+        let paneID = UUID()
+        let ssh = PaneSSHSnapshot(
+            kind: .sshConfig,
+            hostID: nil,
+            alias: "prod-api",
+            displayDestination: "deploy@prod-api.example.com:2201"
+        )
+        let original = WindowSnapshot(
+            physicalUUID: UUID(),
+            selection: nil,
+            workspaces: [
+                WorkspaceSnapshot(
+                    id: UUID(),
+                    name: "Workspace",
+                    color: .none,
+                    isCollapsed: false,
+                    defaultDirectory: nil,
+                    tabs: [
+                        TabSnapshot(
+                            id: UUID(),
+                            titleOverride: nil,
+                            tabColor: nil,
+                            paneTree: .leaf(PaneLeafSnapshot(
+                                uuid: paneID,
+                                cwd: "/tmp",
+                                title: "prod",
+                                ssh: ssh
+                            )),
+                            focusedPaneID: paneID,
+                            zoomedPaneID: nil
+                        )
+                    ],
+                    selectedTabID: nil
+                )
+            ]
+        )
+
+        let rekeyed = SessionSnapshotRepository.rekeyed(original, conflicting: [paneID])
+        let leaf = rekeyed.workspaces[0].tabs[0].paneTree?.leaves[0]
+
+        #expect(leaf?.uuid != paneID)
+        #expect(leaf?.ssh == ssh)
+    }
+}
+
+extension PaneLeafSnapshot {
+    init(uuid: UUID, cwd: String?, title: String?) {
+        self.init(uuid: uuid, cwd: cwd, title: title, ssh: nil)
+    }
 }
