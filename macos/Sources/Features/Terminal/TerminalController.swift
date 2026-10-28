@@ -397,7 +397,7 @@ class TerminalController: BaseTerminalController {
 
     /// The initial window presentation is deferred by one runloop turn in a few places so
     /// AppKit can settle tab/window state first. Close actions must cancel it to avoid
-    /// re-showing a tab that was already closed.
+    /// re-showing a tab/window that was already closed.
     private var pendingInitialPresentation: DispatchWorkItem?
 
     /// The configuration derived from the Ghostty config so we don't need to rely on references.
@@ -542,7 +542,7 @@ class TerminalController: BaseTerminalController {
 
         // Update our zoom state
         if let window = window as? TerminalWindow {
-            window.surfaceIsZoomed = to.zoomed != nil
+            window.surfaceIsZoomed = to.isZoomed
         }
 
         let pendingSessionID = presentedSessionID
@@ -656,17 +656,25 @@ class TerminalController: BaseTerminalController {
             }
         }
 
-        // We're dispatching this async because otherwise the lastCascadePoint doesn't
-        // take effect. Our best theory is there is some next-event-loop-tick logic
-        // that Cocoa is doing that we need to be after.
         c.scheduleInitialPresentation {
+            // We're dispatching this async because in some cases AppKit will tab this window,
+            // although we have a check in `windowDidLoad` and it works in most cases, but not for AppIntent
+            //
+            // That weird tabbing behavior only happens in the following cases at the point of writing.
+            // - Creating a window via the Shortcuts app for now.
+            // - Creating a window via `New Ghostty Window Here` service.
             c.showWindow(self)
 
             // Only cascade if we aren't fullscreen.
             if let window = c.window {
                 if !window.styleMask.contains(.fullScreen) {
                     let hasFixedPos = c.derivedConfig.windowPositionX != nil && c.derivedConfig.windowPositionY != nil
-                    Self.applyCascade(to: window, hasFixedPos: hasFixedPos)
+                    // We're dispatching this async because otherwise the lastCascadePoint doesn't
+                    // take effect after positioning in `showWindow`. Our best theory is there is
+                    // some next-event-loop-tick logic that Cocoa is doing that we need to be after.
+                    DispatchQueue.main.async {
+                        Self.applyCascade(to: window, hasFixedPos: hasFixedPos)
+                    }
                 }
             }
 
@@ -717,16 +725,20 @@ class TerminalController: BaseTerminalController {
         confirmUndo: Bool = true,
         inheritBackgroundOpacity: Bool? = nil
     ) -> TerminalController {
+        // Calculate the target frame based on the tree's view bounds
+        // before moving into the new window
+        let treeSize: CGSize? = tree.root?.viewBounds()
+
         let c = TerminalController.init(ghostty, withSurfaceTree: tree)
         if let inheritBackgroundOpacity {
             c.isBackgroundOpaque = inheritBackgroundOpacity
         }
 
-        // Calculate the target frame based on the tree's view bounds
-        let treeSize: CGSize? = tree.root?.viewBounds()
-
+        // Showing window in current event loop works so far with dragging surface into
+        // a new window, but remember to defer the cascade when you move it inside
+        // `scheduleInitialPresentation` to solve other issues in the future.
+        c.showWindow(self)
         c.scheduleInitialPresentation {
-            c.showWindow(self)
             if let window = c.window {
                 // If we have a tree size, resize the window's content to match
                 if let treeSize, treeSize.width > 0, treeSize.height > 0 {
@@ -868,6 +880,7 @@ class TerminalController: BaseTerminalController {
         if notification.object == nil {
             // Update our derived config
             self.derivedConfig = DerivedConfig(config)
+            syncRestoration(config)
 
             // If we have no surfaces in our window (is that possible?) then we update
             // our window appearance based on the root config. If we have surfaces, we
@@ -895,7 +908,7 @@ class TerminalController: BaseTerminalController {
         guard let window = window as? TerminalWindow else { return }
 
         // Sync our zoom state for splits
-        window.surfaceIsZoomed = surfaceTree.zoomed != nil
+        window.surfaceIsZoomed = surfaceTree.isZoomed
 
         // Set the font for the window and tab titles.
         if let titleFontName = surfaceConfig.windowTitleFontFamily {
@@ -951,7 +964,11 @@ class TerminalController: BaseTerminalController {
         // `exit` path, so the degradation hit the most common close gesture.
         //
         // `closeTab` already falls back to a window close for the last tab.
-        closeTab(nil)
+        if withConfirmation {
+            closeTab(nil)
+        } else {
+            closeTabImmediately()
+        }
     }
 
     func closeTabImmediately(registerRedo: Bool = true) {
@@ -1240,6 +1257,8 @@ class TerminalController: BaseTerminalController {
         }
 
         super.showWindow(sender)
+
+        syncAppearance()
     }
 
     // AppKit calls this when a native tab bar's "+" button is clicked. Native
@@ -1323,6 +1342,13 @@ class TerminalController: BaseTerminalController {
 
         // Whenever we resize save our last position and size for the next start.
         LastWindowPosition.shared.save(window)
+
+        if let window = self.window as? TerminalWindow {
+            // Expand the title frame to new width.
+            // This is needed because when the new window size becomes bigger,
+            // window's title will be clipped again.
+            window.syncWindowTitleAppearance()
+        }
     }
 
     func windowDidBecomeMain(_ notification: Notification) {
@@ -1416,6 +1442,34 @@ class TerminalController: BaseTerminalController {
         defaultSize.apply(to: window)
     }
 
+    /// Resize the window so that the given surface is the given size, keeping
+    /// any zero dimension as is. This is only done if the surface is the only
+    /// terminal in the presented tab. Virtual tabs share this window's frame, so
+    /// the window is resized for whichever tab is presented.
+    func resizeWindow(_ surfaceView: Ghostty.SurfaceView, to size: NSSize) -> Bool {
+        guard let window,
+              let screen = window.screen ?? NSScreen.main,
+              case .leaf(let view) = surfaceTree.root, view == surfaceView,
+              !surfaceView.inspectorVisible,
+              !(fullscreenStyle?.isFullscreen ?? false) else { return false }
+
+        // Resize the window by the change in surface size so the titlebar and
+        // any other views are accounted for.
+        let dw = size.width > 0 ? size.width - surfaceView.frame.width : 0
+        let dh = size.height > 0 ? size.height - surfaceView.frame.height : 0
+
+        // Clamp to the screen first so the terminal is only resized once, and
+        // keep the top-left corner in place (the origin is the bottom-left).
+        let visible = screen.visibleFrame
+        var frame = window.frame
+        frame.size.width = min(frame.width + dw, visible.width)
+        frame.size.height = min(frame.height + dh, visible.height)
+        frame.origin.y = window.frame.maxY - frame.height
+        window.setFrame(frame, display: true)
+        window.constrainToScreen()
+        return true
+    }
+
     @IBAction override func closeWindow(_ sender: Any?) {
         guard let window = window else { return }
 
@@ -1428,14 +1482,49 @@ class TerminalController: BaseTerminalController {
             closeWindowImmediately()
             return
         }
+        if confirmControllers.count == 1 {
+            // We call confirmClose on the proper controller so the alert is
+            // attached to the window that needs confirmation.
+            confirmControllers[0].confirmClose(
+                messageText: "Close Window?",
+                informativeText: "All terminal sessions in this window will be terminated.",
+            ) {
+                self.closeWindowImmediately()
+            }
+            return
+        }
 
-        // We call confirmClose on the proper controller so the alert is
-        // attached to the window that needs confirmation.
-        confirmController.confirmClose(
-            messageText: "Close Window?",
-            informativeText: "All terminal sessions in this window will be terminated.",
-        ) {
-            self.closeWindowImmediately()
+        Task {
+            let alert = NSAlert.reviewWindowsAlert(
+                messageText: "You have \(confirmControllers.count) windows with running processes. Do you want to review these windows before closing?",
+                terminateNowButtonTitle: "Close"
+            )
+            switch await alert.beginSheetModal(for: window) {
+            case .alertFirstButtonReturn:
+                await reviewWindows(confirmControllers, window: window)
+            case .alertSecondButtonReturn:
+                closeWindowImmediately()
+            default:
+                break
+            }
+        }
+    }
+
+    private func reviewWindows(_ controllers: [TerminalController], window: NSWindow) async {
+        for controller in controllers {
+            let response = await controller.confirmCloseAsync(
+                messageText: "Close Window?",
+                informativeText: "All terminal sessions in this window will be terminated.",
+            )
+
+            if [.OK, .alertFirstButtonReturn].contains(response) {
+                // Close this tab
+                controller.closeTabImmediately()
+                continue
+            } else {
+                // Cancel the review
+                return
+            }
         }
     }
 
