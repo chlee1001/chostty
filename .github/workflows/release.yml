@@ -52,7 +52,7 @@ jobs:
           path: |
             macos/GhosttyKit.xcframework
             zig-out/share
-          key: ghosttykit-releasefast-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+          key: ghosttykit-releasefast-nosentry-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       - name: Show toolchain
         run: |
@@ -69,6 +69,7 @@ jobs:
           zig build \
             -Doptimize=ReleaseFast \
             -Demit-macos-app=false \
+            -Dsentry=false \
             -Dversion-string=${{ steps.v.outputs.version }}
 
       - name: Build Chostty.app

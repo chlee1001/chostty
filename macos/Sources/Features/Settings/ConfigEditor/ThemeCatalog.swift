@@ -99,10 +99,8 @@ enum ThemeCatalog {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         bundle: Bundle = .main
     ) -> [(url: URL, isUser: Bool)] {
-        let configHome = environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
-            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".config")
         var result: [(URL, Bool)] = [
-            (URL(fileURLWithPath: configHome).appendingPathComponent("ghostty/themes"), true),
+            (ConfigHome.directory(environment: environment).appendingPathComponent("ghostty/themes"), true),
         ]
         if let resources = bundle.resourceURL {
             result.append((resources.appendingPathComponent("ghostty/themes"), false))
@@ -110,19 +108,29 @@ enum ThemeCatalog {
         return result
     }
 
+    /// Whether `url` names an existing file that is not a directory.
+    static func isRegularFile(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
+    }
+
     /// The file a theme name loads from: an absolute path as-is, otherwise
     /// the first directory containing it. Names with path separators are
     /// rejected the way Ghostty rejects them.
-    static func resolve(_ name: String, in directories: [(url: URL, isUser: Bool)]) -> URL? {
+    static func resolve(
+        _ name: String,
+        in directories: [(url: URL, isUser: Bool)],
+        fileExists: (URL) -> Bool = isRegularFile
+    ) -> URL? {
         if name.hasPrefix("/") {
-            return FileManager.default.fileExists(atPath: name) ? URL(fileURLWithPath: name) : nil
+            let url = URL(fileURLWithPath: name)
+            return fileExists(url) ? url : nil
         }
         guard !name.contains("/") else { return nil }
         for directory in directories {
             let url = directory.url.appendingPathComponent(name)
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-               !isDirectory.boolValue {
+            if fileExists(url) {
                 return url
             }
         }

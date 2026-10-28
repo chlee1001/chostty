@@ -1698,6 +1698,20 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return false }
                 guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                let channel = surfaceView.sshChannel
+                let shouldClose = MainActor.assumeIsolated {
+                    channel?.shouldCloseAfterProcessExit() ?? false
+                }
+                if let channel, shouldClose {
+                    DispatchQueue.main.async { [weak surfaceView, weak channel] in
+                        guard let surfaceView, let channel,
+                              surfaceView.sshChannel === channel,
+                              surfaceView.processExited,
+                              let surface = surfaceView.surface
+                        else { return }
+                        ghostty_surface_request_close(surface)
+                    }
+                }
                 // We handle this when the window is visible and timetime_ms is greater than 0,
                 // which will rule out exit codes on launch
                 guard surfaceView.window != nil, v.timetime_ms > 0 else { return false }

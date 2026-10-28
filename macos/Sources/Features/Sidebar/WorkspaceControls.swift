@@ -74,6 +74,7 @@ struct WorkspaceControls: View {
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
     var filesPanelController: FilesPanelController?
+    var sshCapability: SSHCapability?
 
     /// The same key `TerminalView` binds, so toggling from any host moves the
     /// same sidebar.
@@ -107,6 +108,10 @@ struct WorkspaceControls: View {
 
             if let filesPanelController {
                 FilesPanelToggleButton(controller: filesPanelController)
+            }
+
+            if let sshCapability {
+                SSHToolbarButton(capability: sshCapability)
             }
 
             if reopenableCount > 0 {
@@ -495,6 +500,7 @@ struct WorkspaceControlsStrip: View {
     let onNewWorkspace: () -> Void
     let onReopenClosedTab: () -> Void
     var filesPanelController: FilesPanelController?
+    var sshCapability: SSHCapability?
 
     /// One standard titlebar height, so the strip stands in for the titlebar
     /// rather than reading as an extra band of content.
@@ -506,7 +512,8 @@ struct WorkspaceControlsStrip: View {
                 store: store,
                 onNewWorkspace: onNewWorkspace,
                 onReopenClosedTab: onReopenClosedTab,
-                filesPanelController: filesPanelController)
+                filesPanelController: filesPanelController,
+                sshCapability: sshCapability)
 
             // Two spacers rather than a centering overlay: the title can never
             // land underneath the controls no matter how narrow the window is.

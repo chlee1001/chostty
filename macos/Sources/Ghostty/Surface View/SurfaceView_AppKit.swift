@@ -217,6 +217,10 @@ extension Ghostty {
         /// Event monitor (see individual events for why)
         private var eventMonitor: Any?
 
+        /// SSH connection state, nil for local panes.
+        private(set) var sshChannel: SSHPaneChannel?
+        @Published var sshStatus: SSHPaneStatus?
+
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
 
@@ -252,6 +256,7 @@ extension Ghostty {
             // is non-zero so that our layer bounds are non-zero so that our renderer
             // can do SOMETHING.
             super.init(id: uuid, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+            sshChannel = SSHPaneChannel.attach(baseConfig?.ssh, to: self)
 
             // Our cache of screen data
             cachedScreenContents = .init(duration: .milliseconds(500)) { [weak self] in

@@ -54,6 +54,10 @@ Ghostty에서 물려받은 아이콘도 Chostty 아이콘으로 바뀌었다. �
 설정은 Ghostty와 같다. `~/.config/ghostty/config`를 읽고 키 바인딩과 테마 문법도
 같으며 `TERM=xterm-ghostty`를 쓴다. 쓰던 Ghostty 설정이 그대로 동작하고 두 앱을
 나란히 설치해도 된다.
+Chostty가 관리하는 SSH 데이터는 따로 둔다.
+`<XDG config home>/chostty/ssh/hosts.conf`와 그 옆의 `hosts.meta.json`이다.
+`XDG_CONFIG_HOME`이 비어 있거나 없으면 `~/.config`를 쓴다. Finder로 연 앱은 셸
+프로필이 아니라 launchd 환경을 물려받는다.
 
 설정은 텍스트 말고 화면에서 편집할 수도 있다. `⌘,`(환경설정…)로 흔한 설정 — 글꼴,
 색, 커서, 창 동작, 키 바인딩 — 을 항목별 설명과 함께 다루는 편집기를 연다.
@@ -66,12 +70,32 @@ External Editor**는 같은 파일을 텍스트로 연다. 테마는 미리보�
 이 포크가 가져다 쓰는 단축키는 upstream에서 비어 있거나 원래 동작하지 않던 조합뿐이다.
 `⌘⌥←/→`, `⌘0`처럼 Ghostty에서 실제로 쓰는 바인딩은 건드리지 않는다.
 
+`~/.ssh/config`에 적은 호스트는 `⌘⇧P`에서 **SSH: Connect to <alias>**와
+**SSH: Connect to <alias> in Split**으로 연다. Chostty는 이 파일을 읽기만 한다.
+인증, 호스트 키 확인, ProxyJump, agent 설정은 OpenSSH가 맡는다.
+SSH 탭에서는 `ssh-env`를 기본으로 켜고 `no-ssh-env`로 끈다. 설정 파일 출처를 확인할
+수 없으면 설정을 바꾸지 않는다. Quick Terminal에는 SSH 연결 항목이 없다.
+
+SSH 호스트 관리자는 일반 터미널 창에만 적용한다. 진입점은
+**Window > Manage SSH Hosts…**, 명령 팔레트의 **SSH: Manage Hosts…**, SSH 팝오버
+아래쪽이다. 관리 호스트만 `ssh -F hosts.conf`를 쓰며 `~/.ssh/config`, 그 Include,
+시스템 설정은 읽기 전용이다. 관리 호스트는 User, HostName, Port를 명시했을 때
+**Password in Keychain**을 고를 수 있다. 비밀번호는 Keychain에만 두며 SSH 파일,
+메타데이터, 스냅샷, 인자, 환경, 로그에는 넣지 않는다. 별칭만 바꾸면 항목을 그대로
+쓰고, 접속 대상을 바꾸려면 **Use for <destination>** 또는 **Replace Password…**를
+선택해야 한다. 키 passphrase는 저장하지 않는다. 자동 비밀번호 전달은
+Keychain을 명시적으로 고른 시스템 `/usr/bin/ssh`에서만 쓰며 다른 `PATH` 클라이언트는
+수동으로 인증한다. 아직 남은 수동 확인 항목은 `FORK.ko.md`의 알려진 한계에 적었다.
+`-L`/`-R`/`-D` 터널은 SSH 관리 창, 팝오버, 명령 팔레트에서 실행한다. passphrase, 일회용 코드,
+모르는 호스트 키를 묻는 질문은 sheet로 열리고, **Password in Keychain** 호스트는
+ssh의 비밀번호 질문에 Keychain으로 답한다. 호스트 키가 바뀌면 터널을 멈춘다.
+
 ## 빌드
 
 Xcode 26(macOS 26 SDK)과 Zig 0.16이 필요하다. Nix는 필요 없다.
 
 ```sh
-zig build -Demit-macos-app=false     # 앱이 링크하는 Zig 코어 GhosttyKit
+zig build -Demit-macos-app=false -Dsentry=false   # 앱이 링크하는 Zig 코어 GhosttyKit
 ./macos/build.nu --configuration Release --action build
 ```
 

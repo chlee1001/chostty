@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: shellcheck macos/scripts/*.sh scripts/*.sh
+      - run: shellcheck macos/scripts/*.sh macos/Sources/Features/SSH/*.sh scripts/*.sh
       - name: Native tab audit
         run: ./macos/scripts/native-tab-audit.sh
 
@@ -40,7 +40,7 @@ jobs:
             macos/Ghostty.xcodeproj macos/Ghostty-Info.plist \
             macos/Ghostty.sdef macos/Ghostty.xctestplan \
             macos/build.nu macos/*.entitlements \
-            THIRD-PARTY-NOTICES.md; then
+            .github/workflows/ci.yml THIRD-PARTY-NOTICES.md; then
             changed=no
           else
             changed=yes
@@ -75,11 +75,11 @@ jobs:
           path: |
             macos/GhosttyKit.xcframework
             zig-out/share
-          key: ghosttykit-debug-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+          key: ghosttykit-debug-nosentry-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       - name: Build GhosttyKit
         if: steps.ghosttykit.outputs.cache-hit != 'true'
-        run: zig build -Demit-macos-app=false
+        run: zig build -Demit-macos-app=false -Dsentry=false
 
       # UI tests need accessibility permissions no CI runner grants, so the
       # test plan skips them here exactly as macos/build.nu does locally.

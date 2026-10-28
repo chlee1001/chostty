@@ -149,6 +149,8 @@ extension Ghostty {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
                 #if canImport(AppKit)
+                SSHConnectionOverlay(surfaceView: surfaceView)
+
                 // If we have secure input enabled and we're the focused surface and window
                 // then we want to show the secure input overlay.
                 if ghostty.config.secureInputIndication &&
@@ -649,6 +651,11 @@ extension Ghostty {
 
         /// Wait after the command
         var waitAfterCommand: Bool = false
+
+#if canImport(AppKit)
+        /// SSH launch metadata is app-only and is never inherited by splits.
+        var ssh: SSHPaneLaunch?
+#endif
 
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW

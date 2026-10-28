@@ -236,6 +236,11 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="4O9-zO-zB9"/>
+                            <menuItem title="Cut" keyEquivalent="x" id="cUT-xK-a9Q">
+                                <connections>
+                                    <action selector="cut:" target="-1" id="cUT-aC-t1N"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Copy" id="Jqf-pv-Zcu">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
@@ -517,6 +522,12 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="CpM-rI-Sc1"/>
+                            <menuItem title="Manage SSH Hosts…" id="ssh-menu-hosts">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="showSSHHosts:" target="bbz-4X-AYv" id="ssh-menu-action"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Bring All to Front" id="LE2-aR-0XJ">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>

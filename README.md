@@ -56,6 +56,10 @@ chord table is in [FORK.md](FORK.md).
 Configuration is unchanged from Ghostty — `~/.config/ghostty/config`, the same
 keybind and theme syntax, `TERM=xterm-ghostty`. An existing Ghostty setup works
 as-is, and the two can be installed side by side.
+Chostty-managed SSH data is separate:
+`<XDG config home>/chostty/ssh/hosts.conf`, with `hosts.meta.json` alongside.
+An unset or empty `XDG_CONFIG_HOME` uses `~/.config`; Finder-launched apps
+inherit launchd's environment, not shell profiles.
 
 Configuration can also be edited without touching text: `⌘,` (Preferences…)
 opens a built-in editor for the common settings — fonts, colors, cursor,
@@ -70,12 +74,38 @@ key. The `open_config` action and keybinding open this editor too.
 Shortcuts this fork reserves are taken only from chords upstream left unbound or
 already broken; live Ghostty bindings such as `⌘⌥←/→` and `⌘0` are untouched.
 
+SSH hosts declared in `~/.ssh/config` appear in `⌘⇧P` as **SSH: Connect to
+<alias>** and **SSH: Connect to <alias> in Split**. Chostty reads that file;
+it never edits it. Authentication, host-key confirmation, ProxyJump and agent
+configuration remain OpenSSH's responsibility.
+SSH tabs enable `ssh-env` by default; `no-ssh-env` disables it, while an
+undetermined configuration source is left unchanged. Quick Terminal does not
+offer SSH connections.
+
+The SSH-host manager applies only to normal terminal
+windows. Its entry points are **Window > Manage SSH Hosts…**,
+**SSH: Manage Hosts…** in the command palette, and the SSH popover footer.
+Managed hosts alone use `ssh -F hosts.conf`; `~/.ssh/config`, its Includes, and
+system configuration remain read-only. Managed hosts can choose **Password in
+Keychain** when they set explicit User, HostName, and Port. Passwords are kept
+only in the Keychain, never in SSH files, metadata, snapshots, arguments,
+environment, or logs. An alias-only edit keeps its item; changing the endpoint
+requires **Use for <destination>** or **Replace Password…**. Key passphrases
+are not stored. Automatic delivery needs explicit Keychain opt-in and works
+only with system `/usr/bin/ssh`; other `PATH` clients remain manual. The
+manual checks still outstanding are listed under Known gaps in `FORK.md`.
+`-L`/`-R`/`-D` tunnels run from
+the SSH manager, popover, and command palette; their passphrase, one-time-code,
+and unknown-host-key questions open a sheet, and **Password in Keychain** hosts
+answer ssh's password prompt from the Keychain. A changed host key stops the
+tunnel.
+
 ## Building
 
 Needs Xcode 26 (macOS 26 SDK) and Zig 0.16. Nix is not required.
 
 ```sh
-zig build -Demit-macos-app=false     # GhosttyKit, the Zig core the app links
+zig build -Demit-macos-app=false -Dsentry=false   # GhosttyKit, the Zig core the app links
 ./macos/build.nu --configuration Release --action build
 ```
 

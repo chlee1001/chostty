@@ -5,20 +5,9 @@ import Testing
 
 /// Tests for the tab bar's scrolling and minimum width.
 ///
-/// Actually hosting `VirtualTabBar` (`NSHostingView`, an on-screen
-/// `NSWindow`, even `ImageRenderer`) reliably hung or crashed the XCTest
-/// host in this sandbox — "The test runner hung before establishing
-/// connection.", the exact failure class `WorkspaceDragDrop.swift` already
-/// documents for `onDrop(of:delegate:)`. Real SwiftUI layout hosting is not
-/// safe to exercise from this test target.
-///
-/// So instead of asserting the pure `tabItemWidth` function against itself
-/// (the tautology trap the plan calls out), these tests pin the SHIPPED
-/// SOURCE: they read `VirtualTabBar.swift` and assert the item-body frame
-/// site literally calls `tabItemWidth(availableWidth:tabCount:)` with the
-/// real `GeometryReader` proxy — not a decoupled call nothing in production
-/// reaches — while the container/label `maxWidth: .infinity` frames and the
-/// `count > 1` single-tab guard stay untouched.
+/// SwiftUI layout hosting is unreliable in this test target, so these tests
+/// pin VirtualTabBar's shipped item-body callsite. That ensures production
+/// cannot leave `tabItemWidth` tested but unused.
 struct VirtualTabBarScrollTests {
     /// The shipped source with COMMENTS STRIPPED and whitespace normalized.
     ///

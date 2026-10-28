@@ -35,11 +35,34 @@ final class ClosedTabHistory {
         let titleOverride: String?
         let pwd: String?
         let tabColor: TerminalTabColor
+        let ssh: SSHPaneBinding?
 
         /// The fallback reopen path mints a new session, so this lets a pane
         /// layout still waiting to be hydrated follow the tab to its new
         /// identity instead of being stranded under the old key.
         var tabID: UUID?
+
+        init(
+            workspaceID: UUID,
+            workspaceName: String,
+            index: Int?,
+            title: String,
+            titleOverride: String?,
+            pwd: String?,
+            tabColor: TerminalTabColor,
+            ssh: SSHPaneBinding? = nil,
+            tabID: UUID? = nil
+        ) {
+            self.workspaceID = workspaceID
+            self.workspaceName = workspaceName
+            self.index = index
+            self.title = title
+            self.titleOverride = titleOverride
+            self.pwd = pwd
+            self.tabColor = tabColor
+            self.ssh = ssh
+            self.tabID = tabID
+        }
 
         /// Returns a copy with `index` replaced. Used to normalize a
         /// multi-close batch's per-tab records to their ORIGINAL absolute
@@ -57,6 +80,7 @@ final class ClosedTabHistory {
                 titleOverride: titleOverride,
                 pwd: pwd,
                 tabColor: tabColor,
+                ssh: ssh,
                 tabID: tabID)
         }
     }
