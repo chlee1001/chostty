@@ -352,7 +352,7 @@ import Testing
         let persistence = makePersistence(directory: directory) { [controller] }
 
         view.setTitle("live")
-        settleTitles()
+        settleTitles([view]) { view.title == "live" }
         persistence.persistNow()
 
         #expect(try decode(repository).windows[0].workspaces[0].tabs[0]
@@ -960,7 +960,7 @@ import Testing
 
         surface.setTitle("title")
         surface.pwd = "/tmp/changed"
-        settleTitles()
+        settleTitles([surface]) { surface.title == "title" }
 
         #expect(scheduler.count == 0)
     }
@@ -1117,9 +1117,22 @@ import Testing
 
     // MARK: - Non-representative pane titles
 
-    /// Lets the surface title timer fire and the subscriptions deliver.
-    private func settleTitles() {
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+    /// Drains title timers until their observable state has reached the expected value.
+    private func settleTitles(
+        _ surfaces: [Ghostty.SurfaceView],
+        until isSettled: @escaping () -> Bool = { true }
+    ) {
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !(surfaces.allSatisfy { !$0.title.isEmpty } && isSettled()) &&
+                Date() < deadline &&
+                RunLoop.main.run(mode: .default, before: deadline) {}
+        #expect(surfaces.allSatisfy { !$0.title.isEmpty } && isSettled())
+    }
+
+    private func settleTitles(in controllers: TerminalController...) {
+        settleTitles(controllers.flatMap {
+            $0.workspaceStore.allSessions.flatMap { Array($0.surfaceTree) }
+        })
     }
 
     /// A controller whose presented tab is split into the focused pane and a
@@ -1146,13 +1159,13 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let (controller, _, background) = try makeSplitController()
         let persistence = makePersistence(directory: directory) { [controller] }
-        settleTitles()
+        settleTitles(in: controller)
         #expect(persistence.persistIfNeeded())
         persistence.flush()
         #expect(!persistence.persistIfNeeded())
 
         background.setTitle("background title")
-        settleTitles()
+        settleTitles([background]) { background.title == "background title" }
 
         #expect(persistence.persistIfNeeded())
         persistence.flush()
@@ -1165,14 +1178,14 @@ import Testing
     @Test func backgroundPaneTitleNeverOverwritesTheSessionTitle() throws {
         let (controller, focused, background) = try makeSplitController()
         focused.setTitle("focused title")
-        settleTitles()
+        settleTitles([focused]) { focused.title == "focused title" }
         let presentedID = try #require(controller.presentedSessionID)
         let session = try #require(controller.workspaceStore.session(forTabID: presentedID))
         let titleBefore = session.title
         #expect(titleBefore.contains("focused title"))
 
         background.setTitle("background title")
-        settleTitles()
+        settleTitles([background]) { background.title == "background title" }
 
         #expect(session.title == titleBefore)
     }
@@ -1209,14 +1222,14 @@ import Testing
             selection: Selection(workspaceID: workspace.id, tabID: presented.id)
         ))
         let persistence = makePersistence(directory: directory) { [controller] }
-        settleTitles()
+        settleTitles(in: controller)
         #expect(persistence.persistIfNeeded())
         persistence.flush()
         #expect(!persistence.persistIfNeeded())
         let generationBefore = background.metadataGeneration
 
         second.setTitle("background tab pane")
-        settleTitles()
+        settleTitles([second]) { second.title == "background tab pane" }
 
         #expect(background.metadataGeneration == generationBefore + 1)
         #expect(persistence.persistIfNeeded())
@@ -1230,13 +1243,13 @@ import Testing
     @Test func representativeTitleChangeBumpsTheGenerationExactlyOnce() throws {
         let controller = try makeController()
         let representative = try #require(controller.surfaceTree.first)
-        settleTitles()
+        settleTitles(in: controller)
         let presentedID = try #require(controller.presentedSessionID)
         let session = try #require(controller.workspaceStore.session(forTabID: presentedID))
         let generationBefore = session.metadataGeneration
 
         representative.setTitle("representative title")
-        settleTitles()
+        settleTitles([representative]) { representative.title == "representative title" }
 
         #expect(session.metadataGeneration == generationBefore + 1)
         #expect(session.title.contains("representative title"))
@@ -1712,7 +1725,7 @@ import Testing
         let repository = SessionSnapshotRepository(directory: directory)
         let first = try makeController(workspaceName: "A")
         let second = try makeController(workspaceName: "B")
-        settleTitles()
+        settleTitles(in: first, second)
         let scheduler = ManualScheduler()
         let active = InstanceState(activePIDs: [4242])
         // Uptime is one system clock shared by every instance.
@@ -1758,7 +1771,7 @@ import Testing
         let directory = try makeTemporaryDirectory()
         let repository = SessionSnapshotRepository(directory: directory)
         let controller = try makeController()
-        settleTitles()
+        settleTitles(in: controller)
         let active = InstanceState(activePIDs: [4242])
         // Uptime is one system clock shared by every instance.
         let clock = UptimeState(10)
@@ -1854,7 +1867,7 @@ import Testing
         let closed = try makeController(workspaceName: "Closed")
         let ownerWindow = try makeController(workspaceName: "Owner")
         let added = try makeController(workspaceName: "Added")
-        settleTitles()
+        settleTitles(in: closed, ownerWindow, added)
         let active = InstanceState(activePIDs: [4242])
         let clock = UptimeState(10)
         let scheduler = ManualScheduler()
@@ -1946,7 +1959,7 @@ import Testing
         let first = try makeController(paneUUID: UUID())
         let duplicatePaneID = first.workspaceStore.allSessions[0].surfaceTree.first!.id
         let duplicate = try makeController(paneUUID: duplicatePaneID)
-        settleTitles()
+        settleTitles(in: first, duplicate)
         let scheduler = ManualScheduler()
         let persistence = makePersistence(
             directory: directory,
