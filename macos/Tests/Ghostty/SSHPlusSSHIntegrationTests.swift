@@ -5,7 +5,7 @@ import Testing
 
 struct SSHPlusSSHIntegrationTests {
     // +ssh reaches ssh even when the process inherited Chostty askpass state.
-    @Test func plusSSHPlacesTermEnvironmentBeforeAlias() throws {
+    @Test func plusSSHSetsTermInChildEnvironmentAndKeepsAskpassState() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -22,6 +22,7 @@ struct SSHPlusSSHIntegrationTests {
             printf 'token=%s\\n' "${CHOSTTY_ASKPASS_TOKEN-}"
             printf 'socket=%s\\n' "${CHOSTTY_ASKPASS_SOCKET-}"
             printf 'tunnel=%s\\n' "${CHOSTTY_ASKPASS_TUNNEL-}"
+            printf 'term=%s\\n' "${TERM-}"
         } > "$SSH_ENVIRONMENT_RECORD"
         """.write(to: ssh, atomically: true, encoding: .utf8)
         #expect(chmod(ssh.path, 0o700) == 0)
@@ -75,8 +76,9 @@ struct SSHPlusSSHIntegrationTests {
         let realHome = NSHomeDirectory()
         #expect(!log.contains(realHome + "/Library"), "\(log)")
         let arguments = try String(contentsOf: record, encoding: .utf8).split(separator: "\n").map(String.init)
-        #expect(arguments.contains("-o"))
-        #expect(arguments.contains("SetEnv=TERM=xterm-256color"))
+        // +ssh sets TERM in ssh's own environment rather than passing
+        // `-o SetEnv=TERM=...`, so a user's own SetEnv is never shadowed.
+        #expect(!arguments.contains { $0.hasPrefix("SetEnv=TERM=") })
         #expect(arguments.suffix(2) == ["--", "fakehost"])
         let childEnvironment = try String(contentsOf: environmentRecord, encoding: .utf8)
         #expect(childEnvironment.contains("askpass=/tmp/inherited-askpass\n"))
@@ -85,5 +87,6 @@ struct SSHPlusSSHIntegrationTests {
         #expect(childEnvironment.contains("token=inherited-token\n"))
         #expect(childEnvironment.contains("socket=/tmp/inherited-askpass.sock\n"))
         #expect(childEnvironment.contains("tunnel=1\n"))
+        #expect(childEnvironment.contains("term=xterm-256color\n"))
     }
 }

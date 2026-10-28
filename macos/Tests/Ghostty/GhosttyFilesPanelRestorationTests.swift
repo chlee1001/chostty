@@ -95,7 +95,7 @@ struct GhosttyFilesPanelRestorationTests {
             encoding: .utf8
         )
         let delegate = try String(
-            contentsOf: macosRoot.appendingPathComponent("Sources/App/macOS/AppDelegate.swift"),
+            contentsOf: macosRoot.appendingPathComponent("Sources/App/AppDelegate.swift"),
             encoding: .utf8
         )
 

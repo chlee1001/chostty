@@ -53,7 +53,7 @@ Two independent C ABIs; do not conflate them:
 
 ### macOS app (`macos/`)
 
-There is no macOS `@main`. `macos/Sources/App/macOS/main.swift` is top-level code that calls
+There is no macOS `@main`. `macos/Sources/App/main.swift` is top-level code that calls
 `ghostty_init` → `ghostty_cli_try_action` → `NSApplicationMain`, which loads `MainMenu.xib`
 and instantiates `AppDelegate`. `AppDelegate` owns the single `Ghostty.App`
 (`macos/Sources/Ghostty/Ghostty.App.swift`), the bridge that translates libghostty callbacks
