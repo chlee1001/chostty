@@ -373,7 +373,7 @@ struct SSHTunnelAskpassAuthorizationTests {
             _ authorization: SSHTunnelAskpassAuthorization, managed: Bool
         ) throws -> (SSHTunnelDefinition, String) {
             let definition = definition(managed: managed)
-            let environment = try #require(environment(authorization.prepare(definition, session: definition.id)))
+            let environment = try #require(self.environment(authorization.prepare(definition, session: definition.id)))
             #expect(authorization.launched(definition.id, watchdog: watchdog))
             return (definition, try #require(environment["CHOSTTY_ASKPASS_TOKEN"]))
         }
