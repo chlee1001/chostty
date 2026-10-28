@@ -402,10 +402,10 @@ final class WorkspaceSessionStore: ObservableObject {
         // `snapshot` is `@Published`, so assigning it synchronously notifies
         // every SwiftUI subscriber. If the registry were updated after that
         // assignment, any registry-backed resolution running inside that
-        // notification would see the previous topology. The plan's required
-        // order is therefore stage → validate → registry → one publication →
-        // mount, and this hook is the only place that can honor it for the
-        // store's internal add/remove transactions.
+        // notification would see the previous topology. Preserve the order:
+        // stage → validate → registry → one publication → mount. This hook
+        // is the only place that can enforce it for internal add/remove
+        // transactions.
         willCommit?(newWorkspaces, candidate.selection)
 
         mountGeneration = candidate.proposedGeneration
