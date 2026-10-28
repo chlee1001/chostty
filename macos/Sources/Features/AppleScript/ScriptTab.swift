@@ -97,17 +97,19 @@ final class ScriptTab: NSObject {
 
     /// Exposed as the AppleScript `name override` property.
     ///
-    /// Gets or sets the title override on this tab's controller.
-    /// Setting an empty string clears the override.
+    /// Gets or sets THIS tab's title override (the same one the tab strip and
+    /// sidebar show), not the window's. Setting an empty string clears it.
     @objc(titleOverride)
     var titleOverride: String {
         get {
             guard NSApp.isAppleScriptEnabled else { return "" }
-            return controller?.titleOverride ?? ""
+            return session?.titleOverride ?? ""
         }
         set {
             guard NSApp.isAppleScriptEnabled else { return }
-            controller?.titleOverride = newValue.isEmpty ? nil : newValue
+            guard let controller else { return }
+            controller.workspaceStore.renameTab(tabID, to: newValue)
+            controller.applyTitleToWindow()
         }
     }
 
