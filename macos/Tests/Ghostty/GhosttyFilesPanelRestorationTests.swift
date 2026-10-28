@@ -4,6 +4,33 @@ import Testing
 
 @MainActor
 struct GhosttyFilesPanelRestorationTests {
+    /// Command-line defaults (`-chostty.filesPanelVisible YES`) arrive as
+    /// strings; they must seed the panel the way stored booleans do.
+    @Test func seedReadsStringAndStoredDefaults() throws {
+        let suite = "chostty.tests.files-panel-seed.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let empty = FilesPanelPresentationState.Seed.fromDefaults(defaults)
+        #expect(!empty.visible)
+        #expect(empty.width == 280)
+        #expect(!empty.showHidden)
+
+        defaults.set("YES", forKey: "chostty.filesPanelVisible")
+        defaults.set("320", forKey: "chostty.filesPanelWidth")
+        defaults.set("YES", forKey: "chostty.filesPanelShowHidden")
+        let strings = FilesPanelPresentationState.Seed.fromDefaults(defaults)
+        #expect(strings.visible)
+        #expect(strings.width == 320)
+        #expect(strings.showHidden)
+
+        defaults.set(false, forKey: "chostty.filesPanelVisible")
+        defaults.set(336.0, forKey: "chostty.filesPanelWidth")
+        let stored = FilesPanelPresentationState.Seed.fromDefaults(defaults)
+        #expect(!stored.visible)
+        #expect(stored.width == 336)
+    }
+
     @Test func persistedPresentationRoundTripsWithoutTransientLayoutState() throws {
         var presentation = FilesPanelPresentationState(seed: .init(
             visible: true,

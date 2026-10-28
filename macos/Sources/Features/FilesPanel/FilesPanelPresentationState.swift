@@ -33,14 +33,18 @@ struct FilesPanelPresentationState: Equatable, Sendable {
         var pinnedRoot: String?
         var showHidden: Bool
 
+        /// Reads through `bool(forKey:)`/`double(forKey:)` so string values,
+        /// such as `-chostty.filesPanelVisible YES` on the command line, count
+        /// the same way they do for the sidebar's `@AppStorage`.
         static func fromDefaults(_ defaults: UserDefaults = .standard) -> Seed {
-            let storedWidth = defaults.object(forKey: "chostty.filesPanelWidth") as? Double ?? 280
+            let storedWidth = defaults.object(forKey: "chostty.filesPanelWidth") == nil
+                ? 280 : defaults.double(forKey: "chostty.filesPanelWidth")
             return .init(
-                visible: defaults.object(forKey: "chostty.filesPanelVisible") as? Bool ?? false,
+                visible: defaults.bool(forKey: "chostty.filesPanelVisible"),
                 width: min(max(storedWidth, widthRange.lowerBound), widthRange.upperBound),
                 rootMode: .followPWD,
                 pinnedRoot: nil,
-                showHidden: defaults.object(forKey: "chostty.filesPanelShowHidden") as? Bool ?? false
+                showHidden: defaults.bool(forKey: "chostty.filesPanelShowHidden")
             )
         }
     }
