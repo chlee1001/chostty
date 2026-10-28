@@ -107,8 +107,8 @@ SwiftUI owns content (`TerminalView`, `SidebarView`, `SplitView`), hosted via
 ### Zig core
 
 ```sh
-zig build -Demit-macos-app=false          # build GhosttyKit only — the fast path
-zig build test                            # full Zig suite (slow)
+zig build -Demit-macos-app=false -Dsentry=false   # build GhosttyKit only — the fast path
+zig build test -Dsentry=false             # full Zig suite (slow)
 zig build test -Dtest-filter=<name>       # PREFER THIS; substring match on test names
 zig build test-lib-vt -Dtest-filter=<f>   # prefer for libghostty-vt changes
 zig fmt .
@@ -117,6 +117,9 @@ zig fmt .
 Plain `zig build` on macOS defaults to `emit_xcframework`/`emit_macos_app` = true and will
 silently invoke `xcodebuild`. Always pass `-Demit-macos-app=false` unless you actually want
 the bundle — and even then, build the bundle with `build.nu`, not `zig build`.
+Chostty ships without Sentry: pass `-Dsentry=false` to every `zig build` on macOS,
+including unfiltered `test`/`run`, which also rewrite `macos/GhosttyKit.xcframework`
+(upstream defaults Sentry on for macOS). `release-local.sh` and both workflows already do.
 
 Declared `zig build` steps: `run`, `run-valgrind`, `test`, `test-lib-vt`, `test-valgrind`,
 `update-translations`, `dist`, `distcheck`. Notable `-D` flags (full list in
@@ -159,7 +162,7 @@ set. Read those chains rather than assuming a flag only does what its name says.
 ```sh
 swiftlint lint --strict --fix              # Swift
 prettier -w .                              # JSON/YAML/TOML/MD — never touches macos/
-shellcheck macos/scripts/*.sh scripts/*.sh # what CI's `scripts` job runs
+shellcheck macos/scripts/*.sh macos/Sources/Features/SSH/*.sh scripts/*.sh # what CI's `scripts` job runs
 ./scripts/upstream-sync.sh [--markdown]    # upstream drift report; does not merge
 ./scripts/release-local.sh --version <v>   # local universal DMG + zip
 ./scripts/release-local.sh --version <v> --publish  # also tag and publish

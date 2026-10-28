@@ -192,7 +192,7 @@ if [ "$PUBLISH" = yes ]; then
       macos/Sources macos/GhosttyUITests macos/Ghostty.xcodeproj \
       macos/Ghostty-Info.plist macos/Ghostty.sdef macos/build.nu \
       macos/*.entitlements macos/scripts/package-release.sh \
-      macos/scripts/sparkle-public-key.swift \
+      macos/scripts/sparkle-public-key.swift scripts/release-local.sh \
       LICENSE THIRD-PARTY-NOTICES.md; then
       echo "no release inputs changed since $LATEST_RELEASE_TAG" >&2
       exit 1
@@ -205,6 +205,7 @@ printf 'Building Chostty %s from %s\n' "$VERSION" "$SHORT_COMMIT"
 zig build \
   -Doptimize=ReleaseFast \
   -Demit-macos-app=false \
+  -Dsentry=false \
   -Dversion-string="$VERSION"
 
 rm -rf macos/build/Release
