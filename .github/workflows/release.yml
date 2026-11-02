@@ -39,7 +39,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # `zig-out/share` is cached with the framework because the Xcode target
       # copies terminfo, shell completions and the man pages out of it. A
@@ -52,7 +52,7 @@ jobs:
           path: |
             macos/GhosttyKit.xcframework
             zig-out/share
-          key: ghosttykit-releasefast-nosentry-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+          key: ghosttykit-releasefast-nosentry-share-macos26-${{ runner.arch }}-zig0.17-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       - name: Show toolchain
         run: |

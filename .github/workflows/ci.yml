@@ -58,7 +58,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # Building GhosttyKit accounts for roughly 12 of the 16 minutes in this
       # job. Its output only changes when Zig/core inputs change, so macOS-only
@@ -75,7 +75,7 @@ jobs:
           path: |
             macos/GhosttyKit.xcframework
             zig-out/share
-          key: ghosttykit-debug-nosentry-share-macos26-${{ runner.arch }}-zig0.16-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
+          key: ghosttykit-debug-nosentry-share-macos26-${{ runner.arch }}-zig0.17-${{ hashFiles('build.zig', 'build.zig.zon', 'src/**', 'pkg/**', 'vendor/**') }}
 
       - name: Build GhosttyKit
         if: steps.ghosttykit.outputs.cache-hit != 'true'

@@ -102,7 +102,7 @@ tunnel.
 
 ## Building
 
-Needs Xcode 26 (macOS 26 SDK) and Zig 0.16. Nix is not required.
+Needs Xcode 26 (macOS 26 SDK) and Zig 0.17. Nix is not required.
 
 ```sh
 zig build -Demit-macos-app=false -Dsentry=false   # GhosttyKit, the Zig core the app links
