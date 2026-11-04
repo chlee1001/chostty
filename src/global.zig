@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_config = @import("build_config.zig");
+const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const internal_os = @import("os/main.zig");
 const fontconfig = @import("fontconfig");
@@ -71,7 +72,7 @@ pub fn init(opts: InitOpts) !void {
             // ensure that the C API can take a UNICODE_STRING (aka []16, a
             // WTF-16 string) so that it can just be passed into
             // std.process.Args.Vector directly.
-            .c => |c| .{ .vector = if (builtin.os.tag == .windows)
+            .c => |c| .{ .vector = if (builtin.target.os.tag == .windows)
                 return error.UnsupportedOSForCApi
             else
                 c.argv[0..c.argc] },
@@ -91,7 +92,7 @@ pub fn init(opts: InitOpts) !void {
         // can get easy memory leak detection in debug modes.
         if (builtin.link_libc) {
             if (switch (builtin.mode) {
-                .ReleaseSafe, .ReleaseFast => true,
+                .safe, .fast => true,
 
                 // We also use it if we can detect we're running under
                 // Valgrind since Valgrind only instruments the C allocator
@@ -99,7 +100,7 @@ pub fn init(opts: InitOpts) !void {
             }) break :gpa null;
         }
 
-        break :gpa .init;
+        break :gpa .init(std.heap.page_allocator, .{});
     };
 
     self.alloc = if (self.gpa) |*value|
@@ -179,13 +180,17 @@ pub fn init(opts: InitOpts) !void {
     // As early as possible, initialize our resource limits.
     self.rlimits = .init();
 
-    // Initialize our crash reporting.
-    crash.init(self.alloc) catch |err| {
-        std.log.warn(
-            "sentry init failed, no crash capture available err={}",
-            .{err},
-        );
-    };
+    if (build_options.sentry) {
+        // Initialize our crash reporting. The environ map snapshot is
+        // owned by crash.init (it is freed by the init thread).
+        const environ_map = try self.environ.createMap(self.alloc);
+        crash.init(self.alloc, environ_map) catch |err| {
+            std.log.warn(
+                "sentry init failed, no crash capture available err={}",
+                .{err},
+            );
+        };
+    }
 
     // const sentrylib = @import("sentry");
     // if (sentrylib.captureEvent(sentrylib.Value.initMessageEvent(
@@ -300,7 +305,7 @@ pub fn environMap() !std.process.Environ.Map {
 /// `unsetenv` - as a rule, beyond initialization, favor
 /// `std.process.Environ.Map` whenever possible.
 pub fn syncEnviron() void {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .windows => {},
         else => {
             assert(builtin.link_libc);
@@ -370,7 +375,7 @@ pub fn action() ?cli.ghostty.Action {
 /// be one of these at any given moment. This is extracted into a dedicated
 /// struct because it is reused by main and the static C lib.
 pub const GlobalState = struct {
-    const GPA = std.heap.DebugAllocator(.{});
+    const GPA = std.heap.SafeAllocator;
 
     io_impl: std.Io.Threaded,
     gpa: ?GPA,
@@ -393,7 +398,7 @@ pub const GlobalState = struct {
         stderr: bool = build_config.app_runtime != .none,
         /// Whether to log to macOS's unified logging. Enabled by default
         /// on macOS.
-        macos: bool = builtin.os.tag.isDarwin(),
+        macos: bool = builtin.target.os.tag.isDarwin(),
     };
 
     /// Asserts that `self.io_impl` has been initialized.
@@ -403,7 +408,7 @@ pub const GlobalState = struct {
 
     fn initSignals() void {
         // Only posix systems.
-        if (comptime builtin.os.tag == .windows) return;
+        if (comptime builtin.target.os.tag == .windows) return;
 
         const p = std.posix;
 

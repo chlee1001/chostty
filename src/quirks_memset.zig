@@ -49,7 +49,7 @@ const builtin = @import("builtin");
 comptime {
     // Strong linkage when we control the final link (executables,
     // shared libraries), weak otherwise.
-    const linkage: std.builtin.GlobalLinkage = switch (builtin.output_mode) {
+    const linkage: std.lang.GlobalLinkage = switch (builtin.output_mode) {
         .Exe => .strong,
         .Lib => switch (builtin.link_mode) {
             .dynamic => .strong,
@@ -69,8 +69,8 @@ comptime {
     //      CRT which links so we don't need this there anyways.
     const enabled =
         std.simd.suggestVectorLength(u8) != null and
-        builtin.object_format != .c and
-        !(linkage == .weak and builtin.object_format == .coff);
+        builtin.target.ofmt != .c and
+        !(linkage == .weak and builtin.target.ofmt == .coff);
 
     if (enabled) @export(&memset, .{
         .name = "memset",
@@ -94,19 +94,24 @@ const vec_bytes = @min(128, 2 * (std.simd.suggestVectorLength(u8) orelse 8));
 /// Whether the `dc zva` fast path for large zero fills is available.
 /// `dc zva` zeroes a whole cacheline per instruction without moving data
 /// through the store pipeline. Based on musl.
-const zva_enabled = builtin.cpu.arch == .aarch64 and
-    builtin.os.tag != .freestanding;
+const zva_enabled = builtin.target.cpu.arch == .aarch64 and
+    builtin.target.os.tag != .freestanding;
 
 /// Only use `dc zva` at or above this many bytes. Below this our
 /// plain vector loop measures faster. Empirically mesaured.
 const zva_threshold = 16384;
 
-/// Matches compiler_rt's memset signature (lib/compiler_rt.zig).
-fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
+/// Matches the C memset ABI.
+fn memset(dest: ?[*]u8, c: c_int, len: usize) callconv(.c) ?[*]u8 {
     @setRuntimeSafety(false);
 
     if (len == 0) return dest;
     const d = dest.?;
+
+    // Only the low byte of `c` is used. The C ABI allows a "int"
+    // as the c parameter but this behavior of just grabbing the
+    // low byte seems consistent across implementations.
+    const byte: u8 = @truncate(@as(c_uint, @bitCast(c)));
 
     // Large path: full-width vector stores.
     if (len >= vec_bytes) {
@@ -115,7 +120,7 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
         // 64-byte block size; anything else falls through to the
         // vector loop.
         if (comptime zva_enabled) {
-            if (len >= zva_threshold and c == 0) zva: {
+            if (len >= zva_threshold and byte == 0) zva: {
                 if (zvaSize() != 64) break :zva;
                 const splat64: @Vector(64, u8) = @splat(0);
 
@@ -148,7 +153,7 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
             }
         }
 
-        const splat: @Vector(vec_bytes, u8) = @splat(c);
+        const splat: @Vector(vec_bytes, u8) = @splat(byte);
 
         // Fill [0, N) where N is len rounded down to a multiple of
         // vec_bytes.
@@ -188,7 +193,7 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
             // pair of 64-byte stores covers len <= 128. Only emitted
             // when vec_bytes > 64 (e.g. AVX-512), otherwise the
             // vector loop above already handled these lengths.
-            const splat64: @Vector(64, u8) = @splat(c);
+            const splat64: @Vector(64, u8) = @splat(byte);
             d[0..64].* = splat64;
             d[len - 64 ..][0..64].* = splat64;
             return dest;
@@ -200,7 +205,7 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
         // second pair extends the covered prefix to [0..32] and the
         // covered suffix to [len-32..len], which meet or overlap in
         // the middle.
-        const splat16: @Vector(16, u8) = @splat(c);
+        const splat16: @Vector(16, u8) = @splat(byte);
         d[0..16].* = splat16;
         d[len - 16 ..][0..16].* = splat16;
         if (len > 32) {
@@ -211,14 +216,14 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
     }
     if (len >= 8) {
         // 8 <= len <= 15: one 8-byte pair (covers len <= 16).
-        const splat8: @Vector(8, u8) = @splat(c);
+        const splat8: @Vector(8, u8) = @splat(byte);
         d[0..8].* = splat8;
         d[len - 8 ..][0..8].* = splat8;
         return dest;
     }
     if (len >= 4) {
         // 4 <= len <= 7: one 4-byte pair (covers len <= 8).
-        const splat4: @Vector(4, u8) = @splat(c);
+        const splat4: @Vector(4, u8) = @splat(byte);
         d[0..4].* = splat4;
         d[len - 4 ..][0..4].* = splat4;
         return dest;
@@ -231,7 +236,7 @@ fn memset(dest: ?[*]u8, c: u8, len: usize) callconv(.c) ?[*]u8 {
     // statically known.
     var i: usize = 0;
     while (i < len) : (i += 1) {
-        d[i] = c;
+        d[i] = byte;
         asm volatile ("" ::: .{ .memory = true });
     }
     return dest;
@@ -284,6 +289,17 @@ test memset {
     var one: [1]u8 = .{0xAA};
     _ = memset(&one, 0x11, 0);
     try testing.expectEqual(0xAA, one[0]);
+}
+
+test "memset truncates C int fill value" {
+    const testing = std.testing;
+
+    var buf: [4]u8 = undefined;
+    _ = memset(&buf, -1, buf.len);
+    for (buf) |b| try testing.expectEqual(0xFF, b);
+
+    _ = memset(&buf, 0x1234, buf.len);
+    for (buf) |b| try testing.expectEqual(0x34, b);
 }
 
 test "memset large zero fills (dc zva path)" {

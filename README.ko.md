@@ -92,7 +92,7 @@ ssh의 비밀번호 질문에 Keychain으로 답한다. 호스트 키가 바뀌�
 
 ## 빌드
 
-Xcode 26(macOS 26 SDK)과 Zig 0.16이 필요하다. Nix는 필요 없다.
+Xcode 26(macOS 26 SDK)과 Zig 0.17이 필요하다. Nix는 필요 없다.
 
 ```sh
 zig build -Demit-macos-app=false -Dsentry=false   # 앱이 링크하는 Zig 코어 GhosttyKit

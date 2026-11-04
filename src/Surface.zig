@@ -22,6 +22,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const global = @import("global.zig");
 const oni = @import("oniguruma");
+const simd = @import("simd/main.zig");
 const crash = @import("crash/main.zig");
 const unicode = @import("unicode/main.zig");
 const rendererpkg = @import("renderer.zig");
@@ -49,6 +50,12 @@ const Renderer = rendererpkg.Renderer;
 /// otherwise somewhat arbitrary.
 pub const min_window_width_cells: u32 = 10;
 pub const min_window_height_cells: u32 = 4;
+
+/// Minimum size in cells that the running program can resize the window
+/// to (CSI 8 t). This is larger than the minimum window size so that a
+/// program can't shrink the window to hide its output.
+const min_resize_width_cells: u32 = 40;
+const min_resize_height_cells: u32 = 10;
 
 /// The maximum number of key tables that can be active at any
 /// given time. `activate_key_table` calls after this are ignored.
@@ -154,6 +161,10 @@ child_exited: bool = false,
 /// to let us know.
 focused: bool = true,
 
+/// Whether this surface may be visible. Unknown visibility is considered
+/// visible so reporting remains conservative.
+visible: bool = true,
+
 /// Used to determine whether to continuously scroll.
 selection_scroll_active: bool = false,
 
@@ -217,8 +228,10 @@ const Search = struct {
 
 /// Mouse state for the surface.
 const Mouse = struct {
-    /// The last tracked mouse button state by button.
-    click_state: [input.MouseButton.max]input.MouseButtonState = @splat(.release),
+    /// The last tracked mouse button state by button, indexed by the
+    /// button's enum value. `max` is the largest value, not a count, so
+    /// the array needs one more slot than that to hold every button.
+    click_state: [input.MouseButton.max + 1]input.MouseButtonState = @splat(.release),
 
     /// The last mods state when the last mouse button (whatever it was) was
     /// pressed or release.
@@ -329,7 +342,9 @@ const DerivedConfig = struct {
     window_width: u32,
     title: ?[:0]const u8,
     title_report: bool,
+    vt_window_resize_allowed: bool,
     links: []DerivedConfig.Link,
+    link_osc8: bool,
     link_previews: configpkg.LinkPreviews,
     scroll_to_bottom: configpkg.Config.ScrollToBottom,
     notify_on_command_finish: configpkg.Config.NotifyOnCommandFinish,
@@ -408,7 +423,9 @@ const DerivedConfig = struct {
             .window_width = config.@"window-width",
             .title = config.title,
             .title_report = config.@"title-report",
+            .vt_window_resize_allowed = config.@"vt-window-resize-allowed",
             .links = links,
+            .link_osc8 = config.@"link-osc8",
             .link_previews = config.@"link-previews",
             .scroll_to_bottom = config.@"scroll-to-bottom",
             .notify_on_command_finish = config.@"notify-on-command-finish",
@@ -489,9 +506,6 @@ pub fn init(
     var derived_config = try DerivedConfig.init(alloc, config);
     errdefer derived_config.deinit();
 
-    // Initialize our renderer with our initialized surface.
-    try Renderer.surfaceInit(rt_surface);
-
     // Determine our DPI configurations so we can properly configure
     // font points to pixels and handle other high-DPI scaling factors.
     const content_scale = try rt_surface.getContentScale();
@@ -507,8 +521,8 @@ pub fn init(
     // The font size we desire along with the DPI determined for the surface
     const font_size: font.face.DesiredSize = .{
         .points = config.@"font-size",
-        .xdpi = @intFromFloat(x_dpi),
-        .ydpi = @intFromFloat(y_dpi),
+        .xdpi = @intFromFloat(@round(x_dpi)),
+        .ydpi = @intFromFloat(@round(y_dpi)),
     };
 
     // Setup our font group. This will reuse an existing font group if
@@ -517,6 +531,7 @@ pub fn init(
         &derived_config.font,
         font_size,
     );
+    errdefer app.font_grid_set.deref(font_grid_key);
 
     // Build our size struct which has all the sizes we need.
     const size: rendererpkg.Size = size: {
@@ -546,16 +561,32 @@ pub fn init(
         break :size size;
     };
 
+    // Initialize the render device if it hasn't been initialized already
+    const render_device = app.device orelse device: {
+        const device_options = try rt_surface.renderDeviceOptions();
+        const device: *rendererpkg.Device = try .init(alloc, device_options);
+        app.device = device;
+        break :device device;
+    };
+
     // Create our terminal grid with the initial size
     const app_mailbox: App.Mailbox = .{ .rt_app = rt_app, .mailbox = &app.mailbox };
-    var renderer_impl = try Renderer.init(alloc, .{
-        .config = try .init(alloc, config),
-        .font_grid = font_grid,
-        .size = size,
-        .surface_mailbox = .{ .surface = self, .app = app_mailbox },
-        .rt_surface = rt_surface,
-        .thread = &self.renderer_thread,
-    });
+    var renderer_impl = renderer: {
+        // Renderer.init takes ownership of the config only on success, after
+        // which the errdefer below frees it, so this errdefer must end here.
+        var renderer_config = try Renderer.DerivedConfig.init(alloc, config);
+        errdefer renderer_config.deinit();
+
+        break :renderer try Renderer.init(alloc, .{
+            .device = render_device,
+            .config = renderer_config,
+            .font_grid = font_grid,
+            .size = size,
+            .surface_mailbox = .{ .surface = self, .app = app_mailbox },
+            .rt_surface = rt_surface,
+            .thread = &self.renderer_thread,
+        });
+    };
     errdefer renderer_impl.deinit();
 
     // The mutex used to protect our renderer state.
@@ -570,7 +601,6 @@ pub fn init(
         rt_surface,
         &self.renderer,
         &self.renderer_state,
-        app_mailbox,
     );
     errdefer render_thread.deinit();
 
@@ -632,21 +662,27 @@ pub fn init(
     // This separate block ({}) is important because our errdefers must
     // be scoped here to be valid.
     {
-        var env = rt_surface.defaultTermioEnv() catch |err| env: {
-            // If an error occurs, we don't want to block surface startup.
-            log.warn("error getting env map for surface err={}", .{err});
-            break :env global.environMap() catch std.process.Environ.Map.init(alloc);
+        // Exec.init takes ownership of the env even if it fails, so the
+        // errdefer for it must not reach past the call.
+        const env = termio_env: {
+            var env = rt_surface.defaultTermioEnv() catch |err| env: {
+                // If an error occurs, we don't want to block surface startup.
+                log.warn("error getting env map for surface err={}", .{err});
+                break :env global.environMap() catch std.process.Environ.Map.init(alloc);
+            };
+            errdefer env.deinit();
+
+            // don't leak GHOSTTY_LOG to any subprocesses
+            _ = env.orderedRemove("GHOSTTY_LOG");
+
+            var buf: [18]u8 = undefined;
+            try env.put(
+                "GHOSTTY_SURFACE_ID",
+                std.mem.print(&buf, "0x{x:0>16}", .{self.id}) catch unreachable,
+            );
+
+            break :termio_env env;
         };
-        errdefer env.deinit();
-
-        // don't leak GHOSTTY_LOG to any subprocesses
-        _ = env.orderedRemove("GHOSTTY_LOG");
-
-        var buf: [18]u8 = undefined;
-        try env.put(
-            "GHOSTTY_SURFACE_ID",
-            std.fmt.bufPrint(&buf, "0x{x:0>16}", .{self.id}) catch unreachable,
-        );
 
         // Initialize our IO backend
         var io_exec = try termio.Exec.init(alloc, .{
@@ -668,10 +704,14 @@ pub fn init(
         var io_mailbox = try termio.Mailbox.initSPSC(alloc);
         errdefer io_mailbox.deinit(alloc);
 
+        // Termio.init takes ownership of the config only on success.
+        var io_config = try termio.Termio.DerivedConfig.init(alloc, config);
+        errdefer io_config.deinit();
+
         try termio.Termio.init(&self.io, alloc, .{
             .size = size,
             .full_config = config,
-            .config = try termio.Termio.DerivedConfig.init(alloc, config),
+            .config = io_config,
             .backend = .{ .exec = io_exec },
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
@@ -710,10 +750,6 @@ pub fn init(
     // to duplicate.
     try self.resize(self.size.screen);
 
-    // Give the renderer one more opportunity to finalize any surface
-    // setup on the main thread prior to spinning up the rendering thread.
-    try renderer_impl.finalizeSurfaceInit(rt_surface);
-
     // Start our renderer thread
     self.renderer_thr = try std.Thread.spawn(
         .{},
@@ -749,7 +785,7 @@ pub fn init(
             .set_title,
             .{ .title = title },
         );
-    } else if ((comptime builtin.os.tag == .linux) and
+    } else if ((comptime builtin.target.os.tag == .linux) and
         config.@"_xdg-terminal-exec")
     xdg: {
         // For xdg-terminal-exec execution we special-case and set the window
@@ -799,9 +835,6 @@ pub fn deinit(self: *Surface) void {
         self.renderer_thread.stop.notify() catch |err|
             log.err("error notifying renderer thread to stop, may stall err={}", .{err});
         self.renderer_thr.join();
-
-        // We need to become the active rendering thread again
-        self.renderer.threadEnter(self.rt_surface) catch unreachable;
     }
 
     // Stop our IO thread
@@ -813,8 +846,13 @@ pub fn deinit(self: *Surface) void {
 
     // We need to deinit AFTER everything is stopped, since there are
     // shared values between the two threads.
-    self.renderer_thread.deinit();
+    //
+    // The renderer must be deinitialized before the renderer thread:
+    // on macOS the renderer's display link callback points at the
+    // thread's `draw_now` handle, and the renderer's deinit is what
+    // stops the display link for good.
     self.renderer.deinit();
+    self.renderer_thread.deinit();
     self.io_thread.deinit();
     self.mouse.selection_gesture.deinit(&self.io.terminal);
     self.io.deinit();
@@ -837,7 +875,7 @@ pub fn deinit(self: *Surface) void {
     self.alloc.destroy(self.renderer_state.mutex);
     self.config.deinit();
 
-    log.info("surface closed addr={x}", .{@intFromPtr(self)});
+    log.info("surface closed id={x}", .{self.id});
 }
 
 /// Close this surface. This will trigger the runtime to start the
@@ -854,7 +892,7 @@ inline fn surfaceMailbox(self: *Surface) Mailbox {
     };
 }
 
-/// Queue a message for the IO thread.
+/// Queue a message for the IO thread, taking ownership of `msg`.
 ///
 /// We centralize all our logic into this spot so we can intercept
 /// messages for example in readonly mode.
@@ -869,7 +907,10 @@ fn queueIo(
             .write_small,
             .write_stable,
             .write_alloc,
-            => return,
+            => {
+                msg.deinit();
+                return;
+            },
 
             else => {},
         }
@@ -912,6 +953,19 @@ pub fn activateInspector(self: *Surface) !void {
     // Notify our components we have an inspector active
     _ = self.renderer_thread.mailbox.push(global.io(), .{ .inspector = true }, .{ .forever = {} });
     self.queueIo(.{ .inspector = true }, .unlocked);
+}
+
+/// Report to the renderer how well the apprt can present the frames
+/// the renderer exports. See `renderer.Health` and the renderer's
+/// `presentation_health` state for the semantics.
+pub fn reportPresentationHealth(self: *Surface, health: rendererpkg.Health) void {
+    _ = self.renderer_thread.mailbox.push(
+        global.io(),
+        .{ .presentation_health = health },
+        .forever,
+    );
+    self.renderer_thread.wakeup.notify() catch |err|
+        log.warn("failed to wake up renderer err={}", .{err});
 }
 
 /// Deactivate the inspector and stop collecting any information.
@@ -990,8 +1044,7 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
 
             const title: ?[:0]const u8 = self.rt_surface.getTitle();
             const data = switch (style) {
-                .csi_21_t => try std.fmt.allocPrint(
-                    self.alloc,
+                .csi_21_t => try self.alloc.print(
                     "\x1b]l{s}\x1b\\",
                     .{title orelse ""},
                 ),
@@ -1008,6 +1061,8 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             }, .unlocked);
         },
 
+        .resize_window => |size| try self.resizeWindow(size),
+
         .color_change => |change| color_change: {
             // Notify our apprt, but don't send a mode 2031 DSR report
             // because VT sequences were used to change the color.
@@ -1016,7 +1071,7 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
                 .color_change,
                 .{
                     .kind = switch (change.target) {
-                        .palette => |v| @enumFromInt(v),
+                        .palette => |v| @fromBackingInt(v),
                         .dynamic => |dyn| switch (dyn) {
                             .foreground => .foreground,
                             .background => .background,
@@ -1052,6 +1107,10 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             _ = try self.startClipboardRequest(.standard, .{ .osc_52_read = clipboard });
         },
 
+        .kitty_clipboard_read => |req| try self.kittyClipboardRead(req),
+
+        .kitty_clipboard_write => |req| try self.kittyClipboardWrite(req),
+
         .clipboard_write => |w| switch (w.req) {
             .small => |v| try self.clipboardWrite(v.data[0..v.len], w.clipboard_type),
             .stable => |v| try self.clipboardWrite(v, w.clipboard_type),
@@ -1064,9 +1123,11 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
         .pwd_change => |w| {
             defer w.deinit();
 
-            // We always allocate for this because we need to null-terminate.
-            const str = try self.alloc.dupeZ(u8, w.slice());
-            defer self.alloc.free(str);
+            var stack_buf: [256]u8 = undefined;
+            var stack: std.heap.BufferFirstAllocator = .init(&stack_buf, self.alloc);
+            const alloc = stack.allocator();
+            const str = try alloc.dupeSentinel(u8, w.slice(), 0);
+            defer alloc.free(str);
 
             _ = try self.rt_app.performAction(
                 .{ .surface = self },
@@ -1089,6 +1150,8 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             const body = std.mem.sliceTo(&notification.body, 0);
             try self.showDesktopNotification(title, body);
         },
+
+        .redraw => self.redraw(),
 
         .renderer_health => |health| self.updateRendererHealth(health),
 
@@ -1324,7 +1387,7 @@ fn childExitedAbnormally(
     const command = try std.mem.join(alloc, " ", switch (self.io.backend) {
         .exec => |*exec| exec.subprocess.args,
     });
-    const runtime_str = try std.fmt.allocPrint(alloc, "{d} ms", .{info.runtime_ms});
+    const runtime_str = try alloc.print("{d} ms", .{info.runtime_ms});
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
@@ -1372,7 +1435,7 @@ fn childExitedAbnormally(
     // We don't print this on macOS because the exit code is always 0
     // due to the way we launch the process.
     if (comptime !builtin.target.os.tag.isDarwin()) {
-        const exit_code_str = try std.fmt.allocPrint(alloc, "{d}", .{info.exit_code});
+        const exit_code_str = try alloc.print("{d}", .{info.exit_code});
         t.carriageReturn();
         try t.linefeed();
         try t.printString("Exit Code: ");
@@ -1604,7 +1667,7 @@ fn mouseRefreshLinks(
         // highlight links until the mouse is unclicked. This follows
         // standard macOS and Linux behavior where a click and drag cancels
         // mouse actions.
-        const left_idx = @intFromEnum(input.MouseButton.left);
+        const left_idx = @backingInt(input.MouseButton.left);
         if (self.mouse.click_state[left_idx] == .press) click: {
             const pin = self.mouse.activeLeftClickPin(&self.io.terminal.screens) orelse break :click;
             const click_pt = self.io.terminal.screens.active.pages.pointFromPin(
@@ -1639,7 +1702,7 @@ fn mouseRefreshLinks(
                     break :link .{ null, false };
                 };
                 break :link .{
-                    .{ .url = try alloc.dupeZ(u8, uri) },
+                    .{ .url = try alloc.dupeSentinel(u8, uri, 0) },
                     self.config.link_previews != .false,
                 };
             },
@@ -1708,6 +1771,18 @@ fn updateScrollbar(self: *Surface, scrollbar: terminal.Scrollbar) void {
         scrollbar,
     ) catch |err| {
         log.warn("failed to notify app of scrollbar change err={}", .{err});
+    };
+}
+
+/// Called when the render thread has pushed a new frame.
+/// Notifies the apprt to redraw this surface.
+fn redraw(self: *Surface) void {
+    _ = self.rt_app.performAction(
+        .{ .surface = self },
+        .render,
+        {},
+    ) catch |err| {
+        log.warn("failed to notify app of frame present err={}", .{err});
     };
 }
 
@@ -1875,6 +1950,41 @@ fn recomputeInitialSize(
         .initial_size,
         .{ .width = final_width, .height = final_height },
     ) catch return error.AppActionFailed;
+}
+
+/// Handle a request from the running program (CSI 8 t) to resize the
+/// window to the given grid size.
+fn resizeWindow(
+    self: *Surface,
+    size: terminal.StreamAction.ResizeWindow,
+) !void {
+    if (!self.config.vt_window_resize_allowed) {
+        log.info("resize_window requested, but disabled via config", .{});
+        return;
+    }
+
+    // Our cell size and padding are in pixels but the apprt expects
+    // points. We use the configured padding rather than the current
+    // padding since balanced padding depends on the size.
+    const scale = try self.rt_surface.getContentScale();
+    const padding = self.config.scaledPadding(
+        scale.x * font.face.default_dpi,
+        scale.y * font.face.default_dpi,
+    );
+    const width: f32 = @floatFromInt(@max(size.columns, min_resize_width_cells) *
+        self.size.cell.width + padding.left + padding.right);
+    const height: f32 = @floatFromInt(@max(size.rows, min_resize_height_cells) *
+        self.size.cell.height + padding.top + padding.bottom);
+
+    // A zero dimension is passed through so the apprt keeps it as is.
+    _ = try self.rt_app.performAction(
+        .{ .surface = self },
+        .resize_window,
+        .{
+            .width = if (size.columns > 0) @intFromFloat(@ceil(width / scale.x)) else 0,
+            .height = if (size.rows > 0) @intFromFloat(@ceil(height / scale.y)) else 0,
+        },
+    );
 }
 
 /// Represents text read from the terminal and some metadata about it
@@ -2103,6 +2213,13 @@ fn resolvePathForOpening(
 /// Returns the x/y coordinate of where the IME (Input Method Editor)
 /// keyboard should be rendered.
 pub fn imePoint(self: *const Surface) apprt.IMEPos {
+    const content_scale = self.rt_surface.getContentScale() catch .{ .x = 1, .y = 1 };
+    return self.imePointScaled(content_scale);
+}
+
+/// Same as `imePoint`, but divides our sizes by the given scale instead
+/// of the content scale.
+pub fn imePointScaled(self: *const Surface, scale: apprt.ContentScale) apprt.IMEPos {
     self.renderer_state.mutex.lockUncancelable(global.io());
     const cursor = self.renderer_state.terminal.screens.active.cursor;
     const preedit_width: usize = if (self.renderer_state.preedit) |preedit| preedit.width() else 0;
@@ -2112,7 +2229,6 @@ pub fn imePoint(self: *const Surface) apprt.IMEPos {
     // in the visible portion of the screen.
 
     // Our sizes are all scaled so we need to send the unscaled values back.
-    const content_scale = self.rt_surface.getContentScale() catch .{ .x = 1, .y = 1 };
 
     const x: f64 = x: {
         // Simple x * cell width gives the top-left corner, then add padding offset
@@ -2122,7 +2238,7 @@ pub fn imePoint(self: *const Surface) apprt.IMEPos {
         x += @as(f64, @floatFromInt(self.size.cell.width)) / 2;
 
         // And scale it
-        x /= content_scale.x;
+        x /= scale.x;
 
         break :x x;
     };
@@ -2135,7 +2251,7 @@ pub fn imePoint(self: *const Surface) apprt.IMEPos {
         y += @floatFromInt(self.size.cell.height);
 
         // And scale it
-        y /= content_scale.y;
+        y /= scale.y;
 
         break :y y;
     };
@@ -2144,7 +2260,7 @@ pub fn imePoint(self: *const Surface) apprt.IMEPos {
     // rendering only renders in a single line.
     const height: f64 = height: {
         var height: f64 = @floatFromInt(self.size.cell.height);
-        height /= content_scale.y;
+        height /= scale.y;
         break :height height;
     };
     const width: f64 = width: {
@@ -2180,34 +2296,18 @@ fn clipboardWrite(self: *const Surface, data: []const u8, loc: apprt.Clipboard) 
         return;
     }
 
-    const dec = std.base64.standard.Decoder;
-
-    // Build buffer
-    const size = dec.calcSizeForSlice(data) catch |err| switch (err) {
-        error.InvalidPadding => {
-            log.info("application sent invalid base64 data for OSC 52", .{});
-            return;
-        },
-
-        // Should not be reachable but don't want to risk it.
-        else => return,
-    };
-    var buf = try self.alloc.allocSentinel(u8, size, 0);
+    // Decode with the SIMD decoder, strict per the Kitty clipboard
+    // spec that also governs OSC 52 base64 handling: a request with
+    // characters outside the base64 alphabet is discarded entirely
+    // (never partially decoded), while a missing-padding tail is
+    // tolerated since OSC 52 has no way to report errors.
+    var buf = try self.alloc.allocSentinel(u8, simd.base64.maxLen(data), 0);
     defer self.alloc.free(buf);
-    buf[buf.len] = 0;
-
-    // Decode
-    dec.decode(buf, data) catch |err| switch (err) {
-        // Ignore this. It is possible to actually have valid data and
-        // get this error, so we allow it.
-        error.InvalidPadding => {},
-
-        else => {
-            log.info("application sent invalid base64 data for OSC 52", .{});
-            return;
-        },
+    const decoded = simd.base64.decodeStrict(data, buf, .optional) catch {
+        log.info("application sent invalid base64 data for OSC 52", .{});
+        return;
     };
-    assert(buf[buf.len] == 0);
+    buf[decoded.len] = 0;
 
     // When clipboard-write is "ask" a prompt is displayed to the user asking
     // them to confirm the clipboard access. Each app runtime handles this
@@ -2215,7 +2315,7 @@ fn clipboardWrite(self: *const Surface, data: []const u8, loc: apprt.Clipboard) 
     const confirm = self.config.clipboard_write == .ask;
     self.rt_surface.setClipboard(loc, &.{.{
         .mime = "text/plain",
-        .data = buf,
+        .data = buf[0..decoded.len :0],
     }}, confirm) catch |err| {
         log.err("error setting clipboard string err={}", .{err});
         return;
@@ -2247,13 +2347,14 @@ fn copySelectionToClipboards(
 
     const ScreenFormatter = terminal.formatter.ScreenFormatter;
     var aw: std.Io.Writer.Allocating = .init(alloc);
-    var contents: std.ArrayList(apprt.ClipboardContent) = .empty;
+    var contents_buf: [2]apprt.ClipboardContent = undefined;
+    var contents: std.ArrayList(apprt.ClipboardContent) = .initBuffer(&contents_buf);
     switch (format) {
         .plain => {
             var formatter: ScreenFormatter = .init(self.io.terminal.screens.active, opts);
             formatter.content = .{ .selection = sel };
             try formatter.format(&aw.writer);
-            try contents.append(alloc, .{
+            contents.appendAssumeCapacity(.{
                 .mime = "text/plain",
                 .data = try aw.toOwnedSliceSentinel(0),
             });
@@ -2270,7 +2371,7 @@ fn copySelectionToClipboards(
 
             // Note: We don't apply codepoint mappings to VT format since it contains
             // escape sequences that should be preserved as-is
-            try contents.append(alloc, .{
+            contents.appendAssumeCapacity(.{
                 .mime = "text/plain",
                 .data = try aw.toOwnedSliceSentinel(0),
             });
@@ -2287,7 +2388,7 @@ fn copySelectionToClipboards(
 
             // Note: We don't apply codepoint mappings to HTML format since HTML
             // has its own character encoding and entity system
-            try contents.append(alloc, .{
+            contents.appendAssumeCapacity(.{
                 .mime = "text/html",
                 .data = try aw.toOwnedSliceSentinel(0),
             });
@@ -2298,7 +2399,7 @@ fn copySelectionToClipboards(
             var formatter: ScreenFormatter = .init(self.io.terminal.screens.active, opts);
             formatter.content = .{ .selection = sel };
             try formatter.format(&aw.writer);
-            try contents.append(alloc, .{
+            contents.appendAssumeCapacity(.{
                 .mime = "text/plain",
                 .data = try aw.toOwnedSliceSentinel(0),
             });
@@ -2321,7 +2422,7 @@ fn copySelectionToClipboards(
             try formatter.format(&aw.writer);
 
             // Note: We don't apply codepoint mappings to HTML format
-            try contents.append(alloc, .{
+            contents.appendAssumeCapacity(.{
                 .mime = "text/html",
                 .data = try aw.toOwnedSliceSentinel(0),
             });
@@ -2378,31 +2479,29 @@ fn setSelection(self: *Surface, sel_: ?terminal.Selection) !void {
 fn setSelectionAndCopy(self: *Surface, sel: terminal.Selection) !void {
     try self.setSelection(sel);
 
-    // If copy on select is false then exit early.
-    if (self.config.copy_on_select == .false) return;
-
     switch (self.config.copy_on_select) {
-        .false => unreachable, // handled above with an early exit
+        .none => {},
+
+        // The selection clipboard is set if supported, otherwise nothing is copied.
+        .primary => try self.copySelectionToClipboards(
+            sel,
+            &.{.selection},
+            .mixed,
+        ),
+
+        // Only the standard clipboard is set.
+        .clipboard => try self.copySelectionToClipboards(
+            sel,
+            &.{.standard},
+            .mixed,
+        ),
 
         // Both standard and selection clipboards are set.
-        .clipboard => try self.copySelectionToClipboards(
+        .both => try self.copySelectionToClipboards(
             sel,
             &.{ .standard, .selection },
             .mixed,
         ),
-
-        // The selection clipboard is set if supported, otherwise the standard.
-        .true => {
-            const clipboard: apprt.Clipboard = if (self.rt_surface.supportsClipboard(.selection))
-                .selection
-            else
-                .standard;
-            try self.copySelectionToClipboards(
-                sel,
-                &.{clipboard},
-                .mixed,
-            );
-        },
     }
 }
 
@@ -2479,6 +2578,25 @@ fn queueRender(self: *Surface) !void {
     try self.renderer_thread.wakeup.notify();
 }
 
+/// Called by the apprt when the surface's display is realized.
+/// Notifies the renderer so it can begin rendering.
+/// Safe to call from the main thread.
+pub fn displayRealized(self: *Surface) !void {
+    try self.renderer.displayRealized();
+}
+
+/// Called by the apprt when the surface's display is unrealized (the surface
+/// is being destroyed or reparented). Safe to call from the main thread.
+pub fn displayUnrealized(self: *Surface) void {
+    self.renderer.displayUnrealized();
+
+    // Wake the render thread so it notices `display_realized` is now false
+    // and releases GPU resources (swap chain and shaders).
+    self.renderer_thread.wakeup.notify() catch |err| {
+        log.warn("failed to notify renderer thread of unrealize err={}", .{err});
+    };
+}
+
 pub fn sizeCallback(self: *Surface, size: apprt.SurfaceSize) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
@@ -2518,6 +2636,16 @@ fn resize(self: *Surface, size: rendererpkg.ScreenSize) !void {
 
     // Mail the IO thread
     self.queueIo(.{ .resize = self.size }, .unlocked);
+
+    // Mail the render thread so it updates its padding and screen size.
+    _ = self.renderer_thread.mailbox.push(
+        global.io(),
+        .{ .resize = self.size },
+        .forever,
+    );
+    self.queueRender() catch |err| {
+        log.warn("failed to notify renderer of resize err={}", .{err});
+    };
 }
 
 /// Recalculate the balanced padding if needed.
@@ -2817,11 +2945,11 @@ pub fn keyCallback(
         // an encoded value, we close the surface. We want to eventually
         // move this behavior to the apprt probably.
         if (self.child_exited) {
+            write_req.deinit();
             self.close();
             return .closed;
         }
 
-        errdefer write_req.deinit();
         self.queueIo(switch (write_req) {
             .small => |v| .{ .write_small = v },
             .stable => |v| .{ .write_stable = v },
@@ -2939,15 +3067,18 @@ fn maybeHandleBinding(
     // Determine if this entry has an action or if its a leader key.
     const leaf: input.Binding.Set.GenericLeaf = switch (entry.value_ptr.*) {
         .leader => |set| {
-            // Setup the next set we'll look at.
-            self.keyboard.sequence_set = set;
-
             // Store this event so that we can drain and encode on invalid.
             // We don't need to cap this because it is naturally capped by
             // the config validation.
             if (try self.encodeKey(event, insp_ev)) |req| {
-                try self.keyboard.sequence_queued.append(self.alloc, req);
+                self.keyboard.sequence_queued.append(self.alloc, req) catch |err| {
+                    req.deinit();
+                    return err;
+                };
             }
+
+            // Setup the next set we'll look at only after all fallible work.
+            self.keyboard.sequence_set = set;
 
             // Start or continue our key sequence
             _ = self.rt_app.performAction(
@@ -3237,17 +3368,15 @@ fn encodeKey(
         );
         defer alloc_writer.deinit();
 
-        // This results in a double allocation but this is such an unlikely
-        // path the performance impact is unimportant.
         try input.key_encode.encode(
             &alloc_writer.writer,
             event,
             encoding_opts,
         );
-        break :req try termio.Message.WriteReq.init(
-            self.alloc,
-            alloc_writer.writer.buffered(),
-        );
+        break :req .{ .alloc = .{
+            .alloc = self.alloc,
+            .data = try alloc_writer.toOwnedSlice(),
+        } };
     };
 
     // Copy the encoded data into the inspector event if we have one.
@@ -3273,7 +3402,7 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
     const t = &self.io.terminal;
 
     var opts: input.key_encode.Options = .fromTerminal(t);
-    if (comptime builtin.os.tag != .macos) return opts;
+    if (comptime builtin.target.os.tag != .macos) return opts;
 
     opts.macos_option_as_alt = self.config.macos_option_as_alt orelse detect: {
         // If we don't have alt pressed, it doesn't matter what this
@@ -3310,9 +3439,27 @@ pub fn occlusionCallback(self: *Surface, visible: bool) !void {
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
 
+    // Avoid duplicate renderer and visibility reports.
+    if (self.visible == visible) return;
+    self.visible = visible;
+
+    // Update the terminal state for synchronous queries, then notify the IO
+    // thread so it can emit a mode 2033 report when enabled.
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    self.io.terminal.flags.visible = visible;
+    const report_visibility = self.io.terminal.modes.get(.report_visibility);
+    self.renderer_state.mutex.unlock(global.io());
+    if (report_visibility) {
+        self.queueIo(.{ .visibility_report = .{
+            .visible = visible,
+            .force = false,
+        } }, .unlocked);
+    }
+
     _ = self.renderer_thread.mailbox.push(global.io(), .{
         .visible = visible,
     }, .{ .forever = {} });
+
     try self.queueRender();
 }
 
@@ -3627,8 +3774,8 @@ pub fn contentScaleCallback(self: *Surface, content_scale: apprt.ContentScale) !
     // Update our font size which is dependent on the DPI
     const size = size: {
         var size = self.font_size;
-        size.xdpi = @intFromFloat(x_dpi);
-        size.ydpi = @intFromFloat(y_dpi);
+        size.xdpi = @intFromFloat(@round(x_dpi));
+        size.ydpi = @intFromFloat(@round(y_dpi));
         break :size size;
     };
 
@@ -3655,6 +3802,12 @@ pub fn contentScaleCallback(self: *Surface, content_scale: apprt.ContentScale) !
 fn isMouseReporting(self: *const Surface) bool {
     return self.config.mouse_reporting and
         self.io.terminal.flags.mouse_event != .none;
+}
+
+pub fn mouseReportingActive(self: *Surface) bool {
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+    return self.isMouseReporting();
 }
 
 fn mouseReport(
@@ -3780,7 +3933,7 @@ pub fn mouseButtonCallback(
     }
 
     // Always record our latest mouse state
-    self.mouse.click_state[@intCast(@intFromEnum(button))] = action;
+    self.mouse.click_state[@intCast(@backingInt(button))] = action;
 
     // Always show the mouse again if it is hidden
     if (self.mouse.hidden) self.showMouse();
@@ -3866,7 +4019,7 @@ pub fn mouseButtonCallback(
         // The selection clipboard is only updated for left-click drag when
         // the left button is released. This is to avoid the clipboard
         // being updated on every mouse move which would be noisy.
-        if (self.config.copy_on_select != .false) {
+        if (self.config.copy_on_select != .none) {
             const prev_ = self.io.terminal.screens.active.selection;
             if (prev_) |prev| {
                 try self.setSelectionAndCopy(terminal.Selection.init(
@@ -4024,22 +4177,16 @@ pub fn mouseButtonCallback(
         }
     }
 
-    // Middle-click paste source follows copy-on-select: when copy-on-select
-    // targets the selection clipboard, middle-click reads from it; when
-    // copy-on-select targets the system clipboard, middle-click reads from
-    // that instead. Falls back to the standard clipboard on platforms that
-    // do not support the selection clipboard.
+    // Middle-click action, either ignore, or paste from clipboard or paste from the selection clipboard if supported.
     if (button == .middle and action == .press) switch (self.config.middle_click_action) {
         .ignore => {},
+        .@"clipboard-paste" => {
+            _ = try self.startClipboardRequest(.standard, .{ .paste = .standard });
+        },
         .@"primary-paste" => {
-            const clipboard: apprt.Clipboard = switch (self.config.copy_on_select) {
-                .clipboard => .standard,
-                .true, .false => if (self.rt_surface.supportsClipboard(.selection))
-                    .selection
-                else
-                    .standard,
-            };
-            _ = try self.startClipboardRequest(clipboard, .{ .paste = {} });
+            if (self.rt_surface.supportsClipboard(.selection)) {
+                _ = try self.startClipboardRequest(.selection, .{ .paste = .selection });
+            }
         },
     };
 
@@ -4123,7 +4270,7 @@ pub fn mouseButtonCallback(
                 // request so we need to unlock.
                 self.renderer_state.mutex.unlock(global.io());
                 defer self.renderer_state.mutex.lockUncancelable(global.io());
-                _ = try self.startClipboardRequest(.standard, .paste);
+                _ = try self.startClipboardRequest(.standard, .{ .paste = .standard });
 
                 // We don't need to clear selection because we didn't have
                 // one to begin with.
@@ -4138,7 +4285,7 @@ pub fn mouseButtonCallback(
                 // request so we need to unlock.
                 self.renderer_state.mutex.unlock(global.io());
                 defer self.renderer_state.mutex.lockUncancelable(global.io());
-                _ = try self.startClipboardRequest(.standard, .paste);
+                _ = try self.startClipboardRequest(.standard, .{ .paste = .standard });
             },
         }
 
@@ -4164,6 +4311,10 @@ fn maybePromptClick(self: *Surface) !bool {
     // If our cursor isn't currently at a prompt then we don't handle
     // prompt clicks because we can't move if we're not in a prompt!
     if (!t.cursorIsAtPrompt()) return false;
+
+    // A press reported under mouse tracking resets the gesture, and its
+    // release must be reported too rather than moving the cursor.
+    if (self.mouse.selection_gesture.left_click_count == 0) return false;
 
     // If the left click moved away from its pressed cell then releasing the
     // mouse completes the drag gesture and we don't do prompt moving.
@@ -4225,10 +4376,13 @@ fn maybePromptClick(self: *Surface) !bool {
             // This matches what Kitty sends.
             const key: u8, const y: u32 = switch (v) {
                 .absolute => .{ 1, pos_vp.y +| 1 },
-                .relative => .{ 2, pos_vp.y -| prompt_pin.y +| 1 },
+                .relative => .{
+                    2,
+                    promptClickRelativeRow(&screen.pages, prompt_pin, click_pin),
+                },
             };
             var data: termio.Message.WriteReq.Small.Array = undefined;
-            const resp = try std.fmt.bufPrint(
+            const resp = try std.mem.print(
                 &data,
                 "\x1B[<0;{d};{d}M",
                 .{ pos_vp.x + 1, y },
@@ -4270,6 +4424,17 @@ fn maybePromptClick(self: *Surface) !bool {
     return true;
 }
 
+/// Returns the one-based SGR row for a click at or below the prompt.
+fn promptClickRelativeRow(
+    pages: *const terminal.PageList,
+    prompt_pin: terminal.Pin,
+    click_pin: terminal.Pin,
+) u32 {
+    const prompt_y = pages.pointFromPin(.screen, prompt_pin).?.screen.y;
+    const click_y = pages.pointFromPin(.screen, click_pin).?.screen.y;
+    return click_y - prompt_y + 1;
+}
+
 const Link = struct {
     action: input.Link.Action,
     selection: terminal.Selection,
@@ -4297,7 +4462,9 @@ fn linkAtPos(
     const mouse_mods = self.mouseModsWithCapture(self.mouse.mods);
 
     // If we have the proper modifiers set then we can check for OSC8 links.
-    if (mouse_mods.equal(input.ctrlOrSuper(.{}))) hyperlink: {
+    if (self.config.link_osc8 and
+        mouse_mods.equal(input.ctrlOrSuper(.{})))
+    hyperlink: {
         const rac = mouse_pin.rowAndCell();
         const cell = rac.cell;
         if (!cell.hyperlink) break :hyperlink;
@@ -4331,12 +4498,10 @@ fn linkAtPin(
         .semantic_prompt_boundary = true,
     }) orelse return null;
 
-    var strmap: terminal.StringMap = undefined;
-    self.alloc.free(try screen.selectionString(self.alloc, .{
+    const strmap = try screen.selectionStringMap(self.alloc, .{
         .sel = line,
         .trim = false,
-        .map = &strmap,
-    }));
+    });
     defer strmap.deinit(self.alloc);
 
     for (self.config.links) |link| {
@@ -4407,7 +4572,7 @@ fn processLinks(self: *Surface, pos: apprt.CursorPos) !bool {
                 log.warn("failed to get URI for OSC8 hyperlink", .{});
                 return false;
             };
-            try self.openUrl(.{ .kind = .unknown, .url = uri });
+            try self.openUrl(.{ .kind = .osc8, .url = uri });
         },
     }
 
@@ -4471,7 +4636,7 @@ pub fn mousePressureCallback(
     // button is already down. Treat it as the platform text-selection
     // affordance: select the pressed word, then consume the active gesture so
     // further cursor motion doesn't drag the selection.
-    const left_idx = @intFromEnum(input.MouseButton.left);
+    const left_idx = @backingInt(input.MouseButton.left);
     if (self.mouse.click_state[left_idx] == .press and
         stage == .deep)
     select: {
@@ -4625,7 +4790,7 @@ pub fn cursorPosCallback(
         // since the spec (afaict) does not say...
         const button: ?input.MouseButton = button: for (self.mouse.click_state, 0..) |state, i| {
             if (state == .press)
-                break :button @enumFromInt(i);
+                break :button @fromBackingInt(@intCast(i));
         } else null;
 
         self.mouseReport(button, .motion, self.mouse.mods, pos);
@@ -4636,7 +4801,7 @@ pub fn cursorPosCallback(
     }
 
     // Handle cursor position for text selection
-    if (self.mouse.click_state[@intFromEnum(input.MouseButton.left)] == .press) select: {
+    if (self.mouse.click_state[@backingInt(input.MouseButton.left)] == .press) select: {
         // Left click pressed but count zero can happen if mouse reporting is on.
         // In this scenario, we mark the click state because we need that to
         // properly make some mouse reports, but we don't keep track of the
@@ -4814,8 +4979,8 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             // as two literals.
             var buf: [128]u8 = undefined;
             const full_data = switch (action) {
-                .csi => try std.fmt.bufPrint(&buf, "\x1b[{s}", .{data}),
-                .esc => try std.fmt.bufPrint(&buf, "\x1b{s}", .{data}),
+                .csi => try std.mem.print(&buf, "\x1b[{s}", .{data}),
+                .esc => try std.mem.print(&buf, "\x1b{s}", .{data}),
                 else => unreachable,
             };
             self.queueIo(try termio.Message.writeReq(
@@ -4834,10 +4999,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .text => |data| {
-            // For text we always allocate just because its easier to
-            // handle all cases that way.
-            const buf = try self.alloc.alloc(u8, data.len);
-            defer self.alloc.free(buf);
+            var stack_buf: [256]u8 = undefined;
+            var stack: std.heap.BufferFirstAllocator = .init(&stack_buf, self.alloc);
+            const alloc = stack.allocator();
+            const buf = try alloc.alloc(u8, data.len);
+            defer alloc.free(buf);
             const text = configpkg.string.parse(buf, data) catch |err| {
                 log.warn(
                     "error parsing text binding text={s} err={}",
@@ -5046,7 +5212,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                             log.warn("failed to get URI for OSC8 hyperlink", .{});
                             return false;
                         };
-                        break :url_text try self.alloc.dupeZ(u8, uri);
+                        break :url_text try self.alloc.dupeSentinel(u8, uri, 0);
                     },
                 };
                 defer self.alloc.free(url_text);
@@ -5071,15 +5237,15 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
-        .paste_from_clipboard => return try self.startClipboardRequest(
+        .paste_from_clipboard => return (try self.startClipboardRequest(
             .standard,
-            .{ .paste = {} },
-        ),
+            .{ .paste = .standard },
+        )) == .started,
 
-        .paste_from_selection => return try self.startClipboardRequest(
+        .paste_from_selection => return (try self.startClipboardRequest(
             .selection,
-            .{ .paste = {} },
-        ),
+            .{ .paste = .selection },
+        )) == .started,
 
         .increase_font_size => |delta| {
             // Max delta is somewhat arbitrary.
@@ -5144,8 +5310,14 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .tab,
         ),
 
+        .prompt_window_title => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .prompt_title,
+            .window,
+        ),
+
         .set_surface_title => |v| {
-            const title = try self.alloc.dupeZ(u8, v);
+            const title = try self.alloc.dupeSentinel(u8, v, 0);
             defer self.alloc.free(title);
             return try self.rt_app.performAction(
                 .{ .surface = self },
@@ -5155,11 +5327,21 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .set_tab_title => |v| {
-            const title = try self.alloc.dupeZ(u8, v);
+            const title = try self.alloc.dupeSentinel(u8, v, 0);
             defer self.alloc.free(title);
             return try self.rt_app.performAction(
                 .{ .surface = self },
                 .set_tab_title,
+                .{ .title = title },
+            );
+        },
+
+        .set_window_title => |v| {
+            const title = try self.alloc.dupeSentinel(u8, v, 0);
+            defer self.alloc.free(title);
+            return try self.rt_app.performAction(
+                .{ .surface = self },
+                .set_window_title,
                 .{ .title = title },
             );
         },
@@ -5292,7 +5474,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 .previous_tab => .previous,
                 .next_tab => .next,
                 .last_tab => .last,
-                .goto_tab => @enumFromInt(v),
+                .goto_tab => @fromBackingInt(@intCast(v)),
                 else => comptime unreachable,
             },
         ),
@@ -5301,6 +5483,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             .{ .surface = self },
             .move_tab,
             .{ .amount = position },
+        ),
+
+        .move_tab_to_new_window => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .move_tab_to_new_window,
+            {},
         ),
 
         .new_split => |direction| return try self.rt_app.performAction(
@@ -5658,10 +5846,11 @@ fn writeScreenFile(
 ) !void {
     // Create a temporary directory to store our scrollback.
     var tmp_dir = try internal_os.TempDir.init();
-    errdefer tmp_dir.deinit();
+    var retain_tmp_dir = false;
+    defer if (retain_tmp_dir) tmp_dir.close(.retain) else tmp_dir.deinit();
 
-    var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try std.fmt.bufPrint(
+    var filename_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const filename = try std.mem.print(
         &filename_buf,
         "{s}.{s}",
         .{
@@ -5677,7 +5866,7 @@ fn writeScreenFile(
     var file = try tmp_dir.dir.createFile(
         global.io(),
         filename,
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .windows => .{},
             else => .{ .permissions = .fromMode(0o600) },
         },
@@ -5728,7 +5917,6 @@ fn writeScreenFile(
 
         const sel = sel_ orelse {
             // If we have no selection we have no data so we do nothing.
-            tmp_dir.deinit();
             return;
         };
 
@@ -5754,7 +5942,7 @@ fn writeScreenFile(
     try buf_writer.flush();
 
     // Get the final path
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = path_buf[0..try tmp_dir.dir.realPathFile(
         global.io(),
         filename,
@@ -5763,7 +5951,7 @@ fn writeScreenFile(
 
     switch (write_screen.action) {
         .copy => {
-            const pathZ = try self.alloc.dupeZ(u8, path);
+            const pathZ = try self.alloc.dupeSentinel(u8, path, 0);
             defer self.alloc.free(pathZ);
             try self.rt_surface.setClipboard(.standard, &.{.{
                 .mime = "text/plain",
@@ -5782,71 +5970,295 @@ fn writeScreenFile(
             path,
         ), .unlocked),
     }
+
+    // The action accepted the path, so retain the file for its consumer.
+    retain_tmp_dir = true;
 }
 
+/// The payload for completing a clipboard request with
+/// completeClipboardRequest.
+pub const CompleteClipboard = struct {
+    /// The representations the apprt could serve for the request's MIME
+    /// types. These are immediately copied as needed so they only need
+    /// to live for the duration of the completion call. Requesters that
+    /// only carry text (paste, OSC 52) use the first text-like
+    /// representation.
+    contents: []const terminal.clipboard.Content = &.{},
+
+    /// The listing of MIME types available on the clipboard, only
+    /// gathered when the request asked for it.
+    available: []const []const u8 = &.{},
+
+    /// True if any clipboard confirmation prompt was already answered
+    /// by the user, skipping further prompts:
+    ///
+    ///   - For "regular" pasting this means that unsafe pastes are
+    ///     allowed. Unsafe data is defined as data that contains
+    ///     line terminators (newlines or carriage returns), though
+    ///     this definition may change later to detect other scenarios.
+    ///
+    ///   - For OSC 52 and Kitty clipboard protocol reads and writes no
+    ///     prompt is shown to the user when this is true.
+    confirmed: bool = false,
+
+    /// True if the user asked to remember their decision. This is only
+    /// honored by request types that support session grants (Kitty
+    /// clipboard protocol requests carrying a password).
+    remember: bool = false,
+};
+
 /// Call this to complete a clipboard request sent to apprt. This should
-/// only be called once for each request. The data is immediately copied so
-/// it is safe to free the data after this call.
+/// only be called once for each request.
 ///
-/// If `confirmed` is true then any clipboard confirmation prompts are skipped:
-///
-///   - For "regular" pasting this means that unsafe pastes are allowed. Unsafe
-///     data is defined as data that contains newlines, though this definition
-///     may change later to detect other scenarios.
-///
-///   - For OSC 52 reads and writes no prompt is shown to the user if
-///     `confirmed` is true.
-///
-/// If `confirmed` is false then this may return either an UnsafePaste or
-/// UnauthorizedPaste error, depending on the type of clipboard request.
+/// If `complete.confirmed` is false then this may return either an
+/// UnsafePaste or UnauthorizedPaste error, depending on the type of
+/// clipboard request. The request state remains alive in that case so
+/// the apprt can run its confirmation flow.
 pub fn completeClipboardRequest(
     self: *Surface,
     req: apprt.ClipboardRequest,
-    data: [:0]const u8,
-    confirmed: bool,
+    complete: CompleteClipboard,
 ) !void {
     switch (req) {
-        .paste => try self.completeClipboardPaste(data, confirmed),
-
-        .osc_52_read => |clipboard| try self.completeClipboardReadOSC52(
-            data,
-            clipboard,
-            confirmed,
+        .paste => try self.completeClipboardPaste(
+            clipboardTextContent(complete.contents) orelse "",
+            complete.confirmed,
         ),
 
-        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{.{
-            .mime = "text/plain",
-            .data = data,
-        }}, !confirmed),
+        .list => |clipboard| if (!try self.completeClipboardPasteEvent(
+            clipboard,
+            complete.available,
+        )) {
+            log.debug("mode 5522 paste event was not written", .{});
+        },
+
+        .osc_52_read => |clipboard| try self.completeClipboardReadOSC52(
+            clipboardTextContent(complete.contents) orelse "",
+            clipboard,
+            complete.confirmed,
+        ),
+
+        .osc_52_write => |clipboard| {
+            // The write API wants sentinel-terminated data; the write
+            // text round-tripped through the apprt confirmation flow as
+            // a plain representation.
+            const data = try self.alloc.dupeSentinel(
+                u8,
+                clipboardTextContent(complete.contents) orelse "",
+                0,
+            );
+            defer self.alloc.free(data);
+            try self.rt_surface.setClipboard(clipboard, &.{.{
+                .mime = "text/plain",
+                .data = data,
+            }}, !complete.confirmed);
+        },
+
+        .kitty_read => |kitty| {
+            // If we need confirmation we return an error without
+            // consuming the request state; the apprt keeps it alive
+            // for the confirmation flow. A session grant carried by
+            // the request skips the prompt, and a request with no
+            // data types is exempt from prompting entirely; see
+            // readPromptExempt.
+            if (self.config.clipboard_read == .ask and
+                !complete.confirmed and
+                !kitty.granted and
+                !terminal.kitty.clipboard.readPromptExempt(kitty.mimes.len))
+            {
+                return error.UnauthorizedPaste;
+            }
+
+            // Past the confirmation check the request is consumed:
+            // every path from here, including errors, must destroy it.
+            defer kitty.destroy();
+
+            // Record a session grant when the user asked to remember
+            // their decision and the request carried a usable
+            // password. The grants live with the terminal state on
+            // the IO thread.
+            if (complete.remember and kitty.pw.len > 0) {
+                const pw = try self.alloc.dupe(u8, kitty.pw);
+                self.queueIo(.{ .kitty_clipboard_grant_read = .{
+                    .alloc = self.alloc,
+                    .pw = pw,
+                } }, .unlocked);
+            }
+
+            try self.completeKittyClipboardRead(
+                kitty,
+                complete.contents,
+                complete.available,
+            );
+        },
+
+        .kitty_write => |kitty| {
+            // If we need confirmation we return an error without
+            // consuming the request state; the apprt keeps it alive
+            // for the confirmation flow. A session grant carried by
+            // the request skips the prompt.
+            if (self.config.clipboard_write == .ask and
+                !complete.confirmed and
+                !kitty.granted)
+            {
+                return error.UnauthorizedPaste;
+            }
+
+            // Past the confirmation check the request is consumed:
+            // every path from here, including errors, must destroy it.
+            defer kitty.destroy();
+
+            // Record a session grant when the user asked to remember
+            // their decision and the request carried a usable
+            // password. The grants live with the terminal state on
+            // the IO thread.
+            if (complete.remember and kitty.pw.len > 0) {
+                const pw = try self.alloc.dupe(u8, kitty.pw);
+                self.queueIo(.{ .kitty_clipboard_grant_write = .{
+                    .alloc = self.alloc,
+                    .pw = pw,
+                } }, .unlocked);
+            }
+
+            // Apply the committed representations carried by the
+            // request itself; any contents echoed back by the apprt
+            // are only what its confirmation prompt displayed. An
+            // empty commit clears the clipboard, which the apprt
+            // write API expresses as a single empty text entry.
+            self.rt_surface.setClipboard(
+                kitty.location,
+                if (kitty.contents.len > 0) kitty.contents else &.{.{
+                    .mime = "text/plain",
+                    .data = "",
+                }},
+                false,
+            ) catch |err| {
+                log.err("error setting clipboard err={}", .{err});
+                try self.kittyClipboardStatus(
+                    .write,
+                    kitty.id,
+                    kitty.terminator,
+                    .EIO,
+                );
+                return;
+            };
+
+            try self.kittyClipboardStatus(
+                .write,
+                kitty.id,
+                kitty.terminator,
+                .DONE,
+            );
+        },
+    }
+}
+
+/// The first text-like representation of the contents, if any.
+fn clipboardTextContent(contents: []const terminal.clipboard.Content) ?[]const u8 {
+    for (contents) |content| {
+        if (terminal.clipboard.isTextMime(content.mime)) return content.data;
+    }
+    return null;
+}
+
+/// Deny an in-flight clipboard request. This consumes the request: for
+/// request types whose protocol expects an answer, the denial reply is
+/// written to the pty.
+pub fn denyClipboardRequest(self: *Surface, req: apprt.ClipboardRequest) void {
+    switch (req) {
+        // A denied paste simply doesn't happen.
+        .paste, .list => {},
+
+        // OSC 52 has no error responses, but the client is waiting on
+        // a reply, so a denied read is answered with empty contents.
+        .osc_52_read => |clipboard| self.completeClipboardReadOSC52(
+            "",
+            clipboard,
+            true,
+        ) catch |err| {
+            log.warn("error replying to OSC 52 clipboard read err={}", .{err});
+        },
+
+        // A denied write simply doesn't happen.
+        .osc_52_write => {},
+
+        // The Kitty clipboard protocol reports denial explicitly.
+        .kitty_read => |kitty| {
+            defer kitty.destroy();
+            self.kittyClipboardStatus(
+                .read,
+                kitty.id,
+                kitty.terminator,
+                .EPERM,
+            ) catch |err| {
+                log.warn("error replying to kitty clipboard read err={}", .{err});
+            };
+        },
+
+        .kitty_write => |kitty| {
+            defer kitty.destroy();
+            self.kittyClipboardStatus(
+                .write,
+                kitty.id,
+                kitty.terminator,
+                .EPERM,
+            ) catch |err| {
+                log.warn("error replying to kitty clipboard write err={}", .{err});
+            };
+        },
     }
 }
 
 /// This starts a clipboard request, with some basic validation. For example,
 /// an OSC 52 request is not actually requested if OSC 52 is disabled.
 ///
-/// Returns true if the request was started, false if it was not (e.g., clipboard
-/// doesn't contain text for paste requests). This allows performable keybinds
-/// to pass through when the action cannot be performed.
+/// The result reports whether the request was started; requests that
+/// weren't started never complete. Callers own reacting to that, e.g.
+/// performable paste keybinds pass through and Kitty clipboard reads
+/// answer the program.
 fn startClipboardRequest(
     self: *Surface,
     loc: apprt.Clipboard,
     req: apprt.ClipboardRequest,
-) !bool {
-    switch (req) {
-        .paste => {}, // always allowed
+) !apprt.ClipboardReadResult {
+    const effective_req: apprt.ClipboardRequest = switch (req) {
+        .paste => |clipboard| effective: {
+            // Snapshot the mode before asking the apprt for clipboard data.
+            // Event pastes request only a MIME listing, while ordinary
+            // pastes request the text representation as before.
+            self.renderer_state.mutex.lockUncancelable(global.io());
+            const event = self.io.terminal.modes.get(.kitty_paste_events);
+            self.renderer_state.mutex.unlock(global.io());
+
+            break :effective if (event)
+                .{ .list = clipboard }
+            else
+                req;
+        },
+        else => req,
+    };
+
+    switch (effective_req) {
+        .paste, .list => {}, // always allowed
         .osc_52_read => if (self.config.clipboard_read == .deny) {
             log.info(
                 "application attempted to read clipboard, but 'clipboard-read' is set to deny",
                 .{},
             );
-            return false;
+            return .unsupported;
         },
 
-        // No clipboard write code paths travel through this function
+        // The clipboard access policies were already applied by
+        // kittyClipboardRead and kittyClipboardWrite, which own
+        // replying on denial.
+        .kitty_read, .kitty_write => {},
+
+        // OSC 52 writes don't travel through this function; they go
+        // straight to the apprt setClipboard API.
         .osc_52_write => unreachable,
     }
 
-    return try self.rt_surface.clipboardRequest(loc, req);
+    return try self.rt_surface.clipboardRequest(loc, effective_req);
 }
 
 fn completeClipboardPaste(
@@ -5928,6 +6340,63 @@ fn completeClipboardPaste(
     };
 }
 
+/// Send a Kitty clipboard-protocol paste event when mode 5522 is enabled.
+/// The event only lists the available MIME types; it does not read any of
+/// their data. The shared terminal paste implementation generates and records
+/// the one-time password used by the program's follow-up OSC 5522 read.
+fn completeClipboardPasteEvent(
+    self: *Surface,
+    clipboard: apprt.Clipboard,
+    available: []const []const u8,
+) !bool {
+    if (self.readonly) return false;
+
+    const kitty_clipboard = terminal.kitty.clipboard;
+    const location: terminal.clipboard.Location = switch (clipboard) {
+        .standard => .standard,
+        .selection => .selection,
+        .primary => .primary,
+    };
+
+    // The protocol implementation caps listings at this size too. Cap here
+    // so the temporary Content array stays on the stack.
+    var contents_buf: [kitty_clipboard.max_listing_mimes]terminal.clipboard.Content = undefined;
+    const contents_len = @min(available.len, contents_buf.len);
+    for (available[0..contents_len], contents_buf[0..contents_len]) |mime, *content| {
+        content.* = .{ .mime = mime, .data = "" };
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(self.alloc);
+    defer aw.deinit();
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+
+    const pasted = try terminal.paste.paste(.{
+        .terminal = &self.io.terminal,
+        .alloc = self.alloc,
+        .writer = &aw.writer,
+        .kitty_clipboard = .{
+            .grants = &self.io.terminal_stream.handler.kitty_clipboard_grants,
+            .io = global.io(),
+        },
+    }, .{
+        .source = .{ .clipboard = location },
+        .contents = .{ .memory = contents_buf[0..contents_len] },
+        // A paste event discloses no clipboard data, so unsafe-text
+        // confirmation does not apply. If mode 5522 is reset, the empty
+        // stand-in representations cause the shared helper to write nothing.
+        .allow_unsafe = true,
+    });
+    if (!pasted) return false;
+
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = try aw.toOwnedSlice(),
+    } }, .locked);
+    return true;
+}
+
 fn completeClipboardReadOSC52(
     self: *Surface,
     data: []const u8,
@@ -5948,8 +6417,8 @@ fn completeClipboardReadOSC52(
     // This must hold the base64 encoded data PLUS the OSC code surrounding it.
     const enc = std.base64.standard.Encoder;
     const size = enc.calcSize(data.len);
-    var buf = try self.alloc.alloc(u8, size + 9); // const for OSC
-    defer self.alloc.free(buf);
+    const buf = try self.alloc.alloc(u8, size + 9); // const for OSC
+    errdefer self.alloc.free(buf);
 
     const kind: u8 = switch (clipboard_type) {
         .standard => 'c',
@@ -5958,7 +6427,7 @@ fn completeClipboardReadOSC52(
     };
 
     // Wrap our data with the OSC code
-    const prefix = try std.fmt.bufPrint(buf, "\x1b]52;{c};", .{kind});
+    const prefix = try std.mem.print(buf, "\x1b]52;{c};", .{kind});
     assert(prefix.len == 7);
     buf[buf.len - 2] = '\x1b';
     buf[buf.len - 1] = '\\';
@@ -5967,10 +6436,177 @@ fn completeClipboardReadOSC52(
     const encoded = enc.encode(buf[prefix.len..], data);
     assert(encoded.len == size);
 
-    self.queueIo(try termio.Message.writeReq(
-        self.alloc,
-        buf,
-    ), .unlocked);
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = buf,
+    } }, .unlocked);
+}
+
+/// Handle a Kitty clipboard protocol (OSC 5522) read request forwarded
+/// by the IO thread. This takes ownership of the request state.
+fn kittyClipboardRead(
+    self: *Surface,
+    req: *apprt.ClipboardRequest.KittyRead,
+) !void {
+    // A read denied by policy answers EPERM so clients degrade
+    // gracefully instead of waiting on a response that never comes.
+    if (self.config.clipboard_read == .deny) {
+        defer req.destroy();
+        log.info("application attempted to read clipboard, but 'clipboard-read' is set to deny", .{});
+        try self.kittyClipboardStatus(.read, req.id, req.terminator, .EPERM);
+        return;
+    }
+
+    const result = self.startClipboardRequest(
+        req.location,
+        .{ .kitty_read = req },
+    ) catch |err| {
+        defer req.destroy();
+        self.kittyClipboardStatus(.read, req.id, req.terminator, .EIO) catch {};
+        return err;
+    };
+
+    switch (result) {
+        // The request completes asynchronously.
+        .started => {},
+
+        // The clipboard has nothing we can serve, which is a
+        // successful read that serves no representations. This never
+        // prompts even under an ask policy since there are no contents
+        // to disclose.
+        .unavailable => {
+            defer req.destroy();
+            try self.completeKittyClipboardRead(req, &.{}, &.{});
+        },
+
+        // The apprt can't serve this clipboard at all, e.g. an
+        // unsupported primary selection.
+        .unsupported => {
+            defer req.destroy();
+            try self.kittyClipboardStatus(.read, req.id, req.terminator, .ENOSYS);
+        },
+    }
+}
+
+/// Handle a committed Kitty clipboard protocol (OSC 5522) write
+/// transaction forwarded by the IO thread. This takes ownership of the
+/// request state.
+fn kittyClipboardWrite(
+    self: *Surface,
+    req: *apprt.ClipboardRequest.KittyWrite,
+) !void {
+    // A write denied by policy answers EPERM so clients degrade
+    // gracefully instead of waiting on a response that never comes.
+    // The IO thread already fails transactions that begin under a
+    // deny policy, but the policy may have changed mid-transaction.
+    if (self.config.clipboard_write == .deny) {
+        defer req.destroy();
+        log.info("application attempted to write clipboard, but 'clipboard-write' is set to deny", .{});
+        try self.kittyClipboardStatus(.write, req.id, req.terminator, .EPERM);
+        return;
+    }
+
+    const result = self.startClipboardRequest(
+        req.location,
+        .{ .kitty_write = req },
+    ) catch |err| {
+        defer req.destroy();
+        self.kittyClipboardStatus(.write, req.id, req.terminator, .EIO) catch {};
+        return err;
+    };
+
+    switch (result) {
+        // The request completes asynchronously.
+        .started => {},
+
+        // The apprt can't write this clipboard at all, e.g. an
+        // unsupported primary selection. Writes carry their own
+        // contents so there is no meaningful unavailable state; treat
+        // it the same.
+        .unavailable, .unsupported => {
+            defer req.destroy();
+            try self.kittyClipboardStatus(.write, req.id, req.terminator, .ENOSYS);
+        },
+    }
+}
+
+/// Reply to a Kitty clipboard request with a single status packet.
+fn kittyClipboardStatus(
+    self: *Surface,
+    op: terminal.kitty.clipboard.Operation,
+    id: []const u8,
+    terminator: terminal.osc.Terminator,
+    status: terminal.kitty.clipboard.Status,
+) error{ OutOfMemory, WriteFailed }!void {
+    var aw: std.Io.Writer.Allocating = .init(self.alloc);
+    defer aw.deinit();
+    try (terminal.kitty.clipboard.Response{
+        .op = op,
+        .status = status,
+        .id = id,
+        .terminator = terminator,
+    }).encode(&aw.writer);
+
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = try aw.toOwnedSlice(),
+    } }, .unlocked);
+}
+
+/// Complete a Kitty clipboard protocol read with the clipboard
+/// contents.
+fn completeKittyClipboardRead(
+    self: *Surface,
+    req: *const apprt.ClipboardRequest.KittyRead,
+    contents: []const terminal.clipboard.Content,
+    available: []const []const u8,
+) !void {
+    const kitty_clipboard = terminal.kitty.clipboard;
+
+    // Serve the requested representations in request order under their
+    // requested names. Text-like MIME aliases all match the canonical
+    // text representation, since that is the only name the apprt
+    // serves text under. Requested types without a representation are
+    // simply never served, which is how the protocol communicates an
+    // unavailable representation.
+    var contents_buf: [kitty_clipboard.max_read_mimes]terminal.clipboard.Content = undefined;
+    var contents_len: usize = 0;
+    for (req.mimes) |mime| {
+        const data: []const u8 = data: {
+            for (contents) |content| {
+                if (std.mem.eql(u8, content.mime, mime)) break :data content.data;
+                if (terminal.clipboard.isTextMime(mime) and
+                    terminal.clipboard.isTextMime(content.mime))
+                {
+                    break :data content.data;
+                }
+            }
+
+            continue;
+        };
+
+        contents_buf[contents_len] = .{ .mime = mime, .data = data };
+        contents_len += 1;
+    }
+
+    // Encode the full success sequence: the OK packet, the targets
+    // listing if it was requested, DATA chunks for each served
+    // representation, and the final DONE packet.
+    var aw: std.Io.Writer.Allocating = .init(self.alloc);
+    defer aw.deinit();
+    try (kitty_clipboard.ReadSuccess{
+        .primary = req.location == .primary,
+        .id = req.id,
+        .list = req.list,
+        .available = available,
+        .contents = contents_buf[0..contents_len],
+        .terminator = req.terminator,
+    }).encode(&aw.writer);
+
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = try aw.toOwnedSlice(),
+    } }, .unlocked);
 }
 
 fn showDesktopNotification(self: *Surface, title: [:0]const u8, body: [:0]const u8) !void {
@@ -6041,4 +6677,70 @@ fn presentSurface(self: *Surface) !void {
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Surface, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.io.getProcessInfo(info);
+}
+
+test "queueIo frees allocated writes in readonly mode" {
+    const testing = std.testing;
+
+    const surface = try testing.allocator.create(Surface);
+    defer testing.allocator.destroy(surface);
+    surface.readonly = true;
+
+    // queueIo must free allocated writes in read-only mode.
+    const data = try testing.allocator.dupe(u8, "\x1b]lGhostty\x1b\\");
+    surface.queueIo(.{ .write_alloc = .{
+        .alloc = testing.allocator,
+        .data = data,
+    } }, .unlocked);
+}
+
+test "Mouse.click_state holds every button" {
+    var mouse: Mouse = .{};
+    inline for (@typeInfo(input.MouseButton).@"enum".field_values) |value| {
+        mouse.click_state[@intCast(value)] = .press;
+    }
+    for (mouse.click_state) |state| {
+        try std.testing.expectEqual(.press, state);
+    }
+}
+
+test "promptClickRelativeRow" {
+    const testing = std.testing;
+    const Case = struct {
+        layout: enum { no_history, offset, cross_page, prompt_above_viewport },
+        click_y: u32,
+        expected: u32,
+    };
+    const cases = [_]Case{
+        .{ .layout = .no_history, .click_y = 1, .expected = 1 },
+        .{ .layout = .offset, .click_y = 3, .expected = 3 },
+        .{ .layout = .cross_page, .click_y = 3, .expected = 3 },
+        .{ .layout = .prompt_above_viewport, .click_y = 0, .expected = 3 },
+    };
+    for (cases) |case| {
+        var pages = try terminal.PageList.init(testing.allocator, .{
+            .cols = 80,
+            .rows = 5,
+        });
+        defer pages.deinit();
+        const scroll_rows: u32 = switch (case.layout) {
+            .no_history => 0,
+            .offset, .prompt_above_viewport => 10,
+            .cross_page => pages.pages.first.?.capacity().rows - 2,
+        };
+        for (0..scroll_rows) |_| _ = try pages.grow();
+
+        const prompt_y = if (case.layout == .prompt_above_viewport)
+            scroll_rows - 2
+        else
+            scroll_rows + 1;
+        const prompt = pages.pin(.{ .screen = .{ .y = prompt_y } }).?;
+        const click = pages.pin(.{ .viewport = .{ .x = 7, .y = case.click_y } }).?;
+        try testing.expectEqual(case.layout == .cross_page, prompt.node != click.node);
+        try testing.expectEqual(
+            case.layout == .prompt_above_viewport,
+            pages.pointFromPin(.viewport, prompt) == null,
+        );
+        try testing.expectEqual(case.expected, promptClickRelativeRow(&pages, prompt, click));
+    }
 }

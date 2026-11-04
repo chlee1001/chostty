@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import GhosttyKit
 
@@ -210,9 +211,12 @@ class TerminalWindow: NSWindow {
 
     override var title: String {
         didSet {
-            /// We always keep single-line mode on; with native tabbing gone
-            /// there is no tab-bar-driven copy of this setting to guard against.
-            titlebarTextField?.usesSingleLineMode = true
+            // Whenever we change the window title we must also update our
+            // tab title if we're using custom fonts.
+            tab.attributedTitle = attributedTitle
+            guard title != oldValue else { return }
+
+            syncWindowTitleAppearance()
         }
     }
 
@@ -220,21 +224,27 @@ class TerminalWindow: NSWindow {
     var titlebarFont: NSFont? {
         didSet {
             let font = titlebarFont ?? NSFont.titleBarFont(ofSize: NSFont.systemFontSize)
+            tab.attributedTitle = attributedTitle
 
-            titlebarTextField?.font = font
-            /// Always single-line: with native tabbing gone there is no
-            /// tab-bar-driven copy of this setting that could vertically
-            /// misalign the title.
-            titlebarTextField?.usesSingleLineMode = true
+            // We need to call this every time the font is set,
+            // after entering or exiting fullscreen, or other cases,
+            // AppKit will reset the font.
+            syncWindowTitleAppearance(font: font)
         }
     }
 
-    // Find the NSTextField responsible for displaying the titlebar's title.
-    private var titlebarTextField: NSTextField? {
-        titlebarContainer?
+    // Find the array of NSTextField responsible for displaying the titlebar's title.
+    // In fullscreen mode, there'll be two of them.
+    private var titlebarTextFields: [NSTextField] {
+        (titlebarContainer?
             .firstDescendant(withClassName: "NSTitlebarView")?
-            .firstDescendant(withClassName: "NSTextField") as? NSTextField
+            .descendants(withClassName: "NSTextField")
+            .compactMap { $0 as? NSTextField } ?? [])
+            .filter({ $0.superview?.className == "NSTitlebarView" })
     }
+
+    // Cancellables for the frame change of the text fields in the titlebar.
+    private var titlebarTextFieldFrameCancellables = Set<AnyCancellable>()
 
     // Return a styled representation of our title property.
     var attributedTitle: NSAttributedString? {
@@ -270,6 +280,65 @@ class TerminalWindow: NSWindow {
     }
 
     // MARK: Positioning And Styling
+
+    /// Update titlebarTextField's size and font
+    func syncWindowTitleAppearance(font: NSFont? = nil) {
+        titlebarTextFields.forEach { field in
+            if let font {
+                field.font = font
+            }
+        }
+
+        titlebarTextFieldFrameCancellables.removeAll()
+
+        // macOS 15 doesn't seem to need to adjust the frame.
+        //
+        // When using custom font, we always expand the frame to
+        // show the text properly.
+        //
+        // AppKit will relayout the frame when the font changes, that's
+        // why we need this hack in the first place.
+        guard #available(macOS 26.0, *), titlebarFont != nil else {
+            return
+        }
+
+        titlebarTextFields.forEach { field in
+            setWindowTitleFrameSize(field)
+        }
+
+        // We need to observe changes to make the frame correct in some cases:
+        //
+        // 1. Entering fullscreen mode.
+        //    > Updating the frame when it's hidden doesn't seem to work.
+        // 2. Exiting fullscreen mode.
+        // 3. Resizing the window.
+        // 3. Maybe more...
+
+        titlebarTextFields.forEach { field in
+            field.postsFrameChangedNotifications = true
+            NotificationCenter.default
+                .publisher(for: NSView.frameDidChangeNotification, object: field)
+                .compactMap { $0.object as? NSTextField }
+                .sink { [weak self] in
+                    self?.setWindowTitleFrameSize($0)
+                }
+                .store(in: &titlebarTextFieldFrameCancellables)
+        }
+    }
+
+    private func setWindowTitleFrameSize(_ textfield: NSTextField) {
+        guard let superview = textfield.superview else { return }
+
+        // Button group size estimate: 92.
+        // Make the available space a little bit smaller.
+        let fittingSize = textfield.sizeThatFits(superview.bounds.insetBy(dx: 92/2 + 6, dy: 0).size)
+        // We make the frame a little bit higher so fixed-width fonts can
+        // align center vertically as well.
+        let properSize = CGSize(width: fittingSize.width, height: fittingSize.height * 1.1)
+
+        guard textfield.frame.size != properSize else { return }
+        textfield.frame.size = properSize
+    }
 
     /// This is called by the controller when there is a need to reset the window appearance.
     func syncAppearance(_ surfaceConfig: Ghostty.SurfaceView.DerivedConfig) {

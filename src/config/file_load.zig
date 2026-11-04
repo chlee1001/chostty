@@ -13,6 +13,7 @@ pub fn defaultXdgPath(alloc: Allocator) ![]const u8 {
     var environ_map = try global.environMap();
     defer environ_map.deinit();
     return try internal_os.xdg.config(
+        global.io(),
         alloc,
         &environ_map,
         .{ .subdir = "ghostty/config.ghostty" },
@@ -25,6 +26,7 @@ pub fn legacyDefaultXdgPath(alloc: Allocator) ![]const u8 {
     var environ_map = try global.environMap();
     defer environ_map.deinit();
     return try internal_os.xdg.config(
+        global.io(),
         alloc,
         &environ_map,
         .{ .subdir = "ghostty/config" },
@@ -101,7 +103,7 @@ pub fn preferredAppSupportPath(alloc: Allocator) ![]const u8 {
 ///
 /// The returned value must be freed by the caller.
 pub fn preferredDefaultFilePath(alloc: Allocator) ![]const u8 {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .macos => {
             // macOS prefers the Application Support directory
             // if it exists.

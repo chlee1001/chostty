@@ -53,7 +53,7 @@ Two independent C ABIs; do not conflate them:
 
 ### macOS app (`macos/`)
 
-There is no macOS `@main`. `macos/Sources/App/macOS/main.swift` is top-level code that calls
+There is no macOS `@main`. `macos/Sources/App/main.swift` is top-level code that calls
 `ghostty_init` → `ghostty_cli_try_action` → `NSApplicationMain`, which loads `MainMenu.xib`
 and instantiates `AppDelegate`. `AppDelegate` owns the single `Ghostty.App`
 (`macos/Sources/Ghostty/Ghostty.App.swift`), the bridge that translates libghostty callbacks
@@ -237,7 +237,7 @@ still look like that.)
 | `FORK.md` | What changed vs upstream, what is frozen for compatibility, known gaps, release/verification notes. Read before touching the window model. |
 | `README.ko.md` / `FORK.ko.md` | Korean translations of `README.md` / `FORK.md`. The English file is canonical; update the Korean one in the same change. |
 | `build.zig` / `src/build/Config.zig` | Every build step and `-D` flag |
-| `build.zig.zon` | Deps + `minimum_zig_version = "0.16.0"` |
+| `build.zig.zon` | Deps + `minimum_zig_version = "0.17.0"` |
 | `build.zig.zon.{nix,txt,json}` | **Generated** by `nix/build-support/check-zig-cache.sh --update`; never hand-edit |
 | `macos/build.nu` | The only sanctioned macOS build/test entry point |
 | `macos/Ghostty.xcodeproj/project.pbxproj` | Target membership, GhosttyKit/SwiftPM linkage |
@@ -252,7 +252,7 @@ Nested `AGENTS.md` files bind within their directory and must be read before edi
 
 ## Runtime/Tooling Preferences
 
-- **Zig 0.16.0**, pinned in `build.zig.zon` and enforced at comptime by `requireZig` in
+- **Zig 0.17.0**, pinned in `build.zig.zon` and enforced at comptime by `requireZig` in
   `build.zig` — a mismatched `zig` fails immediately, not gracefully.
 - **Xcode 26 / macOS 26 SDK** for the app. Deployment target is macOS 13+, universal binary.
 - **Nushell** is required to run `macos/build.nu`.

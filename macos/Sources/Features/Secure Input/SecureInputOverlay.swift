@@ -14,7 +14,8 @@ struct SecureInputOverlay: View {
                 Spacer()
 
                 Image(systemName: "lock.shield.fill")
-                    .resizable().scaledToFit()
+                    .resizable()
+                    .scaledToFit()
                     .frame(width: 25, height: 25)
                     .foregroundColor(.primary)
                     .padding(5)
