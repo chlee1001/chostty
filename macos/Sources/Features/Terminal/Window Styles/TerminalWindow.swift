@@ -535,9 +535,11 @@ extension TerminalWindow {
         @ObservedObject var model: UpdateViewModel
 
         var body: some View {
-            // We use the same top/trailing padding so that it hugs the same.
-            UpdatePill(model: model)
-                .padding(.top, viewModel.accessoryTopPadding)
+            // AppKit anchors this accessory to the bottom of the titlebar, so a
+            // top inset never moved the pill. The bottom inset lifts the pill
+            // onto the traffic lights' centerline (measured on a 32pt titlebar).
+            UpdatePill(model: model, showsWhenIdle: true)
+                .padding(.bottom, 5)
                 .padding(.trailing, viewModel.accessoryTopPadding)
         }
     }

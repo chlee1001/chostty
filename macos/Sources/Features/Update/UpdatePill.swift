@@ -11,11 +11,17 @@ struct UpdatePill: View {
     /// Task for auto-dismissing the "No Updates" state
     @State private var resetTask: Task<Void, Never>?
 
+    /// Keeps the pill visible as a "Check for Updates" button while idle, so the
+    /// area it occupies never appears and disappears with update state.
+    var showsWhenIdle = false
+
     /// The font used for the pill text
     private let textFont = NSFont.systemFont(ofSize: 11, weight: .medium)
 
     var body: some View {
-        if !model.state.isHidden {
+        if showsWhenIdle, case .idle = model.state {
+            idleButton
+        } else if !model.state.isHidden {
             pillButton
                 .popover(isPresented: $showPopover, arrowEdge: .bottom) {
                     UpdatePopoverView(model: model)
@@ -70,6 +76,34 @@ struct UpdatePill: View {
         .buttonStyle(.plain)
         .help(model.text)
         .accessibilityLabel(model.text)
+    }
+
+    /// The resting pill. Clicking it starts a manual update check.
+    @ViewBuilder
+    private var idleButton: some View {
+        Button(action: {
+            (NSApp.delegate as? AppDelegate)?.checkForUpdates(nil)
+        }, label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .frame(width: 14, height: 14)
+
+                Text("Check for Updates")
+                    .font(Font(textFont))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(model.backgroundColor)
+            )
+            .foregroundColor(.secondary)
+            .contentShape(Capsule())
+        })
+        .buttonStyle(.plain)
+        .help("Check for Updates")
+        .accessibilityLabel("Check for Updates")
     }
 
     /// Calculated width for the text to prevent resizing during progress updates
